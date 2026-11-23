@@ -155,11 +155,20 @@ struct PaymentsView: View {
 
         return FinanceCard {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 8) {
-                    SectionLabel(DayText.month(screen.selectedMonth))
-                    Spacer(minLength: 8)
-                    if let activeCategory = session.paymentsCategory {
-                        QuietTag(activeCategory, tone: .accent)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel(DayText.month(screen.selectedMonth))
+                        if let activeCategory = session.paymentsCategory {
+                            QuietTag(activeCategory, tone: .accent)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        SectionLabel(DayText.month(screen.selectedMonth))
+                        Spacer(minLength: 8)
+                        if let activeCategory = session.paymentsCategory {
+                            QuietTag(activeCategory, tone: .accent)
+                        }
                     }
                 }
 
@@ -169,10 +178,12 @@ struct PaymentsView: View {
                     Text("\(screen.totalRows) \(paymentWord) counted as spending")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                     if screen.pendingCount > 0 {
                         QuietTag("\(screen.pendingCount) pending", tone: .accent)
                     }
                 }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -181,21 +192,39 @@ struct PaymentsView: View {
 
     private func daySectionView(section: PaymentsScreenModel.DaySection, data: FinanceData) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                SectionLabel(FinanceFormat.dayHeader(section.date))
-                Spacer(minLength: 8)
-                if section.countedSubtotal != 0 {
-                    Text(Money.payment(section.countedSubtotal))
-                        .font(.caption.weight(.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.muted)
-                        .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 2) {
+                        SectionLabel(FinanceFormat.dayHeader(section.date))
+                        if section.countedSubtotal != 0 {
+                            Text(Money.payment(section.countedSubtotal))
+                                .font(.caption.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                                .allowsTightening(true)
+                                .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
+                        }
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        SectionLabel(FinanceFormat.dayHeader(section.date))
+                        Spacer(minLength: 8)
+                        if section.countedSubtotal != 0 {
+                            Text(Money.payment(section.countedSubtotal))
+                                .font(.caption.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.muted)
+                                .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 2)
 
             FinanceCard(padding: 0) {
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 {
                             HairlineDivider()
@@ -264,13 +293,18 @@ struct PaymentRow: View {
                     Text(item.merchant)
                         .font(.body.weight(.medium))
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(amountText)
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(amountColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                     if item.isPending || !counted {
                         FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                             if item.isPending {
@@ -280,8 +314,10 @@ struct PaymentRow: View {
                                 QuietTag("Not spending", tone: .neutral)
                             }
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {

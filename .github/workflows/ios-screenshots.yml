@@ -268,6 +268,8 @@ jobs:
 
           capture "now-light-ax5" now light accessibility-extra-extra-extra-large
           capture "payments-light-ax5" payments light accessibility-extra-extra-extra-large
+          capture "months-light-ax5" months light accessibility-extra-extra-extra-large
+          capture "more-light-ax5" more light accessibility-extra-extra-extra-large
 
           ls -lh screenshots
 

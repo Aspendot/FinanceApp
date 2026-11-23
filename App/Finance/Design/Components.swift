@@ -80,7 +80,7 @@ struct MetricMoneyText: View {
             .monospacedDigit()
             .foregroundStyle(color)
             .lineLimit(1)
-            .minimumScaleFactor(0.55)
+            .minimumScaleFactor(0.5)
             .allowsTightening(true)
             .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
     }
@@ -100,6 +100,8 @@ struct HairlineDivider: View {
 
 /// Calm full-pill tag for Pending, Estimate, Payday, Borrowed, or Not spending states.
 struct QuietTag: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     enum Tone {
         case neutral
         case accent
@@ -116,13 +118,17 @@ struct QuietTag: View {
     }
 
     var body: some View {
+        let isAccessibility = dynamicTypeSize.isAccessibilitySize
         Text(text)
             .font(.caption2.weight(.medium))
             .foregroundStyle(foreground)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
+            .lineLimit(1)
+            .minimumScaleFactor(isAccessibility ? 0.5 : 1.0)
+            .allowsTightening(isAccessibility)
+            .padding(.horizontal, isAccessibility ? 12 : 8)
+            .padding(.vertical, isAccessibility ? 4 : 3)
             .background(background, in: Capsule())
-            .fixedSize(horizontal: true, vertical: false)
+            .fixedSize(horizontal: !isAccessibility, vertical: false)
     }
 
     private var foreground: Color {
@@ -281,6 +287,9 @@ struct PrimaryActionButton: View {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(foreground)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, minHeight: Theme.minTouchTarget)
                 .background(background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .contentShape(Rectangle())
@@ -300,6 +309,8 @@ struct PrimaryActionButton: View {
 
 /// Consistent key-value status row for settings and About lists.
 struct SettingsValueRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let label: String
     let value: String
     var valueColor: Color = Theme.ink2
@@ -309,7 +320,7 @@ struct SettingsValueRow: View {
     var body: some View {
         LabeledContent {
             valueText
-                .multilineTextAlignment(.trailing)
+                .multilineTextAlignment(dynamicTypeSize.isAccessibilitySize ? .leading : .trailing)
         } label: {
             Text(label)
                 .font(.subheadline)

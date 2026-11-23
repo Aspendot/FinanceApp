@@ -72,9 +72,11 @@ struct NowView: View {
                     Text("No upcoming payday in the data file.")
                         .font(.subheadline)
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("Add a next payday entry to the timeline and re-export the data file.")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -105,14 +107,29 @@ struct NowView: View {
     }
 
     private func paydayDivider(date: String) -> some View {
-        HStack(spacing: 8) {
-            HairlineDivider(color: Theme.good.opacity(0.45))
-            Text("PAYDAY · \(FinanceFormat.dayHeader(date))")
-                .font(.caption2.weight(.semibold))
-                .tracking(0.8)
-                .foregroundStyle(Theme.good)
-                .fixedSize(horizontal: true, vertical: false)
-            HairlineDivider(color: Theme.good.opacity(0.45))
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 6) {
+                    HairlineDivider(color: Theme.good.opacity(0.45))
+                    Text("PAYDAY · \(FinanceFormat.dayHeader(date))")
+                        .font(.caption2.weight(.semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(Theme.good)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    HairlineDivider(color: Theme.good.opacity(0.45))
+                    Text("PAYDAY · \(FinanceFormat.dayHeader(date))")
+                        .font(.caption2.weight(.semibold))
+                        .tracking(0.8)
+                        .foregroundStyle(Theme.good)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .layoutPriority(1)
+                    HairlineDivider(color: Theme.good.opacity(0.45))
+                }
+            }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Payday divider, \(DayText.long(date))")
@@ -126,17 +143,25 @@ struct NowView: View {
 
         return FinanceCard {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 8) {
-                    SectionLabel("Recent pending")
-                    Spacer(minLength: 8)
-                    QuietTag("\(screen.recentPending.count) pending", tone: .accent)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("Recent pending")
+                        QuietTag("\(screen.recentPending.count) pending", tone: .accent)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        SectionLabel("Recent pending")
+                        Spacer(minLength: 8)
+                        QuietTag("\(screen.recentPending.count) pending", tone: .accent)
+                    }
                 }
 
                 Text("From bank emails, not on a statement yet.")
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(previewRows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 {
                             HairlineDivider()
@@ -166,6 +191,7 @@ struct NowView: View {
                             Text("Open in Payments")
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.accent)
+                                .multilineTextAlignment(.leading)
                             Image(systemName: "chevron.right")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(Theme.accent)
@@ -190,20 +216,27 @@ struct NowView: View {
                     Text(item.merchant)
                         .font(.body.weight(.medium))
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(amountText)
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(amountColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
                     Text("\(DayText.short(item.date)) · \(item.category) · \(item.source)")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                     FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                         QuietTag("Pending", tone: .accent)
                         if !counted {
                             QuietTag("Not spending", tone: .neutral)
                         }
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -266,10 +299,14 @@ struct NowView: View {
                     Text(debt.name)
                         .font(.body.weight(.medium))
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(Money.yen(debt.balance))
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.bad)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
                 }
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -301,12 +338,14 @@ struct NowView: View {
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let lines = debt.lines, !lines.isEmpty {
                 Text(lines.joined(separator: " · "))
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .accessibilityElement(children: .ignore)
@@ -330,11 +369,23 @@ struct NowView: View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 12) {
                 SectionLabel("Subscriptions")
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    MetricMoneyText(amount: screen.totalMonthlySubscriptions, color: Theme.ink)
-                    Text("per month")
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 2) {
+                            MetricMoneyText(amount: screen.totalMonthlySubscriptions, color: Theme.ink)
+                            Text("per month")
+                                .font(.footnote)
+                                .foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            MetricMoneyText(amount: screen.totalMonthlySubscriptions, color: Theme.ink)
+                            Text("per month")
+                                .font(.footnote)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(FinanceFormat.yenAccessibility(screen.totalMonthlySubscriptions)) per month")
@@ -368,14 +419,19 @@ struct NowView: View {
                     Text(sub.name)
                         .font(.body.weight(.medium))
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(Money.yen(sub.monthly))
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
                     if let via = sub.via, !via.isEmpty {
                         Text(via)
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let notableStatus {
                         QuietTag(notableStatus, tone: .neutral)
@@ -415,6 +471,8 @@ struct NowView: View {
 // MARK: - Payday hero card
 
 struct PaydayHeroCard: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let payday: PaydayView
     let spent: Int?
     let lastPayday: String?
@@ -423,10 +481,17 @@ struct PaydayHeroCard: View {
     var body: some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 8) {
-                    SectionLabel("Until payday")
-                    Spacer(minLength: 8)
-                    QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .accent)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel("Until payday")
+                        QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .accent)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        SectionLabel("Until payday")
+                        Spacer(minLength: 8)
+                        QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .accent)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -437,6 +502,7 @@ struct PaydayHeroCard: View {
                     Text("To \(DayText.long(payday.next.date)) · left after scheduled bills")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 SplitBar(bills: payday.outSum, left: payday.left, borrowed: payday.borrowedSum)
@@ -613,6 +679,9 @@ struct LedgerRow: View {
                         .font(emphasized ? .body.weight(.semibold) : .body.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(valueColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
                     if let detail, !detail.isEmpty {
                         Text(detail)
                             .font(.caption)
@@ -676,16 +745,18 @@ struct ComingUpDayRow: View {
         Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 6) {
                         Text(FinanceFormat.dayHeader(day.date))
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(dateColor)
+                            .fixedSize(horizontal: false, vertical: true)
                         if day.isToday {
                             QuietTag("Today", tone: .accent)
                         }
                     }
                     entriesContent
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 HStack(alignment: .top, spacing: 14) {
                     VStack(spacing: 1) {
@@ -778,6 +849,9 @@ struct ComingUpDayRow: View {
                             .font(.body.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(amountColor)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .allowsTightening(true)
                     }
                     if let note = entry.note, !note.isEmpty {
                         Text(note)
@@ -791,6 +865,7 @@ struct ComingUpDayRow: View {
                                 QuietTag(tag.0, tone: tag.1)
                             }
                         }
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
                     }
                 }
