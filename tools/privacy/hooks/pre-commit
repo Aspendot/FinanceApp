@@ -1,0 +1,5 @@
+#!/bin/sh
+# Privacy guard. Installed by tools/privacy/install.ps1. Do not bypass it.
+py=${PRIVACY_PYTHON:-}
+[ -n "$py" ] || { command -v python >/dev/null 2>&1 && py=python || py=python3; }
+exec "$py" -I "$(dirname "$0")/../guard.py" pre-commit

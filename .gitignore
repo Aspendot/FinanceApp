@@ -1,0 +1,17 @@
+.build/
+.swiftpm/
+/Packages/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+
+# Never commit real data or credentials.
+*.eml
+*.msg
+*.mbox
+*.dpapi
+client_secret*.json
+token*.json
+.env
+private/

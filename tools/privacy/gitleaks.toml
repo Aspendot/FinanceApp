@@ -1,0 +1,47 @@
+title = "FinanceApp privacy rules"
+
+# Start from gitleaks' built-in secret rules and add rules for personal data.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "email-address"
+description = "An email address outside the reserved example domains and known notice senders"
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'''
+keywords = ["@"]
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''@(?:[A-Za-z0-9-]+\.)*example\.(?:com|org|net|jp)$''',
+  '''@(?:[A-Za-z0-9-]+\.)*(?:example|invalid|test)$''',
+  '''@users\.noreply\.github\.com$''',
+  '''^noreply@anthropic\.com$''',
+  '''^(?:mail@debit\.bk\.mufg\.jp|mail@direct-11\.bk\.mufg\.jp|post_master@netbk\.co\.jp|no-reply@mercari\.jp|no_reply@email\.apple\.com)$''',
+]
+
+[[rules]]
+id = "payment-card-number"
+description = "A full payment card number"
+regex = '''\b(?:4\d{3}|5[1-5]\d{2}|2[2-7]\d{2}|3[47]\d{2}|35\d{2}|6011)[ -]?\d{4}[ -]?\d{4}[ -]?\d{2,4}\b'''
+
+[[rules]]
+id = "jp-phone-number"
+description = "A Japanese phone number"
+regex = '''\b0\d{1,4}-\d{1,4}-\d{4}\b'''
+
+[[rules]]
+id = "jp-postal-code"
+description = "A Japanese postal code with the postal mark"
+regex = '''〒\s?\d{3}-?\d{4}'''
+
+[[rules]]
+id = "google-oauth-client-secret"
+description = "Google OAuth client secret"
+regex = '''GOCSPX-[A-Za-z0-9_-]{20,}'''
+keywords = ["gocspx-"]
+
+[[rules]]
+id = "google-oauth-client-id"
+description = "Google OAuth client ID"
+regex = '''\b\d{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com\b'''
+keywords = ["googleusercontent"]
