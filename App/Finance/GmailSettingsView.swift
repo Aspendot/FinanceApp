@@ -8,55 +8,93 @@ struct GmailSettingsView: View {
     @State private var signInTask: Task<Void, Never>?
     @State private var statusMessage: String?
 
+    private var connectionColor: Color {
+        if model.runLog.first?.outcome == .signInRequired {
+            return Theme.bad
+        }
+        return model.gmailConnected ? Theme.good : Theme.muted
+    }
+
     var body: some View {
-        Form {
-            Section("Status") {
-                LabeledContent("Connection", value: model.gmailStatusLine)
+        List {
+            Section {
+                SettingsValueRow(
+                    label: "Connection",
+                    value: model.gmailStatusLine,
+                    valueColor: connectionColor
+                )
                 if let last = model.gmailLastSyncAt {
-                    LabeledContent("Last synced", value: SyncStorage.formatCheckTime(last))
+                    SettingsValueRow(
+                        label: "Last synced",
+                        value: SyncStorage.formatCheckTime(last)
+                    )
                 }
                 if let statusMessage {
                     Text(statusMessage)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                 } else if let syncMessage = model.syncMessage {
                     Text(syncMessage)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                 }
+            } header: {
+                SectionLabel("Status")
             }
+            .listRowBackground(Theme.surface)
 
-            Section("Google account") {
+            Section {
                 TextField("Google iOS client ID", text: $clientID)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.footnote)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(Theme.ink)
 
                 if let signInTask {
-                    Button("Cancel sign-in") {
+                    Button {
                         signInTask.cancel()
+                    } label: {
+                        Text("Cancel sign-in")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.bad)
                     }
-                } else {
-                    Button(model.gmailConnected ? "Reconnect Gmail" : "Sign in with Google") {
-                        startSignIn()
-                    }
-                    .disabled(model.syncing)
-                }
-
-                if model.gmailConnected {
-                    Button(model.syncing ? "Syncing…" : "Sync now") {
+                } else if model.gmailConnected {
+                    PrimaryActionButton(title: model.syncing ? "Syncing…" : "Sync now") {
                         Task {
                             await model.syncGmail(userInitiated: true)
                             statusMessage = model.syncMessage
                         }
                     }
                     .disabled(model.syncing || signInTask != nil)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+
+                    Button {
+                        startSignIn()
+                    } label: {
+                        Text("Reconnect Gmail")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(model.syncing ? Theme.muted : Theme.accent)
+                    }
+                    .disabled(model.syncing)
+                } else {
+                    PrimaryActionButton(title: "Sign in with Google") {
+                        startSignIn()
+                    }
+                    .disabled(model.syncing)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                 }
+            } header: {
+                SectionLabel("Google account")
+            } footer: {
+                Text("Read-only access to bank notice emails.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
             }
+            .listRowBackground(Theme.surface)
 
             if model.gmailConnected {
                 Section {
-                    Button("Sign out", role: .destructive) {
+                    Button(role: .destructive) {
                         Task {
                             do {
                                 try await GmailSync.signOut()
@@ -66,18 +104,31 @@ struct GmailSettingsView: View {
                             }
                             await model.reload()
                         }
+                    } label: {
+                        Text("Sign out")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(model.syncing || signInTask != nil ? Theme.muted : Theme.bad)
                     }
                     .disabled(model.syncing || signInTask != nil)
                 }
+                .listRowBackground(Theme.surface)
             }
 
-            Section("App identifier") {
+            Section {
                 Text(Bundle.main.bundleIdentifier ?? "Unknown")
                     .font(.footnote.monospaced())
+                    .foregroundStyle(Theme.muted)
                     .textSelection(.enabled)
+            } header: {
+                SectionLabel("App identifier")
             }
+            .listRowBackground(Theme.surface)
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.page)
         .navigationTitle("Gmail")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             model.refreshConnectionStates()
         }

@@ -19,7 +19,7 @@ struct MonthsView: View {
                             StateCard(
                                 kind: .empty,
                                 title: "No monthly totals yet",
-                                message: "Import a data file with statement items to see monthly spending."
+                                message: "Turn on Google Drive sync in More → Connections."
                             )
                         } else {
                             stackedChartCard(screen: screen)
@@ -62,25 +62,54 @@ struct MonthsView: View {
     private func stackedChartCard(screen: MonthsScreenModel) -> some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     SectionLabel("Monthly spending")
                     Spacer(minLength: 8)
-                    Text(DayText.month(screen.selectedMonth))
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Theme.ink2)
+                    monthMenuButton(screen: screen)
                 }
 
                 stackedChart(screen: screen)
                     .frame(height: 210)
                     .accessibilityLabel(chartAccessibilitySummary(screen: screen))
-
-                monthSelectorStrip(screen: screen)
+                    .accessibilityAdjustableAction { direction in
+                        stepMonth(screen: screen, forward: direction == .increment)
+                    }
 
                 HairlineDivider()
 
                 layerLegend(screen: screen)
             }
         }
+    }
+
+    private func monthMenuButton(screen: MonthsScreenModel) -> some View {
+        Menu {
+            ForEach(screen.months.reversed(), id: \.self) { month in
+                Button {
+                    selectMonth(month)
+                } label: {
+                    if month == screen.selectedMonth {
+                        Label(DayText.month(month), systemImage: "checkmark")
+                    } else {
+                        Text(DayText.month(month))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(DayText.month(screen.selectedMonth))
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .accessibilityHidden(true)
+            }
+            .frame(minHeight: 32)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Selected month, \(DayText.month(screen.selectedMonth))")
+        .accessibilityHint("Choose another month")
     }
 
     private func stackedChart(screen: MonthsScreenModel) -> some View {
@@ -119,7 +148,7 @@ struct MonthsView: View {
                         let isSelected = month == screen.selectedMonth
                         Text(FinanceFormat.chartMonth(month))
                             .font(.caption2.weight(isSelected ? .semibold : .regular))
-                            .foregroundStyle(isSelected ? Theme.ink : Theme.muted)
+                            .foregroundStyle(isSelected ? Theme.accent : Theme.muted)
                     }
                 }
             }
@@ -153,34 +182,11 @@ struct MonthsView: View {
         }
     }
 
-    private func monthSelectorStrip(screen: MonthsScreenModel) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(screen.months, id: \.self) { month in
-                        FilterChip(
-                            title: FinanceFormat.monthChip(month, includeYear: screen.spansMultipleYears),
-                            isSelected: month == screen.selectedMonth
-                        ) {
-                            selectMonth(month)
-                        }
-                        .id(month)
-                    }
-                }
-            }
-            .onAppear {
-                proxy.scrollTo(screen.selectedMonth, anchor: .trailing)
-            }
-            .onChange(of: screen.selectedMonth) { _, target in
-                if reduceMotion {
-                    proxy.scrollTo(target, anchor: .center)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(target, anchor: .center)
-                    }
-                }
-            }
-        }
+    private func stepMonth(screen: MonthsScreenModel, forward: Bool) {
+        guard let currentIndex = screen.months.firstIndex(of: screen.selectedMonth) else { return }
+        let nextIndex = forward ? currentIndex + 1 : currentIndex - 1
+        guard screen.months.indices.contains(nextIndex) else { return }
+        selectMonth(screen.months[nextIndex])
     }
 
     private func layerLegend(screen: MonthsScreenModel) -> some View {

@@ -23,7 +23,7 @@ struct PaymentsView: View {
                             StateCard(
                                 kind: .empty,
                                 title: "No payments yet",
-                                message: "Import a data file with statement items to browse payments."
+                                message: "Turn on Google Drive sync in More → Connections."
                             )
                         } else {
                             monthPicker(screen: screen)

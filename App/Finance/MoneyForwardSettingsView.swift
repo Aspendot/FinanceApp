@@ -29,59 +29,83 @@ struct MoneyForwardSettingsView: View {
             .sorted { ($0.label.lowercased(), $0.key) < ($1.label.lowercased(), $1.key) }
     }
 
+    private var connectionColor: Color {
+        if mfState.reconnectRequired || mfState.accessRefusedMessage != nil {
+            return Theme.bad
+        }
+        return model.moneyForwardConnected ? Theme.good : Theme.muted
+    }
+
     var body: some View {
-        Form {
-            Section("Status") {
-                LabeledContent("Connection", value: model.moneyForwardStatusLine)
+        List {
+            Section {
+                SettingsValueRow(
+                    label: "Connection",
+                    value: model.moneyForwardStatusLine,
+                    valueColor: connectionColor
+                )
                 if let name = mfState.officeName, let code = mfState.officeCode {
-                    LabeledContent("Office", value: "\(name) (\(code))")
+                    SettingsValueRow(label: "Office", value: "\(name) (\(code))")
                 } else if let code = mfState.officeCode {
-                    LabeledContent("Office code", value: code)
+                    SettingsValueRow(label: "Office code", value: code)
                 }
                 if let last = mfState.lastSyncAt {
-                    LabeledContent("Last synced", value: SyncStorage.formatCheckTime(last))
+                    SettingsValueRow(label: "Last synced", value: SyncStorage.formatCheckTime(last))
                 }
-                LabeledContent("Stored transactions", value: mfState.transactions.count.formatted())
+                SettingsValueRow(
+                    label: "Transactions",
+                    value: mfState.transactions.count.formatted()
+                )
 
                 if mfState.reconnectRequired {
                     Text("Reconnect Money Forward. Stored transactions are kept.")
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.bad)
                 } else if let refused = mfState.accessRefusedMessage, !refused.isEmpty {
                     Text(refused)
                         .font(.footnote)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Theme.bad)
                 } else if let lastError = mfState.lastErrorMessage, !lastError.isEmpty {
                     Text(lastError)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                 }
 
                 if let feedback {
                     Text(feedback)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.muted)
                 }
+            } header: {
+                SectionLabel("Status")
             }
+            .listRowBackground(Theme.surface)
 
             Section {
                 SecureField("API key", text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .font(.footnote)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(Theme.ink)
 
-                Button(model.moneyForwardConnected ? "Save new API key" : "Connect with API key") {
+                PrimaryActionButton(
+                    title: model.moneyForwardConnected ? "Save API key" : "Connect with API key"
+                ) {
                     connectWithAPIKey()
                 }
                 .disabled(busy || model.syncing || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
             } header: {
-                Text("API key")
+                SectionLabel("API key")
             } footer: {
-                Text("Create an API key in Money Forward App Portal, then paste it here. The office code is discovered automatically.")
+                Text("Paste an API key from Money Forward App Portal. The office is detected automatically.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
             }
+            .listRowBackground(Theme.surface)
 
             if mfState.availableOffices.count > 1 {
-                Section("Office") {
+                Section {
                     ForEach(mfState.availableOffices) { office in
                         Button {
                             selectOffice(office)
@@ -89,47 +113,61 @@ struct MoneyForwardSettingsView: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(office.name)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(Theme.ink)
                                     Text(office.code)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(Theme.muted)
                                 }
                                 Spacer()
                                 if mfState.officeCode == office.code {
                                     Image(systemName: "checkmark")
-                                        .foregroundStyle(.tint)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Theme.accent)
                                 }
                             }
                         }
                         .disabled(busy)
                     }
+                } header: {
+                    SectionLabel("Office")
                 }
+                .listRowBackground(Theme.surface)
             }
 
             if model.moneyForwardConnected {
-                Section("Actions") {
-                    Button(model.syncing ? "Syncing…" : "Sync now") {
+                Section {
+                    PrimaryActionButton(title: model.syncing ? "Syncing…" : "Sync now") {
                         Task {
                             await model.syncGmail(userInitiated: true)
                             feedback = model.syncMessage
                         }
                     }
                     .disabled(busy || model.syncing)
+                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
 
-                    Button("Refresh connected accounts") {
+                    Button {
                         refreshAccounts()
+                    } label: {
+                        Text("Refresh accounts")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(busy || model.syncing ? Theme.muted : Theme.accent)
                     }
                     .disabled(busy || model.syncing)
+                } header: {
+                    SectionLabel("Sync")
                 }
+                .listRowBackground(Theme.surface)
 
                 Section {
                     if mappableAccounts.isEmpty {
-                        Text("No connected accounts loaded yet. Tap Refresh connected accounts.")
+                        Text("No accounts loaded yet. Tap Refresh accounts.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Theme.muted)
                     } else if sortedBundleSources.isEmpty {
-                        Text("Import a data file first so bundle sources are available for mapping.")
+                        Text("Sync a data file first to map accounts.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Theme.muted)
                     } else {
                         ForEach(mappableAccounts) { account in
                             Picker(account.displayName, selection: mappingBinding(for: account.id)) {
@@ -138,13 +176,18 @@ struct MoneyForwardSettingsView: View {
                                     Text(source.label).tag(source.key)
                                 }
                             }
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
                         }
                     }
                 } header: {
-                    Text("Account mapping")
+                    SectionLabel("Account mapping")
                 } footer: {
-                    Text("Map each Money Forward account to a source from your data file, or leave it set to Ignore.")
+                    Text("Match each account to a statement source, or leave set to Ignore.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.muted)
                 }
+                .listRowBackground(Theme.surface)
             }
 
             Section {
@@ -152,17 +195,31 @@ struct MoneyForwardSettingsView: View {
                     TextField("Client ID", text: $oauthClientID)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .font(.footnote)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(Theme.ink)
                     SecureField("Client secret", text: $oauthClientSecret)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
-                        .font(.footnote)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(Theme.ink)
                     TextField("Redirect URI", text: $oauthRedirectURI)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.footnote.monospaced())
-                    Button("Sign in with Money Forward") {
+                        .foregroundStyle(Theme.ink)
+                    Button {
                         connectWithOAuth()
+                    } label: {
+                        Text("Sign in with Money Forward")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(
+                                busy
+                                    || model.syncing
+                                    || oauthClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || oauthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    ? Theme.muted
+                                    : Theme.accent
+                            )
                     }
                     .disabled(
                         busy
@@ -171,18 +228,30 @@ struct MoneyForwardSettingsView: View {
                             || oauthClientSecret.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
                 }
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
             }
+            .listRowBackground(Theme.surface)
 
             if model.moneyForwardConnected {
                 Section {
-                    Button("Disconnect Money Forward", role: .destructive) {
+                    Button(role: .destructive) {
                         disconnect()
+                    } label: {
+                        Text("Disconnect Money Forward")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(busy || model.syncing ? Theme.muted : Theme.bad)
                     }
                     .disabled(busy || model.syncing)
                 }
+                .listRowBackground(Theme.surface)
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.page)
         .navigationTitle("Money Forward")
+        .navigationBarTitleDisplayMode(.inline)
         .onAppear {
             model.refreshConnectionStates()
         }

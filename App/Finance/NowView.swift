@@ -216,6 +216,7 @@ struct NowView: View {
                             .font(.subheadline.weight(.medium))
                             .monospacedDigit()
                             .foregroundStyle(amountColor)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     HStack(alignment: .center, spacing: 6) {
                         Text("\(DayText.short(item.date)) · \(item.category) · \(item.source)")
@@ -381,29 +382,28 @@ struct NowView: View {
                     }
                 }
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(sub.name)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(1)
-                            if let notableStatus {
-                                QuietTag(notableStatus, tone: .neutral)
-                            }
-                        }
-                        if let via = sub.via, !via.isEmpty {
-                            Text(via)
-                                .font(.caption)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
-                        }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(sub.name)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Text(Money.yen(sub.monthly))
+                            .font(.subheadline.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
-                    Spacer(minLength: 8)
-                    Text(Money.yen(sub.monthly))
-                        .font(.subheadline.weight(.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.ink)
+                    if let via = sub.via, !via.isEmpty {
+                        Text(via)
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .lineLimit(1)
+                    }
+                    if let notableStatus {
+                        QuietTag(notableStatus, tone: .neutral)
+                    }
                 }
             }
         }
@@ -515,6 +515,8 @@ struct PaydayHeroCard: View {
 }
 
 struct SplitBar: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let bills: Int
     let left: Int
     let borrowed: Int
@@ -545,7 +547,7 @@ struct SplitBar: View {
         let activeParts = parts
         let total = max(1, activeParts.map(\.amount).reduce(0, +))
 
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             GeometryReader { geo in
                 let gap: CGFloat = activeParts.count > 1 ? 2 : 0
                 let available = max(0, geo.size.width - gap * CGFloat(max(0, activeParts.count - 1)))
@@ -565,7 +567,7 @@ struct SplitBar: View {
             .frame(height: 10)
             .accessibilityHidden(true)
 
-            FlowLayout(horizontalSpacing: 12, verticalSpacing: 6) {
+            FlowLayout(horizontalSpacing: 14, verticalSpacing: 6) {
                 ForEach(activeParts) { part in
                     HStack(spacing: 5) {
                         Circle()
@@ -576,11 +578,14 @@ struct SplitBar: View {
                             .font(.caption)
                             .monospacedDigit()
                             .foregroundStyle(Theme.muted)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
                     }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("\(part.id), \(FinanceFormat.yenAccessibility(part.amount))")
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -603,6 +608,7 @@ struct LedgerRow: View {
                     Text(title)
                         .font(emphasized ? .body.weight(.semibold) : .body)
                         .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(value)
                         .font(emphasized ? .body.weight(.semibold) : .body.weight(.medium))
                         .monospacedDigit()
@@ -611,35 +617,36 @@ struct LedgerRow: View {
                         Text(detail)
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let tag {
                         QuietTag(tag.0, tone: tag.1)
                     }
                 }
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(title)
-                                .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
-                                .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
-                            if let tag {
-                                QuietTag(tag.0, tone: tag.1)
-                            }
-                        }
-                        if let detail, !detail.isEmpty {
-                            Text(detail)
-                                .font(.caption)
-                                .foregroundStyle(Theme.muted)
-                        }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(title)
+                            .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                            .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Text(value)
+                            .font(emphasized ? .subheadline.weight(.semibold) : .subheadline.weight(.medium))
+                            .monospacedDigit()
+                            .foregroundStyle(valueColor)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
-                    Spacer(minLength: 8)
-                    Text(value)
-                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline.weight(.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(valueColor)
-                        .multilineTextAlignment(.trailing)
-                        .fixedSize(horizontal: true, vertical: false)
+                    if let detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let tag {
+                        QuietTag(tag.0, tone: tag.1)
+                    }
                 }
             }
         }
@@ -765,11 +772,18 @@ struct ComingUpDayRow: View {
                     Text(entry.item)
                         .font(.body.weight(.medium))
                         .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
                     if !amountText.isEmpty {
                         Text(amountText)
                             .font(.body.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(amountColor)
+                    }
+                    if let note = entry.note, !note.isEmpty {
+                        Text(note)
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if !tags.isEmpty {
                         FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
@@ -777,38 +791,38 @@ struct ComingUpDayRow: View {
                                 QuietTag(tag.0, tone: tag.1)
                             }
                         }
+                        .padding(.top, 2)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        Text(entry.item)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        if !amountText.isEmpty {
+                            Text(amountText)
+                                .font(.subheadline.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(amountColor)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
                     }
                     if let note = entry.note, !note.isEmpty {
                         Text(note)
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                }
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(entry.item)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(Theme.ink)
-                                .lineLimit(2)
+                    if !tags.isEmpty {
+                        FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                             ForEach(Array(tags.enumerated()), id: \.offset) { _, tag in
                                 QuietTag(tag.0, tone: tag.1)
                             }
                         }
-                        if let note = entry.note, !note.isEmpty {
-                            Text(note)
-                                .font(.caption)
-                                .foregroundStyle(Theme.muted)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                    if !amountText.isEmpty {
-                        Text(amountText)
-                            .font(.subheadline.weight(.medium))
-                            .monospacedDigit()
-                            .foregroundStyle(amountColor)
-                            .fixedSize(horizontal: true, vertical: false)
+                        .padding(.top, 2)
                     }
                 }
             }

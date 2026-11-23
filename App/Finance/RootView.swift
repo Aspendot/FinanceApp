@@ -19,6 +19,7 @@ struct RootView: View {
             }
         }
         .tint(Theme.accent)
+        .preferredColorScheme(session.demoColorScheme)
         .environmentObject(model)
         .environmentObject(session)
         .onChange(of: phase, initial: true) { _, newPhase in
@@ -168,7 +169,7 @@ struct NoDataView: View {
         StateCard(
             kind: .empty,
             title: "No data yet",
-            message: "On your PC, open Apple Devices, choose your iPhone, then Files → Finance, and drag in finance-bundle.json. Return to this app to load it."
+            message: "Turn on Google Drive sync in More → Connections."
         )
     }
 }
