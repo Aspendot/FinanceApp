@@ -144,7 +144,7 @@ struct DriveSyncSettingsView: View {
             } header: {
                 SectionLabel("Encryption key")
             } footer: {
-                Text("Match the Key ID with your PC exporter to confirm both devices share the same key.")
+                Text("The key ID should match the one shown on your PC.")
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
             }
@@ -176,7 +176,7 @@ struct DriveSyncSettingsView: View {
             } header: {
                 SectionLabel("Sync")
             } footer: {
-                Text("Import a file instead checks the app's local Documents folder.")
+                Text("Looks for a data file in Finance's Documents folder.")
                     .font(.footnote)
                     .foregroundStyle(Theme.muted)
             }

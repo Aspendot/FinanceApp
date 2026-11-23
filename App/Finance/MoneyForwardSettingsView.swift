@@ -11,6 +11,7 @@ struct MoneyForwardSettingsView: View {
     @State private var oauthClientSecret = ""
     @State private var oauthRedirectURI = MoneyForwardAuth.defaultRedirectURI
     @State private var showOAuth = false
+    private static let showsOAuth = false
     @State private var busy = false
     @State private var feedback: String?
 
@@ -190,6 +191,8 @@ struct MoneyForwardSettingsView: View {
                 .listRowBackground(Theme.surface)
             }
 
+            // The API key covers everything the app needs; OAuth stays in code but out of sight.
+            if Self.showsOAuth {
             Section {
                 DisclosureGroup("OAuth 2.0 (optional)", isExpanded: $showOAuth) {
                     TextField("Client ID", text: $oauthClientID)
@@ -232,6 +235,7 @@ struct MoneyForwardSettingsView: View {
                 .foregroundStyle(Theme.ink)
             }
             .listRowBackground(Theme.surface)
+            }
 
             if model.moneyForwardConnected {
                 Section {

@@ -154,6 +154,7 @@ enum GmailSync {
             case .busy: return "Wait for the current Gmail operation to finish."
             case .signOutBeforeChangingClientID: return "Sign out before changing the Google client ID."
             case .signOutBeforeChangingMailbox: return "Sign out before switching Gmail accounts."
+            case .missingDriveRefreshToken: return "Google didn't grant lasting Drive access. Turn on Drive sync again."
             }
         }
     }

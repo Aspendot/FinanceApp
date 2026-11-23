@@ -255,7 +255,8 @@ struct PaymentRow: View {
     var body: some View {
         let amountText = Money.payment(item.amount)
         let amountColor = item.amount < 0 ? Theme.good : Theme.ink
-        let subtitle = "\(DayText.short(item.date)) · \(item.category) · \(item.source)"
+        // Rows sit under a day header, so the date isn't repeated here.
+        let subtitle = "\(item.category) · \(item.source)"
 
         return Group {
             if dynamicTypeSize.isAccessibilitySize {

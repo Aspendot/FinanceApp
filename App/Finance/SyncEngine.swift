@@ -930,7 +930,7 @@ actor SyncEngine {
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
         guard let deadline else { return try await operation() }
-        let first = await withTaskGroup(of: RaceOutcome<T>.self) { group in
+        let first = await withTaskGroup(of: RaceOutcome<T>.self, returning: RaceOutcome<T>?.self) { group in
             group.addTask {
                 do {
                     return .finished(.success(try await operation()))
@@ -947,12 +947,13 @@ actor SyncEngine {
                 }
             }
 
-            let first = await group.next()
+            let first: RaceOutcome<T>? = await group.next()
             group.cancelAll()
-            // The task group joins the cancelled child before returning. No
-            // subsequent run can race a late batch commit or token refresh.
-            if case .timedOut = first, case .finished(.success(let value)) = await group.next() {
-                return .finished(.success(value))
+            // Join the cancelled child before returning, so no later run can race a
+            // late batch commit or token refresh.
+            let second: RaceOutcome<T>? = await group.next()
+            if case .some(.timedOut) = first, case .some(.finished(.success(let value))) = second {
+                return RaceOutcome<T>.finished(.success(value))
             }
             return first
         }
