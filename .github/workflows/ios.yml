@@ -40,11 +40,9 @@ jobs:
       - name: Build for iPhone without signing
         working-directory: App
         run: |
-          set -o pipefail
-          xcodebuild -project FinanceiOS.xcodeproj -scheme Finance -configuration Release \
+          xcodebuild -quiet -project FinanceiOS.xcodeproj -scheme Finance -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
-            | grep -E "error|warning: .*(Sendable|deprecated)|BUILD (SUCCEEDED|FAILED)|\*\*" || true
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
           test -d "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/Finance.app"
       - name: Embed entitlements and pack the .ipa
         run: |
@@ -79,4 +77,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" Finance.ipa --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."
+        run: gh release create "$TAG" Finance.ipa --verify-tag --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."

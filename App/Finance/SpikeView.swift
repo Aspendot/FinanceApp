@@ -6,13 +6,15 @@ import WidgetKit
 /// Step 0 of the iPhone app: one screen that tests each risky piece on a real phone
 /// after SideStore has signed the app. Each row shows the latest result.
 struct SpikeView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var groupResult = SharedStore.groupID.map { "App Group: \($0)" } ?? "No App Group available"
     @State private var faceIDResult = "Not tried yet"
     @State private var notifyResult = "Not tried yet"
     @State private var refreshResult = "Not scheduled yet"
     @State private var runs = SpikeLog.load().backgroundRuns
     @State private var clientID = GmailSync.clientID ?? ""
-    @State private var gmailResult = GmailSync.isSignedIn ? "Signed in" : "Not signed in"
+    @State private var signInTask: Task<Void, Never>?
+    @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
 
     var body: some View {
@@ -60,23 +62,29 @@ struct SpikeView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.footnote)
-                        .onSubmit { GmailSync.setClientID(clientID) }
                     Text(gmailResult).font(.footnote).foregroundStyle(.secondary)
-                    Button("Sign in with Google") {
-                        GmailSync.setClientID(clientID)
-                        Task {
-                            do {
-                                try await GmailSync.signIn()
-                                gmailResult = "Signed in with read-only Gmail access"
-                            } catch {
-                                gmailResult = "Sign-in failed: " + error.localizedDescription
+                    if let signInTask {
+                        Button("Cancel sign-in") { signInTask.cancel() }
+                    } else {
+                        Button("Sign in with Google") {
+                            signInTask = Task { @MainActor in
+                                defer { signInTask = nil }
+                                do {
+                                    try await GmailSync.signIn(clientID: clientID)
+                                    notices = GmailSync.recentNotices()
+                                    gmailResult = "Signed in with read-only Gmail access"
+                                } catch {
+                                    gmailResult = Task.isCancelled
+                                        ? "Sign-in cancelled"
+                                        : "Sign-in failed: " + error.localizedDescription
+                                }
                             }
                         }
                     }
                     Button("Fetch bank emails from the last 7 days") {
                         Task {
                             do {
-                                let fresh = try await GmailSync.run(days: 7)
+                                let fresh = try await GmailSync.run()
                                 notices = GmailSync.recentNotices()
                                 gmailResult = "\(fresh.count) new notices; the widget was updated"
                             } catch {
@@ -85,8 +93,13 @@ struct SpikeView: View {
                         }
                     }
                     Button("Sign out", role: .destructive) {
-                        GmailSync.signOut()
-                        gmailResult = "Signed out"
+                        do {
+                            try GmailSync.signOut()
+                            notices = []
+                            gmailResult = "Signed out"
+                        } catch {
+                            gmailResult = "Sign-out failed: " + error.localizedDescription
+                        }
                     }
                 }
                 if !notices.isEmpty {
@@ -98,7 +111,7 @@ struct SpikeView: View {
                                     Text("\(n.day) · \(n.source.rawValue) · \(n.kind.rawValue)").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "–")
+                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + $0.magnitude.formatted() } ?? "–")
                                     .font(.subheadline.monospacedDigit())
                             }
                         }
@@ -111,6 +124,9 @@ struct SpikeView: View {
                 }
             }
             .navigationTitle("Finance test")
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { notices = GmailSync.recentNotices() }
+            }
         }
     }
 }

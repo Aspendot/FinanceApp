@@ -1,5 +1,4 @@
 import BackgroundTasks
-import FinanceCore
 import Foundation
 import LocalAuthentication
 import UserNotifications
@@ -66,25 +65,27 @@ struct SpikeLog: Codable {
 
 /// Background refresh. iOS decides when it runs; asking for 15 minutes is only a floor.
 enum BackgroundRefresh {
-    /// The task ID as installed. SideStore rewrites IDs that start with the original
-    /// bundle ID (it adds the team ID), and registering an ID that isn't in the
-    /// installed Info.plist crashes the app, so the ID is read back at runtime.
-    static let identifier: String = {
-        let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String]
-        return permitted?.first { $0.hasSuffix(".refresh") } ?? "io.github.aspendot.financeapp.refresh"
-    }()
+    private static let identifier = (Bundle.main.object(
+        forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers"
+    ) as? [String])?.first { $0.hasSuffix(".refresh") }
 
-    static func register() {
-        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in
+    private static let registered: Bool = {
+        guard let identifier else { return false }
+        return BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { task in
             guard let refresh = task as? BGAppRefreshTask else {
                 task.setTaskCompleted(success: false)
                 return
             }
             handle(refresh)
         }
+    }()
+
+    static func register() {
+        _ = registered
     }
 
     static func schedule() -> String {
+        guard let identifier, registered else { return "Background refresh is unavailable in this install" }
         let request = BGAppRefreshTaskRequest(identifier: identifier)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         do {
@@ -97,36 +98,36 @@ enum BackgroundRefresh {
 
     private static func handle(_ task: BGAppRefreshTask) {
         _ = schedule()
-        let work = Task {
+        // The launch handler runs on the main queue, so expiration is set before work starts.
+        let work = Task { @MainActor in
+            var succeeded = false
+            defer { task.setTaskCompleted(success: succeeded && !Task.isCancelled) }
+            guard !Task.isCancelled else { return }
             var log = SpikeLog.load()
             log.backgroundRuns.append(Date())
             log.save()
-            if GmailSync.isSignedIn {
-                do {
-                    let fresh = try await GmailSync.run(days: 3)
-                    let spending = fresh.filter { [.purchase, .refund, .settlement].contains($0.kind) }
-                    for n in spending.prefix(3) {
-                        let amount = n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "an amount"
-                        await Notifier.post(title: amount, body: (n.merchant ?? "A payment") + " · " + n.source.rawValue)
+            do {
+                if try GmailSync.hasCredentials() {
+                    let fresh = try await GmailSync.run()
+                    if !Task.isCancelled, !fresh.isEmpty {
+                        await Notifier.post(title: "Finance", body: "Open the app to see new notices.")
                     }
-                    task.setTaskCompleted(success: true)
-                } catch {
-                    task.setTaskCompleted(success: false)
+                } else {
+                    SharedStore.write(WidgetSnapshot(
+                        title: "Background refresh",
+                        value: "\(log.backgroundRuns.count) runs",
+                        detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
+                        updatedAt: Date()))
+                    WidgetCenter.shared.reloadAllTimelines()
+                    await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
                 }
+                succeeded = true
+            } catch {
                 return
             }
-            SharedStore.write(WidgetSnapshot(
-                title: "Background refresh",
-                value: "\(log.backgroundRuns.count) runs",
-                detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
-                updatedAt: Date()))
-            WidgetCenter.shared.reloadAllTimelines()
-            await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
-            task.setTaskCompleted(success: true)
         }
         task.expirationHandler = {
             work.cancel()
-            task.setTaskCompleted(success: false)
         }
     }
 }

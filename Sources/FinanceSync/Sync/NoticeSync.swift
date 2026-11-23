@@ -163,6 +163,7 @@ public enum NoticeSync {
         var seenPageTokens = Set<String>()
 
         while true {
+            try Task.checkCancellation()
             let page = try await client.listMessageIDs(
                 query: query,
                 maxResults: pageSize,
@@ -187,6 +188,7 @@ public enum NoticeSync {
         var droppedCount = 0
 
         for id in unseenIDs {
+            try Task.checkCancellation()
             let gmail = try await client.message(id: id)
             updatedState.seenMessageIDs.insert(id)
 
