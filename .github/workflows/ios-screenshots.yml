@@ -1,0 +1,303 @@
+name: iOS screenshots
+
+on:
+  push:
+    branches: ["neon/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Capture demo screenshots (iOS Simulator)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Install XcodeGen 2.48.0 (checksum-pinned)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.48.0/xcodegen.zip
+          echo "620c9f0dc10849f94728ab5df52d225ebab8187439dd6fee1925e59e80dff892  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the Xcode project
+        working-directory: App
+        run: xcodegen generate
+
+      - name: Select and boot an iPhone Simulator
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'EOF'
+          import json, subprocess, sys
+
+          data = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"], text=True
+          ))
+          ios_runtimes = sorted(
+              (r for r in data["devices"] if "iOS" in r),
+              reverse=True,
+          )
+          preferred = [
+              "iPhone 17",
+              "iPhone 17 Pro",
+              "iPhone 17e",
+              "iPhone 16",
+              "iPhone 16 Pro",
+          ]
+          candidates = []
+          for runtime in ios_runtimes:
+              for dev in data["devices"][runtime]:
+                  if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
+                      candidates.append((runtime, dev["name"], dev["udid"]))
+
+          for want in preferred:
+              for _, name, udid in candidates:
+                  if name == want:
+                      print(udid)
+                      sys.exit(0)
+          if candidates:
+              print(candidates[0][2])
+              sys.exit(0)
+          sys.stderr.write("No available iPhone Simulator found.\n")
+          sys.exit(1)
+          EOF
+          )
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$UDID" || true
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override \
+            --time "9:41" \
+            --dataNetwork wifi \
+            --wifiMode active \
+            --wifiBars 3 \
+            --cellularMode active \
+            --cellularBars 4 \
+            --batteryState charged \
+            --batteryLevel 100 || true
+
+      - name: Build for iOS Simulator
+        working-directory: App
+        run: |
+          set -euo pipefail
+          xcodebuild -quiet -project FinanceiOS.xcodeproj -scheme Finance -configuration Debug \
+            -sdk iphonesimulator -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd-sim" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+          test -d "$RUNNER_TEMP/dd-sim/Build/Products/Debug-iphonesimulator/Finance.app"
+
+      - name: Install app and capture screenshots
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/dd-sim/Build/Products/Debug-iphonesimulator/Finance.app"
+          BUNDLE_ID="io.github.aspendot.financeapp"
+          mkdir -p screenshots diagnostics
+
+          cat <<'EOF' > "$RUNNER_TEMP/check_screenshot.py"
+          import collections
+          import os
+          import struct
+          import subprocess
+          import sys
+          import tempfile
+
+          path = sys.argv[1]
+          with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as tmp:
+              bmp_path = tmp.name
+
+          try:
+              subprocess.run(
+                  ["sips", "--resampleHeight", "400", "-s", "format", "bmp", path, "--out", bmp_path],
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.PIPE,
+              )
+              with open(bmp_path, "rb") as f:
+                  data = f.read()
+          finally:
+              if os.path.exists(bmp_path):
+                  os.remove(bmp_path)
+
+          if len(data) < 54 or data[:2] != b"BM":
+              print("error=invalid_bmp")
+              sys.exit(2)
+
+          pixel_offset = struct.unpack_from("<I", data, 10)[0]
+          width, raw_height = struct.unpack_from("<ii", data, 18)
+          bpp = struct.unpack_from("<H", data, 28)[0]
+          height = abs(raw_height)
+          top_down = raw_height < 0
+          bytes_per_pixel = bpp // 8
+          if width <= 0 or height <= 0 or bytes_per_pixel not in (3, 4):
+              print(f"error=unsupported_bmp width={width} height={height} bpp={bpp}")
+              sys.exit(2)
+
+          stride = ((width * bytes_per_pixel + 3) // 4) * 4
+          # Inspect the app body region only, skipping the status bar (top 14%) and home indicator (bottom 8%).
+          y_start = int(height * 0.14)
+          y_end = int(height * 0.92)
+          x_start = int(width * 0.04)
+          x_end = int(width * 0.96)
+
+          counts = collections.Counter()
+          total = 0
+          for y in range(y_start, y_end):
+              row_idx = y if top_down else (height - 1 - y)
+              row_base = pixel_offset + row_idx * stride
+              for x in range(x_start, x_end):
+                  p = row_base + x * bytes_per_pixel
+                  b, g, r = data[p], data[p + 1], data[p + 2]
+                  counts[(r, g, b)] += 1
+                  total += 1
+
+          distinct = len(counts)
+          dom_color, dom_count = counts.most_common(1)[0]
+          non_dom_ratio = (total - dom_count) / max(1, total)
+          print(
+              f"distinct={distinct} non_dom={non_dom_ratio:.4f} "
+              f"dominant=#{dom_color[0]:02x}{dom_color[1]:02x}{dom_color[2]:02x}"
+          )
+          sys.exit(0 if (distinct >= 16 and non_dom_ratio >= 0.02) else 1)
+          EOF
+
+          dump_failure_logs() {
+            local tag="$1"
+            xcrun simctl spawn "$SIM_UDID" log show --last 2m --predicate 'process == "Finance"' \
+              > "diagnostics/${tag}-finance.log" 2>&1 || true
+            mkdir -p diagnostics/DiagnosticReports
+            find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 2 -type f \( -name '*Finance*' -o -name '*.ips' -o -name '*.crash' \) \
+              -mmin -15 -exec cp {} diagnostics/DiagnosticReports/ \; 2>/dev/null || true
+          }
+
+          xcrun simctl install "$SIM_UDID" "$APP"
+
+          capture() {
+            local name="$1"
+            local screen="$2"
+            local appearance="$3"
+            local content_size="$4"
+            local out="screenshots/${name}.png"
+
+            xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" 2>/dev/null || true
+            sleep 1
+            xcrun simctl ui "$SIM_UDID" appearance "$appearance"
+            xcrun simctl ui "$SIM_UDID" content_size "$content_size"
+            sleep 1
+
+            local launch_out
+            if ! launch_out=$(xcrun simctl launch "$SIM_UDID" "$BUNDLE_ID" -demo -screen "$screen" -appearance "$appearance" 2>&1); then
+              echo "::error::Failed to launch Finance for ${name}: ${launch_out}"
+              dump_failure_logs "$name"
+              return 1
+            fi
+            local app_pid
+            app_pid=$(echo "$launch_out" | awk -F': ' '{print $2}' | tr -d '[:space:]')
+            echo "Launched ${name} (screen=${screen}, appearance=${appearance}, size=${content_size}, pid=${app_pid:-unknown})"
+
+            local rendered=0
+            local last_stats=""
+            for elapsed in $(seq 2 2 30); do
+              sleep 2
+              if [[ -n "$app_pid" ]] && ! kill -0 "$app_pid" 2>/dev/null; then
+                echo "::error::Finance process (pid=${app_pid}) crashed while capturing ${name} at ${elapsed}s"
+                dump_failure_logs "$name"
+                return 1
+              fi
+
+              xcrun simctl io "$SIM_UDID" screenshot "$out"
+              if [[ ! -s "$out" ]]; then
+                continue
+              fi
+
+              set +e
+              last_stats=$(python3 "$RUNNER_TEMP/check_screenshot.py" "$out")
+              local check_rc=$?
+              set -e
+              echo "  [${name} @ ${elapsed}s] ${last_stats}"
+
+              if [[ "$check_rc" -eq 0 ]]; then
+                # Wait one extra beat for transitions to settle, then confirm the app is still alive and rendered.
+                sleep 1
+                if [[ -n "$app_pid" ]] && ! kill -0 "$app_pid" 2>/dev/null; then
+                  echo "::error::Finance process (pid=${app_pid}) exited after initial render for ${name}"
+                  dump_failure_logs "$name"
+                  return 1
+                fi
+                xcrun simctl io "$SIM_UDID" screenshot "$out"
+                set +e
+                last_stats=$(python3 "$RUNNER_TEMP/check_screenshot.py" "$out")
+                check_rc=$?
+                set -e
+                if [[ "$check_rc" -eq 0 ]]; then
+                  rendered=1
+                  break
+                fi
+              fi
+            done
+
+            xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" 2>/dev/null || true
+
+            if [[ "$rendered" -ne 1 ]]; then
+              echo "::error::Screenshot ${name} never rendered non-flat content within 30s (${last_stats})"
+              dump_failure_logs "$name"
+              return 1
+            fi
+
+            echo "Captured ${out} (${last_stats})"
+          }
+
+          for screen in now payments months more money-forward drive; do
+            capture "${screen}-light" "$screen" light large
+          done
+
+          for screen in now payments months more money-forward drive; do
+            capture "${screen}-dark" "$screen" dark large
+          done
+
+          capture "now-light-ax5" now light accessibility-extra-extra-extra-large
+          capture "payments-light-ax5" payments light accessibility-extra-extra-extra-large
+
+          ls -lh screenshots
+
+      - name: Collect crash and simulator logs on failure
+        if: failure() && env.SIM_UDID != ''
+        run: |
+          mkdir -p diagnostics/DiagnosticReports
+          xcrun simctl spawn "$SIM_UDID" log show --last 2m --predicate 'process == "Finance"' \
+            > diagnostics/simulator-finance-final.log 2>&1 || true
+          find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 2 -type f \( -name '*Finance*' -o -name '*.ips' -o -name '*.crash' \) \
+            -mmin -30 -exec cp {} diagnostics/DiagnosticReports/ \; 2>/dev/null || true
+          ls -la diagnostics diagnostics/DiagnosticReports || true
+
+      - name: Shut down simulator
+        if: always() && env.SIM_UDID != ''
+        run: xcrun simctl shutdown "$SIM_UDID" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: ios-screenshot-diagnostics
+          path: |
+            diagnostics/
+            screenshots/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-screenshots
+          path: screenshots/*.png
+          retention-days: 14
+          if-no-files-found: error

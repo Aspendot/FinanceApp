@@ -1,0 +1,38 @@
+[
+  {
+    "messageID": "demo-msg-001",
+    "source": "mufg_debit",
+    "kind": "purchase",
+    "receivedAt": "2026-04-14T08:42:00+09:00",
+    "occurredAt": "2026-04-14T08:41:00+09:00",
+    "amount": 680,
+    "currency": "JPY",
+    "merchant": "さくら珈琲店",
+    "reference": "DEMO-1001",
+    "parser": "mufg_debit/1"
+  },
+  {
+    "messageID": "demo-msg-002",
+    "source": "mufg_debit",
+    "kind": "purchase",
+    "receivedAt": "2026-04-14T18:15:00+09:00",
+    "occurredAt": "2026-04-14T18:14:00+09:00",
+    "amount": 3450,
+    "currency": "JPY",
+    "merchant": "あおばスーパー",
+    "reference": "DEMO-1002",
+    "parser": "mufg_debit/1"
+  },
+  {
+    "messageID": "demo-msg-003",
+    "source": "docomo_debit",
+    "kind": "purchase",
+    "receivedAt": "2026-04-13T12:20:00+09:00",
+    "occurredAt": "2026-04-13T12:19:00+09:00",
+    "amount": 1890,
+    "currency": "JPY",
+    "merchant": "みなと薬局",
+    "reference": "DEMO-1003",
+    "parser": "docomo_debit/1"
+  }
+]

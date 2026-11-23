@@ -385,6 +385,9 @@ public actor GmailClient {
 
         try Task.checkCancellation()
         refreshed.mailboxFingerprint = current.mailboxFingerprint
+        if refreshed.scope == nil {
+            refreshed.scope = current.scope
+        }
         do {
             try await tokenStore.save(refreshed)
         } catch {

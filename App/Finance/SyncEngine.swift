@@ -7,7 +7,7 @@ extension Notification.Name {
     static let backgroundGmailSyncUpdated = Notification.Name("backgroundGmailSyncUpdated")
 }
 
-/// Local notifications for newly seen pending payments.
+/// Local notifications for newly seen pending payments and confirmed bank deposits.
 enum PaymentNotifications {
     static let categoryIdentifier = "finance.payment"
     static let threadIdentifier = "payments"
@@ -35,6 +35,16 @@ enum PaymentNotifications {
         let content = UNMutableNotificationContent()
         let hasShop = !alert.merchant.isEmpty && alert.merchant != PendingBuilder.missingMerchantPlaceholder
         let amount = Money.payment(alert.amount)
+        if alert.isConfirmed == true {
+            if alert.isDiscreet || !hasShop {
+                content.title = "\(amount) · \(alert.sourceLabel)"
+                content.body = "Received"
+            } else {
+                content.title = "\(amount) · \(alert.merchant)"
+                content.body = alert.sourceLabel
+            }
+            return request(id: "bank-\(alert.messageID)", content: content)
+        }
         if alert.isDiscreet || !hasShop {
             content.title = "\(amount) · \(alert.sourceLabel)"
             content.body = "Pending"
@@ -76,7 +86,8 @@ enum PaymentNotifications {
     }
 }
 
-/// Serializes all Gmail syncs in the app process (foreground, BGAppRefresh and Shortcuts).
+/// Serializes all syncs in the app process (foreground, BGAppRefresh and Shortcuts):
+/// encrypted Google Drive bundle check, Gmail notices, and Money Forward bank transactions.
 actor SyncEngine {
     static let shared = SyncEngine()
 
@@ -84,6 +95,7 @@ actor SyncEngine {
     private static let batchSize = 8
     private static let noticeHistoryLimit = 300
     private static let maxDetailedAlerts = 300
+    private static let defaultMoneyForwardLookbackDays = 30
 
     private var inFlight = false
 
@@ -148,7 +160,8 @@ actor SyncEngine {
                         amount: item.amount,
                         merchant: isDiscreet ? "" : item.merchant,
                         sourceLabel: item.source,
-                        isDiscreet: isDiscreet
+                        isDiscreet: isDiscreet,
+                        isConfirmed: false
                     ))
                     addedPayments += 1
                 }
@@ -163,6 +176,28 @@ actor SyncEngine {
             newNoticesCount += freshNotices.count
             newPaymentsCount += addedPayments
             committedAnyBatch = true
+        }
+
+        /// Enqueues notifications for newly confirmed Money Forward money-in transactions (e.g. salary).
+        func enqueueConfirmedBankMoneyIn(_ alerts: [PendingPaymentAlert]) throws {
+            guard !alerts.isEmpty else { return }
+            var nextState = storeState
+            var queuedKeys = Set(nextState.alertQueue.map { "\($0.isConfirmed == true ? "b" : "p"):\($0.messageID)" })
+            var added = 0
+            for alert in alerts {
+                let key = "b:\(alert.messageID)"
+                guard queuedKeys.insert(key).inserted else { continue }
+                nextState.alertQueue.append(alert)
+                added += 1
+            }
+            guard added > 0 else { return }
+            let overflow = nextState.alertQueue.count - SyncEngine.maxDetailedAlerts
+            if overflow > 0 {
+                nextState.alertQueue.removeFirst(overflow)
+                nextState.overflowAlertCount = (nextState.overflowAlertCount ?? 0) + overflow
+            }
+            try save(nextState)
+            newPaymentsCount += added
         }
 
         func finalizeComplete(_ completedSyncState: SyncState) throws {
@@ -241,19 +276,29 @@ actor SyncEngine {
             guard !storeState.alertQueue.isEmpty,
                   let bytes = try BundleInbox.readStoredData() else { return }
             let latest = try DataBundle.decode(from: bytes)
-            let pending = PendingBuilder.build(
-                notices: storeState.notices,
+            let mfState = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+            let layered = BankLayering.build(
                 bundle: latest,
+                bankTransactions: mfState.transactions,
+                accountMapping: mfState.accountMapping,
+                notices: storeState.notices,
                 categorizer: Categorizer(rules: latest.rules),
                 config: latest.layerConfig
             )
-            let itemsByID = Dictionary(zip(pending.noticeIDs, pending.items), uniquingKeysWith: { first, _ in first })
+            let confirmedIDs = Set(layered.bankTransactionIDs)
+            let itemsByID = Dictionary(
+                zip(layered.pendingNoticeIDs, layered.pendingItems),
+                uniquingKeysWith: { first, _ in first }
+            )
             let discreet = Set((latest.discreetCategories ?? []).map {
                 $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             })
             var nextState = storeState
             let cachedIDs = Set(storeState.notices.map(\.messageID))
             nextState.alertQueue = storeState.alertQueue.compactMap { alert -> PendingPaymentAlert? in
+                if alert.isConfirmed == true {
+                    return confirmedIDs.contains(alert.messageID) ? alert : nil
+                }
                 // An evicted notice can no longer be re-evaluated.
                 guard cachedIDs.contains(alert.messageID) else { return alert }
                 guard let item = itemsByID[alert.messageID] else { return nil }
@@ -270,14 +315,14 @@ actor SyncEngine {
         }
     }
 
-    func withSignIn(_ operation: @MainActor @Sendable () async throws -> Void) async throws {
+    func withSignIn<T: Sendable>(_ operation: @MainActor @Sendable () async throws -> T) async throws -> T {
         guard !inFlight else { throw GmailSync.SyncProblem.busy }
         inFlight = true
         defer { inFlight = false }
-        try await operation()
+        return try await operation()
     }
 
-    /// Clears Keychain tokens, stored sync state and widget data during sign-out.
+    /// Clears Google Keychain tokens, stored Gmail sync state and widget data during sign-out.
     func clearForSignOut() async throws {
         guard !inFlight else { throw GmailSync.SyncProblem.busy }
         inFlight = true
@@ -286,15 +331,23 @@ actor SyncEngine {
         FinanceData.publishWidget(.placeholder, force: true)
         await PaymentNotifications.clear()
         try SyncStorage.clearState()
+        try DriveSyncStore.clearState()
     }
 
     func publishCurrentWidget() throws {
         let hasCredentials = try GmailSync.hasCredentials()
         let notices = hasCredentials ? try SyncStorage.loadState().notices : []
+        let mfState = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
         let now = Date()
         if let bytes = try BundleInbox.readStoredData() {
             let bundle = try DataBundle.decode(from: bytes)
-            let finance = FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+            let finance = FinanceData(
+                bundle: bundle,
+                notices: notices,
+                bankTransactions: mfState.transactions,
+                accountMapping: mfState.accountMapping,
+                today: JST.day(now)
+            )
             FinanceData.publishWidget(finance.widgetSnapshot)
         } else if hasCredentials {
             FinanceData.publishWidget(FinanceData.noticeOnlySnapshot(notices: notices, now: now))
@@ -314,6 +367,8 @@ actor SyncEngine {
             newNotices: Int = 0,
             newPayments: Int = 0,
             notifiedCount: Int = 0,
+            newBankTransactions: Int = 0,
+            driveImported: Bool = false,
             errorMessage: String? = nil
         ) -> SyncReport {
             let report = SyncReport(
@@ -324,10 +379,12 @@ actor SyncEngine {
                 newNotices: newNotices,
                 newPayments: newPayments,
                 notifiedCount: notifiedCount,
-                errorMessage: errorMessage
+                errorMessage: errorMessage,
+                newBankTransactions: newBankTransactions,
+                driveImported: driveImported
             )
             SyncStorage.appendRunRecord(report.record)
-            if trigger != .app, outcome == .updated || newNotices > 0 {
+            if trigger != .app, outcome != .busy && outcome != .notSignedIn && outcome != .skipped {
                 NotificationCenter.default.post(name: .backgroundGmailSyncUpdated, object: nil)
             }
             return report
@@ -339,25 +396,50 @@ actor SyncEngine {
 
         let deadline = timeLimit.map { start.advanced(by: .seconds($0)) }
         if Task.isCancelled { return record(outcome: .cancelled) }
-        guard let clientID = GmailSync.clientID else { return record(outcome: .notSignedIn) }
 
+        let clientID = GmailSync.clientID
         let tokenStore = KeychainTokenStore()
-        let tokens: OAuthTokens
+        let mfCredentialStore = KeychainMoneyForwardCredentialStore()
+
+        let google = Result { clientID != nil ? try tokenStore.load() : nil }
+        let moneyForward = Result { try mfCredentialStore.load() }
+        let drive = Result { try DriveSync.loadKey() }
+        let googleTokens = try? google.get()
+        let mfCredentials = try? moneyForward.get()
+        let driveKey = try? drive.get()
         var storeState: SyncStoreState
         do {
-            guard let stored = try tokenStore.load() else { return record(outcome: .notSignedIn) }
-            tokens = stored
             storeState = try SyncStorage.loadState()
         } catch {
             return record(outcome: .failed, errorMessage: Self.diagnostic(for: error))
         }
 
-        let lastAttempt = trigger == .shortcut ? storeState.lastShortcutAttempt : nil
-        let lastCheck = [storeState.syncState.lastSyncAt, lastAttempt]
-            .compactMap { $0 }.filter { $0 <= startedAt }.max()
-        if minimumInterval > 0, let lastCheck,
-           (0..<minimumInterval).contains(startedAt.timeIntervalSince(lastCheck))
-        {
+        let hasGmail = clientID != nil && googleTokens != nil
+        let hasMoneyForward = mfCredentials != nil
+        let hasDrive = hasGmail && driveKey != nil
+            && (googleTokens?.scope == nil || googleTokens?.hasScope(GoogleOAuth.driveAppDataScope) == true)
+        let shouldSyncMoneyForward = hasMoneyForward && !MoneyForwardClient.isInNightlyMaintenance(at: startedAt)
+
+        var credentialErrors: [String] = []
+        if case .failure = google { credentialErrors.append("Could not load Google credentials.") }
+        if case .failure = moneyForward { credentialErrors.append("Could not load Money Forward credentials.") }
+        if case .failure = drive { credentialErrors.append("Could not load the Drive pairing key.") }
+        guard hasGmail || hasMoneyForward else {
+            if let error = credentialErrors.first { return record(outcome: .failed, errorMessage: error) }
+            return record(outcome: .notSignedIn)
+        }
+
+        let mfStateSnapshot = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+        let driveStateSnapshot = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
+        var lastChecks: [Date?] = []
+        if hasGmail { lastChecks.append(storeState.syncState.lastSyncAt) }
+        if hasDrive { lastChecks.append(driveStateSnapshot.lastCheckedAt) }
+        if shouldSyncMoneyForward { lastChecks.append(mfStateSnapshot.lastSyncAt) }
+        let lastShortcut = trigger == .shortcut ? storeState.lastShortcutAttempt : nil
+        func isRecent(_ date: Date?) -> Bool {
+            date.map { (0..<minimumInterval).contains(startedAt.timeIntervalSince($0)) } ?? false
+        }
+        if minimumInterval > 0, isRecent(lastShortcut) || lastChecks.allSatisfy(isRecent) {
             let committer = BatchCommitter(storeState: storeState, bundle: nil)
             var alertError: String?
             do {
@@ -369,18 +451,14 @@ actor SyncEngine {
             return record(outcome: outcome, notifiedCount: await committer.postedAlertCount, errorMessage: alertError)
         }
 
-        let bundle: DataBundle?
-        do {
-            bundle = try BundleInbox.readStoredData().map { try DataBundle.decode(from: $0) }
-            if trigger == .shortcut {
-                // Throttle attempts, including timeouts and transient Gmail failures.
+        if trigger == .shortcut {
+            do {
                 storeState.lastShortcutAttempt = startedAt
                 try SyncStorage.saveState(storeState)
+            } catch {
+                return record(outcome: .failed, errorMessage: Self.diagnostic(for: error))
             }
-        } catch {
-            return record(outcome: .failed, errorMessage: Self.diagnostic(for: error))
         }
-        let committer = BatchCommitter(storeState: storeState, bundle: bundle)
 
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = min(15, timeLimit ?? 15)
@@ -392,67 +470,138 @@ actor SyncEngine {
         let retryPolicy: RetryPolicy = timeLimit != nil
             ? RetryPolicy(maxRetries: 1, initialDelay: .seconds(1), maxDelay: .seconds(2))
             : RetryPolicy(maxRetries: 2, initialDelay: .seconds(1), maxDelay: .seconds(4))
-        let client = GmailClient(
-            clientID: clientID,
-            tokenStore: tokenStore,
-            transport: transport,
-            retryPolicy: retryPolicy
-        )
 
-        // Leave a small margin before hard cancellation so the final batch, snapshot
-        // and notifications can finish cleanly.
-        let softDeadline = timeLimit.map { limit in
-            startedAt.addingTimeInterval(max(1, limit - 3))
+        var remainingStages = [hasDrive, hasGmail, shouldSyncMoneyForward].filter { $0 }.count
+        func nextStageDeadline() -> ContinuousClock.Instant? {
+            defer { remainingStages -= 1 }
+            guard let deadline else { return nil }
+            let workEnd = deadline.advanced(by: .seconds(-2))
+            let now = ContinuousClock.now
+            return now.advanced(by: max(.zero, now.duration(to: workEnd)) / remainingStages)
         }
 
-        let initialSyncState = storeState.syncState
-        var syncResult: SyncResult?
-        var syncError: Error?
+        var driveImported = false
         var hitHardTimeout = false
+        var nonFatalErrors = credentialErrors
 
-        do {
-            let outcome = try await Self.runWithDeadline(deadline) {
-                if tokens.mailboxFingerprint == nil {
-                    let fingerprint = try await GmailSync.mailboxFingerprint(client: client)
-                    try Task.checkCancellation()
-                    if var latest = try tokenStore.load() {
-                        latest.mailboxFingerprint = fingerprint
-                        try tokenStore.save(latest)
-                    }
+        // 1. Encrypted Google Drive bundle sync (runs first so Gmail & Money Forward see fresh coverage/rules).
+        if hasDrive, let clientID, let driveKey, !Task.isCancelled, !Self.isPast(deadline) {
+            let stageDeadline = nextStageDeadline()
+            let driveClient = GoogleDriveClient(
+                clientID: clientID,
+                tokenStore: tokenStore,
+                transport: transport,
+                retryPolicy: retryPolicy
+            )
+            do {
+                let outcome = try await Self.runWithDeadline(stageDeadline) {
+                    try await DriveSync.checkAndImport(client: driveClient, key: driveKey, now: Date())
                 }
-                return try await NoticeSync.sync(
-                    client: client,
-                    state: initialSyncState,
-                    lookbackDays: Self.lookbackDays,
-                    batchSize: Self.batchSize,
-                    deadline: softDeadline,
-                    onBatch: { batch in
-                        try await committer.commit(batch)
+                if let outcome {
+                    if case .imported = outcome {
+                        driveImported = true
                     }
-                )
+                } else {
+                    hitHardTimeout = true
+                }
+            } catch is CancellationError {
+                // Handled below.
+            } catch {
+                nonFatalErrors.append("Drive: \(DriveSync.diagnostic(for: error))")
             }
-            if let completed = outcome {
-                syncResult = completed
-            } else {
-                hitHardTimeout = true
-            }
-        } catch {
-            syncError = error
         }
 
-        if let syncResult, !syncResult.reachedDeadline, !Task.isCancelled {
+        // Load latest bundle (including any update just imported from Google Drive).
+        let bundle: DataBundle?
+        do {
+            bundle = try BundleInbox.readStoredData().map { try DataBundle.decode(from: $0) }
+        } catch {
+            return record(outcome: .failed, driveImported: driveImported, errorMessage: Self.diagnostic(for: error))
+        }
+        let committer = BatchCommitter(storeState: storeState, bundle: bundle)
+
+        // 2. Gmail notice sync.
+        var syncResult: SyncResult?
+        var gmailError: Error?
+
+        if hasGmail, let clientID, let tokens = googleTokens, !Task.isCancelled, !Self.isPast(deadline) {
+            let stageDeadline = nextStageDeadline()
+            let softDeadline = Self.wallDeadline(stageDeadline, margin: 0.5)
+            let gmailClient = GmailClient(
+                clientID: clientID,
+                tokenStore: tokenStore,
+                transport: transport,
+                retryPolicy: retryPolicy
+            )
+            let initialSyncState = storeState.syncState
             do {
-                try await committer.finalizeComplete(syncResult.state)
+                let outcome = try await Self.runWithDeadline(stageDeadline) {
+                    if tokens.mailboxFingerprint == nil {
+                        let fingerprint = try await GmailSync.mailboxFingerprint(client: gmailClient)
+                        try Task.checkCancellation()
+                        if var latest = try tokenStore.load() {
+                            latest.mailboxFingerprint = fingerprint
+                            try tokenStore.save(latest)
+                        }
+                    }
+                    return try await NoticeSync.sync(
+                        client: gmailClient,
+                        state: initialSyncState,
+                        lookbackDays: Self.lookbackDays,
+                        batchSize: Self.batchSize,
+                        deadline: softDeadline,
+                        onBatch: { batch in
+                            try await committer.commit(batch)
+                        }
+                    )
+                }
+                if let completed = outcome {
+                    syncResult = completed
+                } else {
+                    hitHardTimeout = true
+                }
             } catch {
-                syncError = error
+                gmailError = error
             }
+
+            if let syncResult, !syncResult.reachedDeadline, !Task.isCancelled {
+                do {
+                    try await committer.finalizeComplete(syncResult.state)
+                } catch {
+                    gmailError = error
+                }
+            }
+        }
+
+        // 3. Money Forward bank transaction sync (always after Gmail, within the same deadline).
+        var newBankTransactions = 0
+        var mfTimedOut = false
+        var mfStateChanged = false
+        var mfError: Error?
+
+        if shouldSyncMoneyForward, !Task.isCancelled, !Self.isPast(deadline) {
+            let stageDeadline = nextStageDeadline()
+            let outcome = await runMoneyForwardSync(
+                credentialStore: mfCredentialStore,
+                transport: transport,
+                retryPolicy: retryPolicy,
+                bundle: bundle,
+                committer: committer,
+                startedAt: startedAt,
+                deadline: stageDeadline,
+                softDeadline: Self.wallDeadline(stageDeadline, margin: 0.5)
+            )
+            newBankTransactions = outcome.newTransactions
+            mfTimedOut = outcome.timedOut
+            mfStateChanged = outcome.stateChanged
+            mfError = outcome.error
         }
 
         let committedNotices = await committer.newNoticesCount
         let committedPayments = await committer.newPaymentsCount
         let committedAny = await committer.committedAnyBatch
         var postProcessingError: String?
-        if !Task.isCancelled, (syncResult != nil || committedAny) {
+        if syncResult != nil || committedAny || mfStateChanged || driveImported {
             do {
                 try publishCurrentWidget()
             } catch {
@@ -466,21 +615,26 @@ actor SyncEngine {
         }
         let notifiedCount = await committer.postedAlertCount
 
-        if Task.isCancelled || syncError is CancellationError {
+        if Task.isCancelled || gmailError is CancellationError || mfError is CancellationError {
             return record(
                 outcome: .cancelled,
                 newNotices: committedNotices,
                 newPayments: committedPayments,
-                notifiedCount: notifiedCount
+                notifiedCount: notifiedCount,
+                newBankTransactions: newBankTransactions,
+                driveImported: driveImported
             )
         }
-        if let error = syncError {
+
+        if let error = gmailError {
             if let clientError = error as? GmailClientError, clientError.requiresSignInAgain {
                 return record(
                     outcome: .signInRequired,
                     newNotices: committedNotices,
                     newPayments: committedPayments,
                     notifiedCount: notifiedCount,
+                    newBankTransactions: newBankTransactions,
+                    driveImported: driveImported,
                     errorMessage: "Sign in to Gmail again"
                 )
             }
@@ -489,34 +643,257 @@ actor SyncEngine {
                 newNotices: committedNotices,
                 newPayments: committedPayments,
                 notifiedCount: notifiedCount,
+                newBankTransactions: newBankTransactions,
+                driveImported: driveImported,
                 errorMessage: Self.diagnostic(for: error)
             )
         }
 
-        if hitHardTimeout || syncResult?.reachedDeadline == true || deadline.map({ ContinuousClock.now >= $0 }) == true {
-            let message = postProcessingError ?? "Time limit reached; progress saved"
+        if let error = mfError {
+            let mfMessage = Self.moneyForwardDiagnostic(for: error)
+            if !hasGmail {
+                return record(
+                    outcome: .failed,
+                    newNotices: committedNotices,
+                    newPayments: committedPayments,
+                    notifiedCount: notifiedCount,
+                    newBankTransactions: newBankTransactions,
+                    driveImported: driveImported,
+                    errorMessage: mfMessage
+                )
+            }
+            nonFatalErrors.append(mfMessage)
+        }
+
+        if hitHardTimeout || syncResult?.reachedDeadline == true || mfTimedOut || Self.isPast(deadline) {
+            let message = postProcessingError ?? nonFatalErrors.first ?? "Time limit reached; progress saved"
             return record(
                 outcome: .timedOut,
                 newNotices: committedNotices,
                 newPayments: committedPayments,
                 notifiedCount: notifiedCount,
+                newBankTransactions: newBankTransactions,
+                driveImported: driveImported,
                 errorMessage: message
             )
         }
 
+        let summaryError = ([postProcessingError].compactMap { $0 } + nonFatalErrors).first
         return record(
             outcome: .updated,
             newNotices: committedNotices,
             newPayments: committedPayments,
             notifiedCount: notifiedCount,
-            errorMessage: postProcessingError
+            newBankTransactions: newBankTransactions,
+            driveImported: driveImported,
+            errorMessage: summaryError
         )
+    }
+
+    private struct MoneyForwardRunOutcome: Sendable {
+        var newTransactions: Int = 0
+        var timedOut: Bool = false
+        var stateChanged: Bool = false
+        var error: (any Error)? = nil
+    }
+
+    private actor BankPages {
+        private(set) var transactions: [BankTransaction] = []
+
+        func append(_ rows: [BankTransaction]) {
+            transactions.append(contentsOf: rows)
+        }
+    }
+
+    private func runMoneyForwardSync(
+        credentialStore: KeychainMoneyForwardCredentialStore,
+        transport: any HTTPTransport,
+        retryPolicy: RetryPolicy,
+        bundle: DataBundle?,
+        committer: BatchCommitter,
+        startedAt: Date,
+        deadline: ContinuousClock.Instant?,
+        softDeadline: Date?
+    ) async -> MoneyForwardRunOutcome {
+        var mfState: MoneyForwardState
+        do {
+            mfState = try MoneyForwardStore.loadState()
+            if let creds = try credentialStore.load(), creds.mode == .apiKey,
+               creds.apiKey?.officeCode != mfState.officeCode {
+                // Recover from interruption between the credential and office-state writes.
+                let selectedCode = creds.apiKey?.officeCode
+                let offices = mfState.availableOffices
+                mfState = MoneyForwardState(officeCode: selectedCode,
+                                             officeName: offices.first { $0.code == selectedCode }?.name,
+                                             availableOffices: offices)
+                try MoneyForwardStore.saveState(mfState)
+            }
+        } catch {
+            return MoneyForwardRunOutcome(error: error)
+        }
+        let today = JST.day(startedAt)
+        let startDate = Self.moneyForwardStartDate(bundle: bundle, mapping: mfState.accountMapping, today: today)
+        let client = MoneyForwardClient(
+            credentialStore: credentialStore,
+            transport: transport,
+            retryPolicy: retryPolicy
+        )
+
+        let pages = BankPages()
+        var completed = false
+        var timedOut = false
+        var failure: (any Error)?
+        do {
+            let result = try await Self.runWithDeadline(deadline) {
+                try await client.fetchAllTransactions(
+                    startDate: startDate,
+                    endDate: today,
+                    perPage: 500,
+                    order: "desc",
+                    deadline: softDeadline,
+                    onPage: { await pages.append($0) }
+                )
+            }
+            completed = result?.reachedDeadline == false
+            timedOut = !completed
+        } catch MoneyForwardClientError.nightlyMaintenance {
+            // The window opened after this run started. Preserve completed pages.
+        } catch MoneyForwardClientError.maintenanceOrServerError(statusCode: 503)
+            where Self.isNearNightlyMaintenance(at: Date()) {
+            // Money Forward can return 503 just before the scheduled window.
+        } catch {
+            failure = error
+        }
+
+        let fetched = await pages.transactions
+        if let error = failure as? MoneyForwardClientError {
+            if error.requiresReconnect { mfState.reconnectRequired = true }
+            if case .forbidden = error { mfState.accessRefusedMessage = error.localizedDescription }
+            mfState.lastErrorMessage = Self.moneyForwardDiagnostic(for: error)
+        } else if let failure, !(failure is CancellationError) {
+            mfState.lastErrorMessage = Self.moneyForwardDiagnostic(for: failure)
+        } else if completed {
+            mfState.reconnectRequired = false
+            mfState.accessRefusedMessage = nil
+            mfState.lastErrorMessage = nil
+        }
+
+        let previouslySeen = mfState.seenTransactionIDs
+        let existing = completed
+            ? mfState.transactions.filter { $0.date < startDate || $0.date > today }
+            : mfState.transactions
+        let notices = await committer.storeState.notices
+        let merged = MoneyForwardStore.merge(
+            existing: existing, fetched: fetched, bundle: bundle,
+            mapping: mfState.accountMapping, notices: notices, today: today
+        )
+        let changed = merged != mfState.transactions
+        let newlySeenIDs = Set(fetched.map(\.id)).subtracting(previouslySeen)
+
+        let wasInitialized = mfState.hasCompletedInitialSync
+        mfState.transactions = merged
+        // Keep IDs of rows removed from the feed so a later reappearance stays silent.
+        mfState.seenTransactionIDs.formUnion(fetched.map(\.id))
+        if completed {
+            mfState.lastSyncAt = Date()
+            mfState.hasCompletedInitialSync = true
+        }
+
+        // Silent first sync; afterwards notify on newly confirmed money-in bank items (e.g. salary).
+        if wasInitialized, let bundle, !newlySeenIDs.isEmpty {
+            let layered = BankLayering.build(
+                bundle: bundle,
+                bankTransactions: merged,
+                accountMapping: mfState.accountMapping,
+                notices: notices,
+                categorizer: Categorizer(rules: bundle.rules),
+                config: bundle.layerConfig
+            )
+            let discreet = Set((bundle.discreetCategories ?? []).map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            })
+            var moneyInAlerts: [PendingPaymentAlert] = []
+            for (item, txID) in zip(layered.bankItems, layered.bankTransactionIDs)
+            where newlySeenIDs.contains(txID) && item.amount < 0 {
+                let isDiscreet = discreet.contains(
+                    item.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                )
+                moneyInAlerts.append(PendingPaymentAlert(
+                    messageID: txID,
+                    amount: item.amount,
+                    merchant: isDiscreet ? "" : item.merchant,
+                    sourceLabel: item.source,
+                    isDiscreet: isDiscreet,
+                    isConfirmed: true
+                ))
+            }
+            do {
+                try await committer.enqueueConfirmedBankMoneyIn(moneyInAlerts)
+            } catch {
+                return MoneyForwardRunOutcome(error: error)
+            }
+        }
+
+        do {
+            try MoneyForwardStore.saveState(mfState)
+        } catch {
+            return MoneyForwardRunOutcome(error: error)
+        }
+        return MoneyForwardRunOutcome(
+            newTransactions: newlySeenIDs.count,
+            timedOut: timedOut,
+            stateChanged: changed,
+            error: failure
+        )
+    }
+
+    private static func moneyForwardStartDate(
+        bundle: DataBundle?,
+        mapping: [String: String],
+        today: String
+    ) -> String {
+        let mappedSources = Set(mapping.values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+        let coverageStarts: [String]
+        if let bundle {
+            let candidateSources = mappedSources.isEmpty ? Set(bundle.coverage.keys) : mappedSources
+            coverageStarts = candidateSources.compactMap { source in
+                JST.addingDays(-7, to: bundle.coverage[source]?.end ?? bundle.asOf)
+            }
+        } else {
+            coverageStarts = []
+        }
+
+        if let earliest = coverageStarts.min() { return min(earliest, today) }
+        if let bundle { return min(bundle.asOf, today) }
+        return JST.addingDays(-defaultMoneyForwardLookbackDays, to: today) ?? today
+    }
+
+    private static func isNearNightlyMaintenance(at date: Date) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = JST.timeZone
+        let comps = calendar.dateComponents([.hour, .minute], from: date)
+        let minutes = (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+        // 00:55–06:05 JST
+        return (55...365).contains(minutes)
+    }
+
+    private static func wallDeadline(_ deadline: ContinuousClock.Instant?, margin: TimeInterval) -> Date? {
+        guard let deadline else { return nil }
+        let remaining = ContinuousClock.now.duration(to: deadline).components
+        return Date().addingTimeInterval(
+            Double(remaining.seconds) + Double(remaining.attoseconds) / 1e18 - margin
+        )
+    }
+
+    private static func isPast(_ deadline: ContinuousClock.Instant?) -> Bool {
+        guard let deadline else { return false }
+        return ContinuousClock.now >= deadline
     }
 
     // The run log stays local and never persists raw server text or request URLs.
     private static func diagnostic(for error: any Error) -> String {
         guard let error = error as? GmailClientError else {
-            return "Could not read or save Gmail sync data."
+            return "Could not read or save sync data."
         }
         switch error {
         case .httpError(let status, _): return "Gmail request failed (HTTP \(status))."
@@ -526,12 +903,34 @@ actor SyncEngine {
         }
     }
 
+    private static func moneyForwardDiagnostic(for error: any Error) -> String {
+        guard let mfError = error as? MoneyForwardClientError else {
+            return "Money Forward sync failed."
+        }
+        switch mfError {
+        case .invalidCredentials, .unauthorized:
+            return "Reconnect Money Forward"
+        case .forbidden:
+            return "Money Forward refused access (plan or permission, HTTP 403)"
+        case .maintenanceOrServerError(let status):
+            return "Money Forward unavailable (HTTP \(status))."
+        case .rateLimited(let status, _):
+            return "Money Forward rate limit reached (HTTP \(status))."
+        case .httpError(let status):
+            return "Money Forward request failed (HTTP \(status))."
+        case .networkError:
+            return "Could not reach Money Forward."
+        default:
+            return mfError.localizedDescription
+        }
+    }
+
     private static func runWithDeadline<T: Sendable>(
         _ deadline: ContinuousClock.Instant?,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
         guard let deadline else { return try await operation() }
-        let first = await withTaskGroup(of: RaceOutcome<T>.self) { group in
+        let first = await withTaskGroup(of: RaceOutcome<T>.self, returning: RaceOutcome<T>?.self) { group in
             group.addTask {
                 do {
                     return .finished(.success(try await operation()))
@@ -548,15 +947,20 @@ actor SyncEngine {
                 }
             }
 
-            let first = await group.next()
+            let first: RaceOutcome<T>? = await group.next()
             group.cancelAll()
-            // The task group joins the cancelled child before returning. No
-            // subsequent run can race a late batch commit or token refresh.
+            // Join the cancelled child before returning, so no later run can race a
+            // late batch commit or token refresh.
+            let second: RaceOutcome<T>? = await group.next()
+            if case .some(.timedOut) = first, case .some(.finished(.success(let value))) = second {
+                return RaceOutcome<T>.finished(.success(value))
+            }
             return first
         }
-        try Task.checkCancellation()
         switch first {
-        case .timedOut: return nil
+        case .timedOut:
+            try Task.checkCancellation()
+            return nil
         case .finished(let result): return try result.get()
         case nil: throw CancellationError()
         }

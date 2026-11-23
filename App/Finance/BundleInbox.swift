@@ -1,12 +1,29 @@
 import FinanceCore
 import Foundation
 
-/// Imports a complete bundle from the Documents folder used by Apple Devices and Files.
+/// Imports a complete bundle from Google Drive sync or the fallback Documents folder.
 enum BundleInbox {
+    private static let importLock = NSLock()
     enum Outcome: Equatable {
         case nothingNew
         case imported(generatedAt: String, items: Int, cleanupFailed: Bool)
         case rejected(String)
+    }
+
+    enum StoreOutcome: Equatable, Sendable {
+        case imported(generatedAt: String, items: Int)
+        case notNewer
+    }
+
+    enum StoreError: LocalizedError, Sendable {
+        case invalidTimestamp
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidTimestamp:
+                return "The bundle has an invalid generatedAt timestamp."
+            }
+        }
     }
 
     private struct FileStamp: Equatable {
@@ -68,17 +85,11 @@ enum BundleInbox {
 
         let isNew: Bool
         do {
-            let current = try readStoredData()
-            let storedDate = current.flatMap { try? DataBundle.decode(from: $0) }.flatMap { timestamp($0.generatedAt) }
-            isNew = storedDate.map { newest.date > $0 } ?? true
-            if isNew {
-                var folder = storage
-                try fm.createDirectory(at: folder, withIntermediateDirectories: true)
-                var values = URLResourceValues()
-                values.isExcludedFromBackup = true
-                try folder.setResourceValues(values)
-                try newest.bytes.write(to: storedURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
-                try? fm.removeItem(at: legacyURL)
+            switch try storeIfNewer(newest.bytes) {
+            case .imported:
+                isNew = true
+            case .notNewer:
+                isNew = false
             }
         } catch {
             return .rejected("Could not store the data file.")
@@ -99,6 +110,31 @@ enum BundleInbox {
         return .rejected(cleanupFailed
             ? "The file is already imported or older, and a copy remains in Finance’s Documents folder."
             : "The data file is already imported or older than the stored data.")
+    }
+
+    /// Validates raw JSON bytes as a `DataBundle` and stores them atomically if
+    /// `generatedAt` is strictly newer than the currently stored bundle.
+    static func storeIfNewer(_ bytes: Data) throws -> StoreOutcome {
+        let bundle = try DataBundle.decode(from: bytes)
+        guard let candidateDate = timestamp(bundle.generatedAt) else {
+            throw StoreError.invalidTimestamp
+        }
+        importLock.lock()
+        defer { importLock.unlock() }
+        let current = try readStoredData()
+        let storedDate = current.flatMap { try? DataBundle.decode(from: $0) }.flatMap { timestamp($0.generatedAt) }
+        let isNew = storedDate.map { candidateDate > $0 } ?? true
+        guard isNew else { return .notNewer }
+
+        let fm = FileManager.default
+        var folder = storage
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try folder.setResourceValues(values)
+        try bytes.write(to: storedURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        try? fm.removeItem(at: legacyURL)
+        return .imported(generatedAt: bundle.generatedAt, items: bundle.items.count)
     }
 
     static func readStoredData() throws -> Data? {

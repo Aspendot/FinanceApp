@@ -78,13 +78,23 @@ public enum PendingBuilder {
         build(notices: notices, bundle: bundle, categorizer: categorizer, config: config).items
     }
 
-    /// Turns live notices into pending `BudgetItem`s and collects pre-coverage notices in `unmatched`.
-    public static func build(
+    /// One post-bundle candidate notice after cancellations, settlements, Apple deduplication,
+    /// and bundle coverage filtering.
+    struct CandidateNotice: Sendable {
+        let notice: Notice
+        let sourceID: String
+        let sourceLabel: String
+        let day: String
+        let amount: Int
+    }
+
+    /// Returns candidate notices after bundle-level filtering, plus pre-bundle unmatched notices.
+    static func postBundleCandidates(
         notices: [Notice],
         bundle: DataBundle,
-        categorizer: Categorizer,
-        config: LayerConfig
-    ) -> PendingResult {
+        applyCancellations: Bool = true,
+        confirmedPurchaseIDs: Set<String> = []
+    ) -> (candidates: [CandidateNotice], unmatched: [Notice]) {
         let sorted = notices.sorted { $0.messageID < $1.messageID }
 
         // Keep only purchase, refund, settlement and cancellation notices with a yen amount.
@@ -93,20 +103,25 @@ public enum PendingBuilder {
         // Pair cancellations with purchases of the same source and reference.
         var purchasesBySourceRef: [String: [String]] = [:]
         var allPurchaseSourceRefs: Set<String> = []
+        var coveredPurchaseIDs = confirmedPurchaseIDs
         for notice in eligible where notice.kind == .purchase {
             if let r = nonEmpty(notice.reference) {
                 let key = "\(notice.source.rawValue)|\(r)"
                 purchasesBySourceRef[key, default: []].append(notice.messageID)
                 allPurchaseSourceRefs.insert(key)
+                if let coverage = bundle.coverage[notice.source.rawValue], notice.day < coverage.end {
+                    coveredPurchaseIDs.insert(notice.messageID)
+                }
             }
         }
 
         var calledOff: Set<String> = []
-        for notice in eligible where notice.kind == .cancellation {
+        for notice in eligible where applyCancellations && notice.kind == .cancellation {
             let refs = [notice.reference, notice.relatedReference].compactMap(nonEmpty)
             for r in refs {
                 let key = "\(notice.source.rawValue)|\(r)"
                 if let purchaseID = purchasesBySourceRef[key]?.first(where: { !calledOff.contains($0) }) {
+                    if coveredPurchaseIDs.contains(purchaseID) { break }
                     calledOff.insert(purchaseID)
                     calledOff.insert(notice.messageID)
                     break
@@ -181,8 +196,7 @@ public enum PendingBuilder {
                 < ($1.notice.day, $1.notice.receivedAt, $1.notice.messageID)
         }
 
-        var pendingItems: [BudgetItem] = []
-        var noticeIDs: [String] = []
+        var candidates: [CandidateNotice] = []
         var unmatched: [Notice] = []
 
         for (notice, amount) in ordered {
@@ -208,23 +222,50 @@ public enum PendingBuilder {
                 }
             }
 
-            let merchant = nonEmpty(notice.merchant) ?? missingMerchantPlaceholder
-            let (group, category) = categorizer.categorize(merchant: merchant, amount: amount, date: day)
-            let layer = config.layer(group: group, category: category, layers: bundle.layers)
-
-            pendingItems.append(BudgetItem(
-                date: day,
-                source: sourceLabel,
-                merchant: merchant,
-                amount: amount,
-                group: group,
-                category: category,
-                layer: layer,
-                isPending: true
+            candidates.append(CandidateNotice(
+                notice: notice,
+                sourceID: sourceID,
+                sourceLabel: sourceLabel,
+                day: day,
+                amount: amount
             ))
-            noticeIDs.append(notice.messageID)
         }
 
+        return (candidates, unmatched)
+    }
+
+    static func makePendingItem(
+        from candidate: CandidateNotice,
+        bundle: DataBundle,
+        categorizer: Categorizer,
+        config: LayerConfig
+    ) -> BudgetItem {
+        let merchant = nonEmpty(candidate.notice.merchant) ?? missingMerchantPlaceholder
+        let (group, category) = categorizer.categorize(merchant: merchant, amount: candidate.amount, date: candidate.day)
+        let layer = config.layer(group: group, category: category, layers: bundle.layers)
+
+        return BudgetItem(
+            date: candidate.day,
+            source: candidate.sourceLabel,
+            merchant: merchant,
+            amount: candidate.amount,
+            group: group,
+            category: category,
+            layer: layer,
+            isPending: true
+        )
+    }
+
+    /// Turns live notices into pending `BudgetItem`s and collects pre-coverage notices in `unmatched`.
+    public static func build(
+        notices: [Notice],
+        bundle: DataBundle,
+        categorizer: Categorizer,
+        config: LayerConfig
+    ) -> PendingResult {
+        let (candidates, unmatched) = postBundleCandidates(notices: notices, bundle: bundle)
+        let pendingItems = candidates.map { makePendingItem(from: $0, bundle: bundle, categorizer: categorizer, config: config) }
+        let noticeIDs = candidates.map(\.notice.messageID)
         return PendingResult(items: pendingItems, noticeIDs: noticeIDs, unmatched: unmatched)
     }
 

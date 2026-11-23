@@ -20,6 +20,7 @@ struct SpikeView: View {
     var body: some View {
         Group {
             List {
+                ConnectionsSection()
                 Section("Data file") {
                     Text(model.importMessage ?? (model.data == nil ? "No data file yet" : "A data file is stored"))
                         .font(.footnote).foregroundStyle(.secondary)

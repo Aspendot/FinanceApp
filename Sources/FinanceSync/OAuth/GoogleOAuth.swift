@@ -170,6 +170,12 @@ public struct OAuthTokens: Codable, Equatable, Sendable, CustomStringConvertible
         now.addingTimeInterval(leeway) >= expiresAt
     }
 
+    /// Returns `true` if `scope` lists `requiredScope` as a space-delimited token.
+    public func hasScope(_ requiredScope: String) -> Bool {
+        guard let scope else { return false }
+        return scope.split(whereSeparator: \.isWhitespace).contains { String($0) == requiredScope }
+    }
+
     public var description: String {
         "OAuthTokens(tokenType: \(tokenType), expiresAt: \(expiresAt.timeIntervalSince1970), hasRefreshToken: \(refreshToken != nil), accessToken: <redacted>)"
     }
@@ -187,6 +193,8 @@ public enum GoogleOAuth {
     public static let tokenEndpoint = URL(string: "https://oauth2.googleapis.com/token")!
     /// Read-only Gmail scope.
     public static let gmailReadOnlyScope = "https://www.googleapis.com/auth/gmail.readonly"
+    /// Hidden per-app Google Drive `appDataFolder` scope.
+    public static let driveAppDataScope = "https://www.googleapis.com/auth/drive.appdata"
 
     private static let clientIDSuffix = ".apps.googleusercontent.com"
     private static let reversedClientIDPrefix = "com.googleusercontent.apps."
@@ -223,12 +231,14 @@ public enum GoogleOAuth {
 
     /// Builds the Google OAuth authorization URL for an iOS client using PKCE (S256).
     ///
-    /// Omits `access_type`, which is not needed for iOS clients.
+    /// Omits `access_type`, which is not needed for iOS clients. Pass
+    /// `includeGrantedScopes: true` for incremental authorization (e.g. adding Drive `appDataFolder`).
     public static func authorizationURL(
         clientID: String,
         pkce: PKCE,
         state: String,
-        scopes: [String] = [gmailReadOnlyScope]
+        scopes: [String] = [gmailReadOnlyScope],
+        includeGrantedScopes: Bool = false
     ) throws -> URL {
         guard !state.isEmpty else {
             throw OAuthError.invalidState
@@ -242,7 +252,7 @@ public enum GoogleOAuth {
         guard var components = URLComponents(url: authorizationEndpoint, resolvingAgainstBaseURL: false) else {
             throw OAuthError.invalidClientID("could not construct authorization URL.")
         }
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "client_id", value: clientID),
             URLQueryItem(name: "redirect_uri", value: redirect),
             URLQueryItem(name: "response_type", value: "code"),
@@ -251,6 +261,11 @@ public enum GoogleOAuth {
             URLQueryItem(name: "code_challenge_method", value: PKCE.challengeMethod),
             URLQueryItem(name: "state", value: state),
         ]
+        if includeGrantedScopes {
+            queryItems.append(URLQueryItem(name: "include_granted_scopes", value: "true"))
+            queryItems.append(URLQueryItem(name: "prompt", value: "consent"))
+        }
+        components.queryItems = queryItems
         guard let url = components.url else {
             throw OAuthError.invalidClientID("could not construct authorization URL.")
         }

@@ -3,76 +3,90 @@ import SwiftUI
 
 struct MoreView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSession
     @AppStorage("faceIDLock") private var faceIDLock = true
 
-    private var lastCheckedRun: SyncRunRecord? {
-        model.runLog.first { $0.outcome == .updated }
+    private var activeData: FinanceData? {
+        session.resolvedData(from: model)
     }
 
-    private var checksTodayCount: Int {
-        let today = JST.day(Date())
-        return model.runLog.filter { JST.day($0.startedAt) == today }.count
+    private var dataSummaryLine: String? {
+        guard let data = activeData else { return nil }
+        var parts = [
+            "Statements through \(DayText.long(data.bundle.asOf))",
+            "\(data.bundle.items.count.formatted()) payments"
+        ]
+        if data.pendingCount > 0 {
+            parts.append("\(data.pendingCount) pending")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?"
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $session.morePath) {
             List {
-                Section("Data file") {
-                    if let data = model.data {
-                        LabeledContent("Statements through", value: DayText.long(data.bundle.asOf))
-                        LabeledContent("File made", value: String(data.bundle.generatedAt.prefix(16)).replacingOccurrences(of: "T", with: " "))
-                        LabeledContent("Payments from statements", value: data.bundle.items.count.formatted())
-                        LabeledContent("Pending from bank emails", value: data.pendingCount.formatted())
-                    } else {
-                        Text("No data file yet").foregroundStyle(.secondary)
-                    }
-                    if let message = model.importMessage {
-                        Text(message).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Button(model.checkingInbox ? "Checking for a data file…" : "Check for a new data file") {
-                        Task { await model.checkInbox() }
-                    }
-                    .disabled(model.checkingInbox)
-                    Text("To update it: on your PC, open Apple Devices → your iPhone → Files → Finance, and drag in finance-bundle.json from Documents\\Finance\\data\\export.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-                Section("Bank emails") {
-                    if let last = lastCheckedRun {
-                        Text("Last checked \(SyncStorage.formatCheckTime(last.startedAt)) (\(last.trigger.rawValue))")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    } else {
-                        Text("Not checked yet").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Text(checksTodayCount == 0
-                        ? "No checks today"
-                        : "\(checksTodayCount) \(checksTodayCount == 1 ? "check" : "checks") today")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    if let message = model.syncMessage {
-                        Text(message).font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Button(model.syncing ? "Checking Gmail…" : "Check Gmail now") {
-                        Task { await model.syncGmail(userInitiated: true) }
-                    }
-                    .disabled(model.syncing)
-                    if let data = model.data, !data.unmatched.isEmpty {
-                        Text("\(data.unmatched.count) older bank emails are before the statement cutoff and aren’t counted.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                Section("Privacy") {
-                    Toggle("Lock with Face ID", isOn: $faceIDLock)
-                }
+                ConnectionsSection(footerText: dataSummaryLine)
+
                 Section {
-                    NavigationLink("Setup and tests") { SpikeView() }
-                } footer: {
-                    Text("Google sign-in, the widget, notifications and background refresh.")
+                    Toggle("Lock with Face ID", isOn: $faceIDLock)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.ink)
+                        .tint(Theme.accent)
+                } header: {
+                    SectionLabel("Privacy")
                 }
-                Section("About") {
-                    LabeledContent("Version", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?")
+                .listRowBackground(Theme.surface)
+
+                Section {
+                    NavigationLink(value: MoreDestination.diagnostics) {
+                        Text("Setup and tests")
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
+                    }
+                } header: {
+                    SectionLabel("Diagnostics")
+                } footer: {
+                    Text("Google sign-in, widget, notifications and background refresh.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.muted)
+                }
+                .listRowBackground(Theme.surface)
+
+                Section {
+                    SettingsValueRow(label: "Version", value: appVersion)
+                    if session.isDemo {
+                        SettingsValueRow(label: "Mode", value: "Demo data")
+                    }
+                } header: {
+                    SectionLabel("About")
+                }
+                .listRowBackground(Theme.surface)
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Theme.page)
+            .navigationTitle("More")
+            .navigationDestination(for: MoreDestination.self) { destination in
+                switch destination {
+                case .gmail:
+                    GmailSettingsView()
+                case .moneyForward:
+                    MoneyForwardSettingsView()
+                case .drive:
+                    DriveSyncSettingsView()
+                case .diagnostics:
+                    SpikeView()
                 }
             }
-            .navigationTitle("More")
-            .onAppear { model.refreshRunLog() }
+            .onAppear {
+                if !session.isDemo {
+                    model.refreshRunLog()
+                }
+            }
         }
     }
 }

@@ -51,6 +51,27 @@ public enum JST {
         return pad(y, 4) + "-" + pad(mo) + "-" + pad(da)
     }
 
+    /// Adds `days` (positive or negative) to a `"YYYY-MM-DD"` date string.
+    public static func addingDays(_ days: Int, to day: String) -> String? {
+        guard let number = dayNumber(day) else { return nil }
+        return self.day(fromDayNumber: number + days)
+    }
+
+    /// Converts days since 1970-01-01 back into `"YYYY-MM-DD"`, by pure arithmetic.
+    public static func day(fromDayNumber z: Int) -> String {
+        let shifted = z + 719_468
+        let era = (shifted >= 0 ? shifted : shifted - 146_096) / 146_097
+        let doe = shifted - era * 146_097
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365
+        let y = yoe + era * 400
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+        let mp = (5 * doy + 2) / 153
+        let d = doy - (153 * mp + 2) / 5 + 1
+        let m = mp + (mp < 10 ? 3 : -9)
+        let year = y + (m <= 2 ? 1 : 0)
+        return pad(year, 4) + "-" + pad(m) + "-" + pad(d)
+    }
+
     private static func pad(_ value: Int?, _ width: Int = 2) -> String {
         let s = String(value ?? 0)
         return String(repeating: "0", count: max(0, width - s.count)) + s

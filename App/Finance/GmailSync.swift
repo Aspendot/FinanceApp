@@ -22,14 +22,31 @@ enum GmailSync {
         try KeychainTokenStore().load() != nil
     }
 
+    nonisolated static func hasDriveScope() -> Bool {
+        guard let tokens = try? KeychainTokenStore().load() else { return false }
+        return tokens.hasScope(GoogleOAuth.driveAppDataScope)
+    }
+
     /// Runs Google's sign-in sheet and stores the OAuth tokens.
-    static func signIn(clientID input: String) async throws {
+    static func signIn(
+        clientID input: String,
+        scopes: [String] = [GoogleOAuth.gmailReadOnlyScope],
+        includeGrantedScopes: Bool = false
+    ) async throws {
         try await SyncEngine.shared.withSignIn {
-            try await authorize(clientID: input)
+            try await authorize(
+                clientID: input,
+                scopes: scopes,
+                includeGrantedScopes: includeGrantedScopes
+            )
         }
     }
 
-    private static func authorize(clientID input: String) async throws {
+    private static func authorize(
+        clientID input: String,
+        scopes: [String],
+        includeGrantedScopes: Bool
+    ) async throws {
         try Task.checkCancellation()
         let requestedID = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedID.isEmpty else { throw SyncProblem.noClientID }
@@ -54,7 +71,13 @@ enum GmailSync {
         }
         let pkce = try PKCE.generate()
         let state = GoogleOAuth.generateState()
-        let url = try GoogleOAuth.authorizationURL(clientID: requestedID, pkce: pkce, state: state)
+        let url = try GoogleOAuth.authorizationURL(
+            clientID: requestedID,
+            pkce: pkce,
+            state: state,
+            scopes: scopes,
+            includeGrantedScopes: includeGrantedScopes
+        )
         let callback = try await WebAuthenticator().authenticate(
             authURL: url,
             callbackScheme: try GoogleOAuth.reversedClientID(for: requestedID)
@@ -79,15 +102,29 @@ enum GmailSync {
         }
         var tokens = try await candidate.load() ?? exchanged
         try Task.checkCancellation()
-        if currentTokens == nil {
-            try SyncStorage.clearState()
-        }
+        // OAuth allows a missing scope field when the granted scopes equal the requested ones.
+        if tokens.scope == nil { tokens.scope = scopes.joined(separator: " ") }
         if tokens.refreshToken == nil, currentMailbox == mailbox {
+            if tokens.hasScope(GoogleOAuth.driveAppDataScope),
+               currentTokens?.hasScope(GoogleOAuth.driveAppDataScope) != true {
+                throw SyncProblem.missingDriveRefreshToken
+            }
             tokens.refreshToken = currentTokens?.refreshToken
         }
+        if scopes.contains(GoogleOAuth.driveAppDataScope), tokens.hasScope(GoogleOAuth.driveAppDataScope),
+           tokens.refreshToken == nil {
+            throw SyncProblem.missingDriveRefreshToken
+        }
+        if currentTokens == nil { try SyncStorage.clearState() }
         tokens.mailboxFingerprint = mailbox
         UserDefaults.standard.set(requestedID, forKey: clientIDKey)
         try store.save(tokens)
+        if scopes.contains(GoogleOAuth.driveAppDataScope) {
+            var driveState = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
+            driveState.needsDriveConsent = !tokens.hasScope(GoogleOAuth.driveAppDataScope)
+            driveState.lastErrorMessage = nil
+            try? DriveSyncStore.saveState(driveState)
+        }
     }
 
     static func signOut() async throws {
@@ -109,6 +146,7 @@ enum GmailSync {
         case busy
         case signOutBeforeChangingClientID
         case signOutBeforeChangingMailbox
+        case missingDriveRefreshToken
 
         var errorDescription: String? {
             switch self {
@@ -116,6 +154,7 @@ enum GmailSync {
             case .busy: return "Wait for the current Gmail operation to finish."
             case .signOutBeforeChangingClientID: return "Sign out before changing the Google client ID."
             case .signOutBeforeChangingMailbox: return "Sign out before switching Gmail accounts."
+            case .missingDriveRefreshToken: return "Google didn't grant lasting Drive access. Turn on Drive sync again."
             }
         }
     }

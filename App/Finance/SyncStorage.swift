@@ -2,13 +2,15 @@ import FinanceCore
 import FinanceSync
 import Foundation
 
-/// One pending payment alert persisted until `UNUserNotificationCenter.add` succeeds.
+/// One payment or deposit alert persisted until `UNUserNotificationCenter.add` succeeds.
 struct PendingPaymentAlert: Codable, Equatable, Sendable {
     var messageID: String
     var amount: Int
     var merchant: String
     var sourceLabel: String
     var isDiscreet: Bool
+    /// True for confirmed Money Forward bank items (e.g. incoming deposits); nil/false for pending Gmail notices.
+    var isConfirmed: Bool? = nil
 }
 
 struct PendingPaymentSummary: Codable, Equatable, Sendable {
@@ -80,6 +82,8 @@ struct SyncRunRecord: Codable, Equatable, Sendable, Identifiable {
     var newPayments: Int
     var notifiedCount: Int
     var errorMessage: String?
+    var newBankTransactions: Int?
+    var driveImported: Bool?
 
     init(
         id: UUID = UUID(),
@@ -90,7 +94,9 @@ struct SyncRunRecord: Codable, Equatable, Sendable, Identifiable {
         newNotices: Int = 0,
         newPayments: Int = 0,
         notifiedCount: Int = 0,
-        errorMessage: String? = nil
+        errorMessage: String? = nil,
+        newBankTransactions: Int? = nil,
+        driveImported: Bool? = nil
     ) {
         self.id = id
         self.trigger = trigger
@@ -101,6 +107,8 @@ struct SyncRunRecord: Codable, Equatable, Sendable, Identifiable {
         self.newPayments = newPayments
         self.notifiedCount = notifiedCount
         self.errorMessage = errorMessage
+        self.newBankTransactions = newBankTransactions
+        self.driveImported = driveImported
     }
 }
 
@@ -114,6 +122,8 @@ struct SyncReport: Equatable, Sendable {
     var newPayments: Int
     var notifiedCount: Int
     var errorMessage: String?
+    var newBankTransactions: Int = 0
+    var driveImported: Bool = false
 
     var record: SyncRunRecord {
         SyncRunRecord(
@@ -124,7 +134,9 @@ struct SyncReport: Equatable, Sendable {
             newNotices: newNotices,
             newPayments: newPayments,
             notifiedCount: notifiedCount,
-            errorMessage: errorMessage
+            errorMessage: errorMessage,
+            newBankTransactions: newBankTransactions > 0 ? newBankTransactions : nil,
+            driveImported: driveImported ? true : nil
         )
     }
 }

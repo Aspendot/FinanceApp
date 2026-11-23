@@ -5,18 +5,25 @@ import UIKit
 
 struct RootView: View {
     @StateObject private var model = AppModel()
+    @StateObject private var session = AppSession()
     @Environment(\.scenePhase) private var phase
 
     var body: some View {
-        LockGate {
-            TabView {
-                NowView().tabItem { Label("Now", systemImage: "calendar") }
-                PaymentsView().tabItem { Label("Payments", systemImage: "list.bullet") }
-                MoreView().tabItem { Label("More", systemImage: "ellipsis.circle") }
+        Group {
+            if session.isDemo {
+                mainTabs
+            } else {
+                LockGate {
+                    mainTabs
+                }
             }
         }
+        .tint(Theme.accent)
+        .preferredColorScheme(session.demoColorScheme)
         .environmentObject(model)
+        .environmentObject(session)
         .onChange(of: phase, initial: true) { _, newPhase in
+            guard !session.isDemo else { return }
             if newPhase == .background {
                 Task {
                     await BackgroundAssertion.run(name: "FinanceScheduleRefresh") {
@@ -27,14 +34,32 @@ struct RootView: View {
                 model.refreshRunLog()
                 Task {
                     await model.checkInbox()
+                    session.hasCompletedInitialLoad = true
                     guard UIApplication.shared.applicationState == .active else { return }
                     await model.syncGmail()
                 }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .backgroundGmailSyncUpdated).receive(on: DispatchQueue.main)) { _ in
-            guard phase == .active else { return }
+            guard !session.isDemo, phase == .active else { return }
             Task { await model.reload() }
+        }
+    }
+
+    private var mainTabs: some View {
+        TabView(selection: $session.selectedTab) {
+            Tab("Now", systemImage: "calendar", value: AppTab.now) {
+                NowView()
+            }
+            Tab("Payments", systemImage: "list.bullet", value: AppTab.payments) {
+                PaymentsView()
+            }
+            Tab("Months", systemImage: "chart.bar", value: AppTab.months) {
+                MonthsView()
+            }
+            Tab("More", systemImage: "ellipsis.circle", value: AppTab.more) {
+                MoreView()
+            }
         }
     }
 }
@@ -63,17 +88,27 @@ struct LockGate<Content: View>: View {
                     .allowsHitTesting(phase == .active)
             }
             if phase != .active || (enabled && !unlocked) {
-                Color(.systemBackground).ignoresSafeArea()
+                Theme.page.ignoresSafeArea()
             }
             if phase == .active && enabled && !unlocked {
                 VStack(spacing: 14) {
-                    Image(systemName: "lock.fill").font(.system(size: 34)).foregroundStyle(.secondary)
-                    Text("Finance is locked").font(.headline)
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 32, weight: .medium))
+                        .foregroundStyle(Theme.muted)
+                        .accessibilityHidden(true)
+                    Text("Finance is locked")
+                        .font(.headline)
+                        .foregroundStyle(Theme.ink)
                     if !message.isEmpty {
-                        Text(message).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
+                            .multilineTextAlignment(.center)
                     }
                     Button("Unlock") { Task { await unlock() } }
                         .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .frame(minHeight: Theme.minTouchTarget)
                         .disabled(context != nil)
                 }
                 .padding(32)
@@ -97,7 +132,7 @@ struct LockGate<Content: View>: View {
             snapshotCover?.removeFromSuperview()
             let cover = UIView(frame: window.bounds)
             cover.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            cover.backgroundColor = .systemBackground
+            cover.backgroundColor = UIColor(named: "Page") ?? .systemBackground
             window.addSubview(cover)
             snapshotCover = cover
         }
@@ -131,12 +166,10 @@ struct LockGate<Content: View>: View {
 
 struct NoDataView: View {
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("No data yet").font(.headline)
-            Text("On your PC, open the Apple Devices app, choose your iPhone, then Files → Finance, and drag in finance-bundle.json from Documents\\Finance\\data\\export. Then come back to this app.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 6)
+        StateCard(
+            kind: .empty,
+            title: "No data yet",
+            message: "Turn on Google Drive sync in More → Connections."
+        )
     }
 }
