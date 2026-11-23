@@ -103,12 +103,16 @@ func parse(_ dir: String, _ out: String, _ reviewOut: String) throws {
 func match(_ noticesPath: String, _ rowsPath: String, _ coveragePath: String, _ out: String) throws {
     let decoder = JSONDecoder()
     let coverage = try decoder.decode([String: Coverage].self, from: Data(contentsOf: URL(fileURLWithPath: coveragePath)))
-    func inside(_ source: NoticeSource, _ day: String) -> Bool {
-        guard let c = coverage[source.rawValue] else { return false }
-        return c.start <= day && day <= c.end
+    /// Notices get one day of slack past the statement's end: a notice can arrive
+    /// the morning after a payment that is already on the statement.
+    func inside(_ source: NoticeSource, _ day: String, slack: Int = 0) -> Bool {
+        guard let c = coverage[source.rawValue], let d = JST.dayNumber(day),
+              let start = JST.dayNumber(c.start), let end = JST.dayNumber(c.end)
+        else { return false }
+        return start <= d && d <= end + slack
     }
     let notices = try lines(noticesPath).map { try decoder.decode(Notice.self, from: Data($0.utf8)) }
-        .filter { inside($0.source, $0.day) }
+        .filter { inside($0.source, $0.day, slack: 1) }
     let rows = try lines(rowsPath).map { try decoder.decode(StatementRow.self, from: Data($0.utf8)) }
         .filter { inside($0.source, $0.date) }
     let report = Matcher.match(notices: notices, rows: rows)
