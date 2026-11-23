@@ -89,6 +89,25 @@ public struct BudgetItem: Codable, Sendable, Hashable {
     }
 }
 
+/// Rule exported by the PC pipeline to match an open timeline entry against confirmed bank rows.
+public struct TimelineMatch: Codable, Sendable, Hashable {
+    /// Bundle source label (value from `sourceLabels`, e.g. `"MUFG"`).
+    public var source: String
+    /// Regular expression matched against the bank's own line description.
+    public var pattern: String
+    /// Cashflow direction: `"in"` (negative amount) or `"out"` (positive amount).
+    public var dir: String
+    /// Inclusive day-offset window `[start, end]` around the entry's scheduled date.
+    public var window: [Int]
+
+    public init(source: String, pattern: String, dir: String, window: [Int]) {
+        self.source = source
+        self.pattern = pattern
+        self.dir = dir
+        self.window = window
+    }
+}
+
 /// One scheduled or past event on the cashflow timeline.
 ///
 /// Negative amounts are money in; positive amounts are money out.
@@ -104,6 +123,7 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
     public var estimate: Bool?
     public var event: Bool?
     public var label: String?
+    public var match: TimelineMatch?
 
     public init(
         date: String,
@@ -116,7 +136,8 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         borrowed: Bool? = nil,
         estimate: Bool? = nil,
         event: Bool? = nil,
-        label: String? = nil
+        label: String? = nil,
+        match: TimelineMatch? = nil
     ) {
         self.date = date
         self.item = item
@@ -129,10 +150,11 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         self.estimate = estimate
         self.event = event
         self.label = label
+        self.match = match
     }
 
     private enum CodingKeys: String, CodingKey {
-        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label
+        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label, match
     }
 
     public init(from decoder: Decoder) throws {
@@ -148,6 +170,7 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         estimate = try c.decodeIfPresent(Bool.self, forKey: .estimate)
         event = try c.decodeIfPresent(Bool.self, forKey: .event)
         label = try c.decodeIfPresent(String.self, forKey: .label)
+        match = try c.decodeIfPresent(TimelineMatch.self, forKey: .match)
     }
 }
 

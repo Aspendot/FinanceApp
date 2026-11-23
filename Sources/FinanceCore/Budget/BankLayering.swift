@@ -34,6 +34,9 @@ public struct BankLayeringResult: Sendable, Equatable {
     public var bankItems: [BudgetItem]
     /// Money Forward transaction IDs aligned one-to-one with `bankItems`.
     public var bankTransactionIDs: [String]
+    /// Confirmed bank rows aligned one-to-one with `bankItems`, keeping each row's raw bank
+    /// description for timeline reconciliation even when a Gmail notice supplied `BudgetItem.merchant`.
+    public var bankRows: [TimelineReconciler.BankRow]
     /// Pending items built from Gmail notices not matched to Money Forward or covered by the bundle.
     public var pendingItems: [BudgetItem]
     /// Gmail message IDs aligned one-to-one with `pendingItems`.
@@ -50,6 +53,7 @@ public struct BankLayeringResult: Sendable, Equatable {
     public init(
         bankItems: [BudgetItem] = [],
         bankTransactionIDs: [String] = [],
+        bankRows: [TimelineReconciler.BankRow] = [],
         pendingItems: [BudgetItem] = [],
         pendingNoticeIDs: [String] = [],
         unmatched: [Notice] = [],
@@ -59,6 +63,7 @@ public struct BankLayeringResult: Sendable, Equatable {
     ) {
         self.bankItems = bankItems
         self.bankTransactionIDs = bankTransactionIDs
+        self.bankRows = bankRows
         self.pendingItems = pendingItems
         self.pendingNoticeIDs = pendingNoticeIDs
         self.unmatched = unmatched
@@ -248,6 +253,7 @@ public enum BankLayering {
 
         var bankItems: [BudgetItem] = []
         var bankTransactionIDs: [String] = []
+        var bankRows: [TimelineReconciler.BankRow] = []
         for row in mappedRows where row.transaction.date > (bundle.coverage[row.sourceID]?.end ?? bundle.asOf) {
             let merchant = merchantByTransaction[row.transaction.id] ?? row.transaction.description
             let (group, category) = categorizer.categorize(
@@ -267,6 +273,12 @@ public enum BankLayering {
                 isPending: false
             ))
             bankTransactionIDs.append(row.transaction.id)
+            bankRows.append(TimelineReconciler.BankRow(
+                source: row.sourceLabel,
+                date: row.transaction.date,
+                amount: row.transaction.amount,
+                description: row.transaction.description
+            ))
         }
 
         let pending = candidates.filter { !matchedNoticeIDs.contains($0.notice.messageID) }
@@ -277,6 +289,7 @@ public enum BankLayering {
         return BankLayeringResult(
             bankItems: bankItems,
             bankTransactionIDs: bankTransactionIDs,
+            bankRows: bankRows,
             pendingItems: pendingItems,
             pendingNoticeIDs: pending.map { $0.notice.messageID },
             unmatched: unmatched,
