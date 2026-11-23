@@ -3,6 +3,7 @@ import Foundation
 
 /// Imports a complete bundle from Google Drive sync or the fallback Documents folder.
 enum BundleInbox {
+    private static let importLock = NSLock()
     enum Outcome: Equatable {
         case nothingNew
         case imported(generatedAt: String, items: Int, cleanupFailed: Bool)
@@ -118,6 +119,8 @@ enum BundleInbox {
         guard let candidateDate = timestamp(bundle.generatedAt) else {
             throw StoreError.invalidTimestamp
         }
+        importLock.lock()
+        defer { importLock.unlock() }
         let current = try readStoredData()
         let storedDate = current.flatMap { try? DataBundle.decode(from: $0) }.flatMap { timestamp($0.generatedAt) }
         let isNew = storedDate.map { candidateDate > $0 } ?? true

@@ -28,19 +28,19 @@ public struct BankMatchPair: Codable, Sendable, Equatable {
 }
 
 /// Output of `BankLayering.build`: confirmed Money Forward items, remaining pending
-/// Gmail notice items, unmatched older notices, match diagnostics and effective coverage.
+/// Gmail notice items, unmatched older bundle notices, match diagnostics and effective coverage.
 public struct BankLayeringResult: Sendable, Equatable {
     /// Confirmed items built from mapped Money Forward transactions dated after each source's bundle coverage end.
     public var bankItems: [BudgetItem]
     /// Money Forward transaction IDs aligned one-to-one with `bankItems`.
     public var bankTransactionIDs: [String]
-    /// Pending items built from Gmail notices not confirmed by Money Forward and not before effective coverage.
+    /// Pending items built from Gmail notices not matched to Money Forward or covered by the bundle.
     public var pendingItems: [BudgetItem]
     /// Gmail message IDs aligned one-to-one with `pendingItems`.
     public var pendingNoticeIDs: [String]
-    /// Notices excluded because they precede their source's effective coverage end.
+    /// Notices excluded because they precede their source's bundle coverage end.
     public var unmatched: [Notice]
-    /// One-to-one matches between post-bundle Gmail notices and confirmed Money Forward rows.
+    /// One-to-one matches between post-bundle Gmail notices and Money Forward rows.
     public var matchedPairs: [BankMatchPair]
     /// Notice/transaction ties left unresolved.
     public var ambiguous: [AmbiguousGroup]
@@ -75,12 +75,11 @@ public struct BankLayeringResult: Sendable, Equatable {
 /// 1. Bundle items cover each source up to `bundle.coverage[source].end`.
 /// 2. Mapped Money Forward transactions dated strictly after `bundle.coverage[source].end`
 ///    become confirmed items (`isPending == false`), categorized with `categorizer`,
-///    with `merchant` equal to `transaction.description` verbatim.
-/// 3. Post-bundle Gmail notices are matched one-to-one against confirmed Money Forward rows
+///    with the matched notice's merchant or the transaction description.
+/// 3. Post-bundle Gmail notices are matched one-to-one against Money Forward rows
 ///    with equal amount and date offset `0...3` days (including cross-source targets from
 ///    `bundle.noticeSourceMatches`). Ties stay unresolved.
-/// 4. Effective coverage per source extends to the newest mapped Money Forward row; non-matched,
-///    non-ambiguous notices dated before effective coverage drop out of pending into `unmatched`.
+/// 4. Effective coverage extends to the newest mapped row. Unmatched post-bundle notices stay pending.
 public enum BankLayering {
     /// Allowed day offsets (`bankTransaction.date - notice.day`) when matching notices to bank rows.
     public static let matchDayOffsets: ClosedRange<Int> = 0...3
@@ -119,7 +118,7 @@ public enum BankLayering {
         let transaction: BankTransaction
         let sourceID: String
         let sourceLabel: String
-        let dayNumber: Int?
+        let dayNumber: Int
         /// Approval/reference number extracted by a bundle `StatementLineRule`, if any.
         let parsedReference: String?
         /// Merchant text used for prefix matching: extracted by a matching `StatementLineRule`
@@ -164,10 +163,11 @@ public enum BankLayering {
         var effectiveCoverage = bundle.coverage
         var sourceMinDate: [String: String] = [:]
         var sourceMaxDate: [String: String] = [:]
-        var postBundleRows: [MappedRow] = []
+        var mappedRows: [MappedRow] = []
 
         for tx in uniqueTransactions {
-            guard let sourceID = tx.mappedSource(using: accountMapping) else { continue }
+            guard let sourceID = tx.mappedSource(using: accountMapping),
+                  let day = JST.dayNumber(tx.date) else { continue }
             if let existingMin = sourceMinDate[sourceID] {
                 if tx.date < existingMin { sourceMinDate[sourceID] = tx.date }
             } else {
@@ -177,10 +177,6 @@ public enum BankLayering {
                 if tx.date > existingMax { sourceMaxDate[sourceID] = tx.date }
             } else {
                 sourceMaxDate[sourceID] = tx.date
-            }
-
-            if let bundleCov = bundle.coverage[sourceID], tx.date <= bundleCov.end {
-                continue
             }
 
             let label = bundle.sourceLabels[sourceID] ?? sourceID
@@ -195,11 +191,11 @@ public enum BankLayering {
                     }
                 }
             }
-            postBundleRows.append(MappedRow(
+            mappedRows.append(MappedRow(
                 transaction: tx,
                 sourceID: sourceID,
                 sourceLabel: label,
-                dayNumber: JST.dayNumber(tx.date),
+                dayNumber: day,
                 parsedReference: parsedRef,
                 matchMerchant: matchMerchant
             ))
@@ -219,14 +215,41 @@ public enum BankLayering {
             }
         }
 
-        // Convert post-bundle Money Forward transactions into confirmed BudgetItems.
+        var (candidates, unmatched) = PendingBuilder.postBundleCandidates(notices: notices, bundle: bundle)
+        if notices.contains(where: { $0.kind == .cancellation }) {
+            // Keep the reversal pending when the purchase already appears in bank history.
+            let beforeCancellation = PendingBuilder.postBundleCandidates(
+                notices: notices, bundle: bundle, applyCancellations: false
+            ).candidates
+            let purchaseIDs = Set(beforeCancellation.filter { $0.notice.kind == .purchase }.map { $0.notice.messageID })
+            let confirmed = matchNotices(
+                candidates: beforeCancellation, rows: mappedRows, noticeSourceMatches: bundle.noticeSourceMatches
+            )
+            let confirmedPurchases = Set(confirmed.pairs.map(\.noticeID)).intersection(purchaseIDs)
+            if !confirmedPurchases.isEmpty {
+                (candidates, unmatched) = PendingBuilder.postBundleCandidates(
+                    notices: notices, bundle: bundle, confirmedPurchaseIDs: confirmedPurchases
+                )
+            }
+        }
+
+        // Covered bank rows still reconcile cross-source notices after the bundle advances.
+        let matchOutput = matchNotices(
+            candidates: candidates, rows: mappedRows, noticeSourceMatches: bundle.noticeSourceMatches
+        )
+        let matchedNoticeIDs = Set(matchOutput.pairs.map(\.noticeID))
+        let candidatesByID = Dictionary(candidates.map { ($0.notice.messageID, $0) }, uniquingKeysWith: { first, _ in first })
+        let merchantByTransaction = Dictionary(uniqueKeysWithValues: matchOutput.pairs.compactMap { pair -> (String, String)? in
+            guard let merchant = candidatesByID[pair.noticeID]?.notice.merchant,
+                  !merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return (pair.transactionID, merchant)
+        })
+
         var bankItems: [BudgetItem] = []
         var bankTransactionIDs: [String] = []
-        bankItems.reserveCapacity(postBundleRows.count)
-        bankTransactionIDs.reserveCapacity(postBundleRows.count)
-
-        for row in postBundleRows {
-            let merchant = row.transaction.description
+        for row in mappedRows where row.transaction.date > (bundle.coverage[row.sourceID]?.end ?? bundle.asOf) {
+            let merchant = merchantByTransaction[row.transaction.id] ?? row.transaction.description
             let (group, category) = categorizer.categorize(
                 merchant: merchant,
                 amount: row.transaction.amount,
@@ -246,56 +269,16 @@ public enum BankLayering {
             bankTransactionIDs.append(row.transaction.id)
         }
 
-        // Run existing bundle-level notice preprocessing.
-        let (postBundleCandidates, bundleUnmatched) = PendingBuilder.postBundleCandidates(
-            notices: notices,
-            bundle: bundle
-        )
-
-        // Match post-bundle notices one-to-one against post-bundle Money Forward rows.
-        let matchOutput = matchNotices(
-            candidates: postBundleCandidates,
-            rows: postBundleRows,
-            noticeSourceMatches: bundle.noticeSourceMatches
-        )
-
-        let matchedNoticeIDs = Set(matchOutput.pairs.map(\.noticeID))
-        let ambiguousNoticeIDs = Set(matchOutput.ambiguous.flatMap(\.noticeIDs))
-
-        var pendingItems: [BudgetItem] = []
-        var pendingNoticeIDs: [String] = []
-        var unmatched = bundleUnmatched
-
-        for candidate in postBundleCandidates {
-            let id = candidate.notice.messageID
-            if matchedNoticeIDs.contains(id) {
-                continue
-            }
-            // Leave unresolved ties pending rather than silently dropping them under
-            // effective coverage, while dropping non-ambiguous older notices as today.
-            if !ambiguousNoticeIDs.contains(id),
-               let cov = effectiveCoverage[candidate.sourceID],
-               candidate.day < cov.end
-            {
-                unmatched.append(candidate.notice)
-                continue
-            }
-
-            let item = PendingBuilder.makePendingItem(
-                from: candidate,
-                bundle: bundle,
-                categorizer: categorizer,
-                config: config
-            )
-            pendingItems.append(item)
-            pendingNoticeIDs.append(id)
+        let pending = candidates.filter { !matchedNoticeIDs.contains($0.notice.messageID) }
+        let pendingItems = pending.map {
+            PendingBuilder.makePendingItem(from: $0, bundle: bundle, categorizer: categorizer, config: config)
         }
 
         return BankLayeringResult(
             bankItems: bankItems,
             bankTransactionIDs: bankTransactionIDs,
             pendingItems: pendingItems,
-            pendingNoticeIDs: pendingNoticeIDs,
+            pendingNoticeIDs: pending.map { $0.notice.messageID },
             unmatched: unmatched,
             matchedPairs: matchOutput.pairs,
             ambiguous: matchOutput.ambiguous,
@@ -312,6 +295,7 @@ public enum BankLayering {
 
         let sortedCandidates = candidates.sorted { $0.notice.messageID < $1.notice.messageID }
         let sortedRows = rows.sorted { $0.transaction.id < $1.transaction.id }
+        let rowsByAmount = Dictionary(grouping: sortedRows, by: { $0.transaction.amount })
         let rowByID = Dictionary(sortedRows.map { ($0.transaction.id, $0) }, uniquingKeysWith: { a, _ in a })
 
         func allowedSources(for noticeSourceID: String) -> Set<String> {
@@ -353,7 +337,7 @@ public enum BankLayering {
         }
 
         func makePair(_ candidate: PendingBuilder.CandidateNotice, _ row: MappedRow, _ rule: MatchRule) -> BankMatchPair {
-            let offset = (row.dayNumber ?? 0) - (JST.dayNumber(candidate.day) ?? 0)
+            let offset = row.dayNumber - (JST.dayNumber(candidate.day) ?? 0)
             return BankMatchPair(
                 noticeID: candidate.notice.messageID,
                 transactionID: row.transaction.id,
@@ -371,13 +355,9 @@ public enum BankLayering {
         func rowCandidates(for candidate: PendingBuilder.CandidateNotice) -> [(row: MappedRow, rank: Rank)] {
             guard let noticeDay = JST.dayNumber(candidate.day) else { return [] }
             let targets = allowedSources(for: candidate.sourceID)
-            return sortedRows.compactMap { row in
-                guard openRows.contains(row.transaction.id),
-                      targets.contains(row.sourceID),
-                      row.transaction.amount == candidate.amount,
-                      let rowDay = row.dayNumber
-                else { return nil }
-                let offset = rowDay - noticeDay
+            return (rowsByAmount[candidate.amount] ?? []).compactMap { row in
+                guard openRows.contains(row.transaction.id), targets.contains(row.sourceID) else { return nil }
+                let offset = row.dayNumber - noticeDay
                 guard matchDayOffsets.contains(offset) else { return nil }
                 let refMatch = referenceAgrees(candidate, row)
                 let merchantMatch = merchantAgrees(candidate, row)

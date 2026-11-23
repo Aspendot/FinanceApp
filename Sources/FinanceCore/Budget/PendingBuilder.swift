@@ -91,7 +91,9 @@ public enum PendingBuilder {
     /// Returns candidate notices after bundle-level filtering, plus pre-bundle unmatched notices.
     static func postBundleCandidates(
         notices: [Notice],
-        bundle: DataBundle
+        bundle: DataBundle,
+        applyCancellations: Bool = true,
+        confirmedPurchaseIDs: Set<String> = []
     ) -> (candidates: [CandidateNotice], unmatched: [Notice]) {
         let sorted = notices.sorted { $0.messageID < $1.messageID }
 
@@ -101,20 +103,25 @@ public enum PendingBuilder {
         // Pair cancellations with purchases of the same source and reference.
         var purchasesBySourceRef: [String: [String]] = [:]
         var allPurchaseSourceRefs: Set<String> = []
+        var coveredPurchaseIDs = confirmedPurchaseIDs
         for notice in eligible where notice.kind == .purchase {
             if let r = nonEmpty(notice.reference) {
                 let key = "\(notice.source.rawValue)|\(r)"
                 purchasesBySourceRef[key, default: []].append(notice.messageID)
                 allPurchaseSourceRefs.insert(key)
+                if let coverage = bundle.coverage[notice.source.rawValue], notice.day < coverage.end {
+                    coveredPurchaseIDs.insert(notice.messageID)
+                }
             }
         }
 
         var calledOff: Set<String> = []
-        for notice in eligible where notice.kind == .cancellation {
+        for notice in eligible where applyCancellations && notice.kind == .cancellation {
             let refs = [notice.reference, notice.relatedReference].compactMap(nonEmpty)
             for r in refs {
                 let key = "\(notice.source.rawValue)|\(r)"
                 if let purchaseID = purchasesBySourceRef[key]?.first(where: { !calledOff.contains($0) }) {
+                    if coveredPurchaseIDs.contains(purchaseID) { break }
                     calledOff.insert(purchaseID)
                     calledOff.insert(notice.messageID)
                     break

@@ -43,7 +43,7 @@ public struct MoneyForwardAPIKeyCredentials: Codable, Equatable, Sendable, Custo
     }
 
     public var description: String {
-        "MoneyForwardAPIKeyCredentials(officeCode: \(officeCode ?? "nil"), hasJWT: \(cachedJWT != nil), apiKey: <redacted>)"
+        "MoneyForwardAPIKeyCredentials(hasOffice: \(officeCode != nil), hasJWT: \(cachedJWT != nil), apiKey: <redacted>)"
     }
 
     public var debugDescription: String {
@@ -311,28 +311,20 @@ public enum MoneyForwardAuth {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            throw MoneyForwardClientError.networkError(error.localizedDescription)
+            throw MoneyForwardClientError.networkError("the request could not complete.")
         }
 
+        return try decodeAPIKeyExchange(response, now: now, attempts: 1)
+    }
+
+    static func decodeAPIKeyExchange(
+        _ response: HTTPResponse, now: Date, attempts: Int
+    ) throws -> (accessToken: String, expiresAt: Date) {
         if response.statusCode == 401 {
             throw MoneyForwardClientError.invalidCredentials
         }
-        if response.statusCode == 429 {
-            throw MoneyForwardClientError.rateLimited(statusCode: 429, attempts: 1)
-        }
-        if (500...599).contains(response.statusCode) {
-            throw MoneyForwardClientError.maintenanceOrServerError(
-                statusCode: response.statusCode,
-                message: MoneyForwardClient.parseFirstError(response.body)?.message
-            )
-        }
         guard (200...299).contains(response.statusCode) else {
-            let err = MoneyForwardClient.parseFirstError(response.body)
-            throw MoneyForwardClientError.httpError(
-                statusCode: response.statusCode,
-                code: err?.code,
-                message: err?.message
-            )
+            throw MoneyForwardClient.requestError(status: response.statusCode, attempts: attempts)
         }
 
         let decoded: JWTExchangeResponse
@@ -344,7 +336,10 @@ public enum MoneyForwardAuth {
         guard !decoded.accessToken.isEmpty else {
             throw MoneyForwardClientError.invalidResponse("API key exchange returned an empty access_token.")
         }
-        let lifetime = max(60, decoded.expiresIn ?? 3600)
+        let lifetime = decoded.expiresIn ?? 3600
+        guard lifetime > 0 else {
+            throw MoneyForwardClientError.invalidResponse("API key exchange returned an expired token.")
+        }
         return (decoded.accessToken, now.addingTimeInterval(TimeInterval(lifetime)))
     }
 
@@ -503,7 +498,7 @@ public enum MoneyForwardAuth {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            throw MoneyForwardClientError.networkError(error.localizedDescription)
+            throw MoneyForwardClientError.networkError("the request could not complete.")
         }
 
         if response.statusCode == 401 || response.statusCode == 403 {
@@ -513,7 +508,7 @@ public enum MoneyForwardAuth {
             throw MoneyForwardClientError.rateLimited(statusCode: 429, attempts: 1)
         }
         if (500...599).contains(response.statusCode) {
-            throw MoneyForwardClientError.maintenanceOrServerError(statusCode: response.statusCode, message: nil)
+            throw MoneyForwardClientError.maintenanceOrServerError(statusCode: response.statusCode)
         }
         guard (200...299).contains(response.statusCode) else {
             if let oauthErr = GoogleOAuth.decodeErrorResponse(response.body) {
@@ -521,13 +516,8 @@ public enum MoneyForwardAuth {
                 if code == "invalid_grant" || code == "invalid_client" || code == "unauthorized_client" {
                     throw MoneyForwardClientError.invalidCredentials
                 }
-                throw MoneyForwardClientError.httpError(
-                    statusCode: response.statusCode,
-                    code: oauthErr.error,
-                    message: oauthErr.errorDescription
-                )
             }
-            throw MoneyForwardClientError.httpError(statusCode: response.statusCode, code: nil, message: nil)
+            throw MoneyForwardClientError.httpError(statusCode: response.statusCode)
         }
 
         let tokenResponse: OAuthTokenResponse

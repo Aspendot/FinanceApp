@@ -9,7 +9,7 @@ public enum DriveEnvelopeError: Error, LocalizedError, Equatable, Sendable {
     case invalidKeyEncoding
     case invalidKeyLength(Int)
     case truncatedEnvelope(Int)
-    case invalidMagic(String)
+    case invalidMagic
     case keyMismatch(expectedHex: String, actualHex: String)
     case invalidNonceLength(Int)
     case decryptionFailed
@@ -24,8 +24,8 @@ public enum DriveEnvelopeError: Error, LocalizedError, Equatable, Sendable {
             return "The sync key must be \(DriveSyncKey.keyByteCount) bytes (got \(count))."
         case .truncatedEnvelope(let count):
             return "The Drive file is too short to be a valid envelope (\(count) bytes)."
-        case .invalidMagic(let got):
-            return "Unsupported Drive file header \"\(got)\"; expected \"FNB1\"."
+        case .invalidMagic:
+            return "Unsupported Drive file header. Expected FNB1."
         case .keyMismatch(let expected, let actual):
             return "The Drive file was encrypted with key \(actual), but this phone holds key \(expected)."
         case .invalidNonceLength(let count):
@@ -207,8 +207,7 @@ public struct DriveEnvelope: Equatable, Sendable {
         }
         let headerMagic = data.prefix(4)
         guard headerMagic == magic else {
-            let label = String(data: headerMagic, encoding: .ascii) ?? DriveSyncKey.hexString(headerMagic)
-            throw DriveEnvelopeError.invalidMagic(label)
+            throw DriveEnvelopeError.invalidMagic
         }
         let keyID = Data(data[data.startIndex.advanced(by: 4)..<data.startIndex.advanced(by: 12)])
         let nonce = Data(data[data.startIndex.advanced(by: 12)..<data.startIndex.advanced(by: 24)])

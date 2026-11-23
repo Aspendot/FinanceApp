@@ -187,13 +187,15 @@ public enum MoneyForwardClientError: Error, LocalizedError, Equatable, Sendable 
     case missingOfficeCode
     case invalidCredentials
     case unauthorized
-    case forbidden(code: String?, message: String?)
+    case forbidden
     case rateLimited(statusCode: Int, attempts: Int)
-    case maintenanceOrServerError(statusCode: Int, message: String?)
-    case httpError(statusCode: Int, code: String?, message: String?)
+    case maintenanceOrServerError(statusCode: Int)
+    case httpError(statusCode: Int)
     case invalidDateRange(String)
     case invalidResponse(String)
     case networkError(String)
+    case nightlyMaintenance
+    case deadlineReached
 
     /// True when the stored API key or OAuth session was rejected and the user must reconnect.
     public var requiresReconnect: Bool {
@@ -217,16 +219,14 @@ public enum MoneyForwardClientError: Error, LocalizedError, Equatable, Sendable 
             return "Money Forward refused access (plan or permission, HTTP 403)"
         case .rateLimited(let statusCode, let attempts):
             return "Money Forward rate limit reached (HTTP \(statusCode)) after \(attempts) attempts."
-        case .maintenanceOrServerError(let statusCode, _):
+        case .maintenanceOrServerError(let statusCode):
             return "Money Forward is temporarily unavailable (HTTP \(statusCode))."
-        case .httpError(let statusCode, let code, let message):
-            if let message, !message.isEmpty {
-                return "Money Forward request failed (HTTP \(statusCode)): \(message)"
-            }
-            if let code, !code.isEmpty {
-                return "Money Forward request failed (HTTP \(statusCode), \(code))."
-            }
+        case .httpError(let statusCode):
             return "Money Forward request failed (HTTP \(statusCode))."
+        case .nightlyMaintenance:
+            return "Money Forward is unavailable during its 01:00–06:00 JST maintenance window."
+        case .deadlineReached:
+            return "Money Forward sync reached its time limit."
         case .invalidDateRange(let reason):
             return "Invalid Money Forward date range: \(reason)"
         case .invalidResponse(let detail):
@@ -247,6 +247,8 @@ public actor MoneyForwardClient {
     public static let defaultBaseURL = URL(string: "https://api-accounting.moneyforward.com")!
     /// Maximum inclusive day difference allowed by `GET /api/v3/transactions`.
     public static let maxDateSpanDays = 366
+
+    private static let requestPacer = RequestPacer()
 
     private let credentialStore: any MoneyForwardCredentialStore
     private let transport: any HTTPTransport
@@ -346,13 +348,16 @@ public actor MoneyForwardClient {
         var pairs = try await officeCodeQueryPairs(explicitOfficeCode: officeCode)
         pairs.append(("start_date", FormURLEncoder.percentEncode(startDate)))
         pairs.append(("end_date", FormURLEncoder.percentEncode(endDate)))
-        if let accountID = connectedAccountID, !accountID.isEmpty {
+        if let accountID = connectedAccountID {
             // Money Forward returns IDs already URL-encoded; do not double-encode.
-            pairs.append(("connected_account_id", accountID))
-        } else if let subAccountID = connectedSubAccountID, !subAccountID.isEmpty {
-            pairs.append(("connected_sub_account_id", subAccountID))
+            pairs.append(("connected_account_id", try Self.validatedEncodedID(accountID)))
+        } else if let subAccountID = connectedSubAccountID {
+            pairs.append(("connected_sub_account_id", try Self.validatedEncodedID(subAccountID)))
         }
-        pairs.append(("order", FormURLEncoder.percentEncode(order)))
+        guard order == "asc" || order == "desc" else {
+            throw MoneyForwardClientError.invalidDateRange("order must be asc or desc.")
+        }
+        pairs.append(("order", order))
         pairs.append(("page", String(clampedPage)))
         pairs.append(("per_page", String(clampedPerPage)))
 
@@ -369,8 +374,9 @@ public actor MoneyForwardClient {
         var converted: [BankTransaction] = []
         converted.reserveCapacity(envelope.transactions.count)
         for dto in envelope.transactions {
-            guard let amount = BankTransaction.signedAmount(value: dto.value, rawSide: dto.side) else {
-                throw MoneyForwardClientError.invalidResponse("unexpected transaction value/side in response.")
+            guard let day = JST.dayNumber(dto.date), JST.day(fromDayNumber: day) == dto.date,
+                  let amount = BankTransaction.signedAmount(value: dto.value, rawSide: dto.side) else {
+                throw MoneyForwardClientError.invalidResponse("unexpected transaction date, value or side.")
             }
             converted.append(BankTransaction(
                 id: dto.id,
@@ -404,9 +410,11 @@ public actor MoneyForwardClient {
         connectedSubAccountID: String? = nil,
         perPage: Int = 100,
         order: String = "desc",
-        deadline: Date? = nil
+        deadline: Date? = nil,
+        onPage: (@Sendable ([BankTransaction]) async -> Void)? = nil
     ) async throws -> MoneyForwardFetchResult {
-        guard let startDay = JST.dayNumber(startDate), let endDay = JST.dayNumber(endDate) else {
+        guard let startDay = JST.dayNumber(startDate), let endDay = JST.dayNumber(endDate),
+              JST.day(fromDayNumber: startDay) == startDate, JST.day(fromDayNumber: endDay) == endDate else {
             throw MoneyForwardClientError.invalidDateRange("dates must be YYYY-MM-DD.")
         }
         guard startDay <= endDay else {
@@ -429,6 +437,7 @@ public actor MoneyForwardClient {
 
         outer: for (winStart, winEnd) in windows {
             var page = 1
+            let previousWindowsCount = allTransactions.count
             while true {
                 try Task.checkCancellation()
                 if let deadline, now() >= deadline {
@@ -436,24 +445,38 @@ public actor MoneyForwardClient {
                     break outer
                 }
 
-                let result = try await transactionsPage(
-                    startDate: winStart,
-                    endDate: winEnd,
-                    officeCode: officeCode,
-                    connectedAccountID: connectedAccountID,
-                    connectedSubAccountID: connectedSubAccountID,
-                    page: page,
-                    perPage: perPage,
-                    order: order,
-                    deadline: deadline
-                )
+                let result: MoneyForwardTransactionsPage
+                do {
+                    result = try await transactionsPage(
+                        startDate: winStart,
+                        endDate: winEnd,
+                        officeCode: officeCode,
+                        connectedAccountID: connectedAccountID,
+                        connectedSubAccountID: connectedSubAccountID,
+                        page: page,
+                        perPage: perPage,
+                        order: order,
+                        deadline: deadline
+                    )
+                } catch MoneyForwardClientError.deadlineReached {
+                    reachedDeadline = true
+                    break outer
+                }
                 pagesFetched += 1
                 for tx in result.transactions where seenIDs.insert(tx.id).inserted {
                     allTransactions.append(tx)
                 }
 
-                if page >= result.totalPages || result.transactions.isEmpty {
+                await onPage?(result.transactions)
+
+                if page >= result.totalPages {
+                    guard allTransactions.count - previousWindowsCount == result.totalCount else {
+                        throw MoneyForwardClientError.invalidResponse("transaction count changed during pagination.")
+                    }
                     break
+                }
+                guard !result.transactions.isEmpty else {
+                    throw MoneyForwardClientError.invalidResponse("an intermediate transactions page was empty.")
                 }
                 page += 1
             }
@@ -467,7 +490,8 @@ public actor MoneyForwardClient {
     }
 
     private func validateDateRange(startDate: String, endDate: String) throws {
-        guard let startDay = JST.dayNumber(startDate), let endDay = JST.dayNumber(endDate) else {
+        guard let startDay = JST.dayNumber(startDate), let endDay = JST.dayNumber(endDate),
+              JST.day(fromDayNumber: startDay) == startDate, JST.day(fromDayNumber: endDay) == endDate else {
             throw MoneyForwardClientError.invalidDateRange("dates must be YYYY-MM-DD.")
         }
         guard startDay <= endDay else {
@@ -493,6 +517,14 @@ public actor MoneyForwardClient {
         return [("office_code", FormURLEncoder.percentEncode(code))]
     }
 
+    private static func validatedEncodedID(_ id: String) throws -> String {
+        let pattern = #"^(?:[A-Za-z0-9._~-]|%[0-9A-Fa-f]{2})+\z"#
+        guard id.range(of: pattern, options: .regularExpression) != nil else {
+            throw MoneyForwardClientError.invalidResponse("invalid encoded Money Forward ID.")
+        }
+        return id
+    }
+
     private func buildURL(path: String, rawQueryPairs: [(String, String)]) throws -> URL {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw MoneyForwardClientError.invalidResponse("could not build Money Forward URL.")
@@ -511,13 +543,14 @@ public actor MoneyForwardClient {
     }
 
     private func performAuthorizedGET(_ url: URL, deadline: Date?) async throws -> Data {
-        try Task.checkCancellation()
-        var bearer = try await currentAccessToken(forceRefresh: false)
+        try checkRequestWindow(deadline)
+        var bearer = try await currentAccessToken(forceRefresh: false, deadline: deadline)
         var hasRefreshed = false
         var retryAttempt = 0
 
         while true {
-            try Task.checkCancellation()
+            try await Self.requestPacer.waitTurn()
+            try checkRequestWindow(deadline)
             let request = HTTPRequest(
                 method: "GET",
                 url: url,
@@ -534,7 +567,7 @@ public actor MoneyForwardClient {
 
             if response.statusCode == 401 {
                 if !hasRefreshed {
-                    bearer = try await currentAccessToken(forceRefresh: true)
+                    bearer = try await currentAccessToken(forceRefresh: true, deadline: deadline)
                     hasRefreshed = true
                     continue
                 }
@@ -542,49 +575,59 @@ public actor MoneyForwardClient {
             }
 
             if response.statusCode == 403 {
-                let err = Self.parseFirstError(response.body)
-                throw MoneyForwardClientError.forbidden(code: err?.code, message: err?.message)
+                throw MoneyForwardClientError.forbidden
             }
 
-            let isRetryable = response.statusCode == 429 || (500...599).contains(response.statusCode)
-            if isRetryable {
-                if retryAttempt < retryPolicy.maxRetries {
-                    let delay = retryPolicy.delay(
-                        forAttempt: retryAttempt,
-                        retryAfterHeader: response.headerValue(for: "Retry-After")
-                    )
-                    if let deadline, now().addingTimeInterval(Self.seconds(from: delay)) >= deadline {
-                        if response.statusCode == 429 {
-                            throw MoneyForwardClientError.rateLimited(statusCode: 429, attempts: retryAttempt + 1)
-                        }
-                        throw MoneyForwardClientError.maintenanceOrServerError(
-                            statusCode: response.statusCode,
-                            message: Self.parseFirstError(response.body)?.message
-                        )
-                    }
-                    retryAttempt += 1
-                    try await sleeper.sleep(for: delay)
-                    continue
-                }
-                if response.statusCode == 429 {
-                    throw MoneyForwardClientError.rateLimited(statusCode: 429, attempts: retryAttempt + 1)
-                }
-                throw MoneyForwardClientError.maintenanceOrServerError(
-                    statusCode: response.statusCode,
-                    message: Self.parseFirstError(response.body)?.message
-                )
+            let status = response.statusCode
+            let isRetryable = status == 429 || (500...599).contains(status)
+            if isRetryable, retryAttempt < retryPolicy.maxRetries {
+                let delay = retryDelay(response, attempt: retryAttempt)
+                try await waitForRetry(delay, deadline: deadline)
+                retryAttempt += 1
+                continue
             }
-
-            let err = Self.parseFirstError(response.body)
-            throw MoneyForwardClientError.httpError(
-                statusCode: response.statusCode,
-                code: err?.code,
-                message: err?.message
-            )
+            throw Self.requestError(status: status, attempts: retryAttempt + 1)
         }
     }
 
-    private func currentAccessToken(forceRefresh: Bool) async throws -> String {
+    static func requestError(status: Int, attempts: Int) -> MoneyForwardClientError {
+        switch status {
+        case 403: return .forbidden
+        case 429: return .rateLimited(statusCode: status, attempts: attempts)
+        case 500...599: return .maintenanceOrServerError(statusCode: status)
+        default: return .httpError(statusCode: status)
+        }
+    }
+
+    private func checkRequestWindow(_ deadline: Date?) throws {
+        try Task.checkCancellation()
+        if let deadline, now() >= deadline { throw MoneyForwardClientError.deadlineReached }
+        if Self.isInNightlyMaintenance(at: now()) { throw MoneyForwardClientError.nightlyMaintenance }
+    }
+
+    private func retryDelay(_ response: HTTPResponse, attempt: Int) -> Duration {
+        guard let header = response.headerValue(for: "Retry-After")?.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return retryPolicy.delay(forAttempt: attempt, retryAfterHeader: nil) }
+        if let delay = Int32(header), delay >= 0 { return .seconds(delay) }
+
+        let format = DateFormatter()
+        format.locale = Locale(identifier: "en_US_POSIX")
+        format.timeZone = TimeZone(secondsFromGMT: 0)
+        format.dateFormat = "EEE, dd MMM yyyy HH:mm:ss 'GMT'"
+        if let retryAt = format.date(from: header) {
+            return .seconds(max(0, retryAt.timeIntervalSince(now())))
+        }
+        return retryPolicy.delay(forAttempt: attempt, retryAfterHeader: nil)
+    }
+
+    private func waitForRetry(_ delay: Duration, deadline: Date?) async throws {
+        if let deadline, now().addingTimeInterval(Self.seconds(from: delay)) >= deadline {
+            throw MoneyForwardClientError.deadlineReached
+        }
+        try await sleeper.sleep(for: delay)
+    }
+
+    private func currentAccessToken(forceRefresh: Bool, deadline: Date?) async throws -> String {
         guard var creds = try await loadCredentials() else {
             throw MoneyForwardClientError.notConnected
         }
@@ -597,10 +640,11 @@ public actor MoneyForwardClient {
             if !forceRefresh, apiKeyCreds.hasValidJWT(at: now()), let jwt = apiKeyCreds.cachedJWT {
                 return jwt
             }
-            let exchanged = try await exchangeAPIKeyWithRetries(apiKeyCreds.apiKey)
+            let exchanged = try await exchangeAPIKeyWithRetries(apiKeyCreds.apiKey, deadline: deadline)
             apiKeyCreds.cachedJWT = exchanged.accessToken
             apiKeyCreds.jwtExpiresAt = exchanged.expiresAt
             creds.apiKey = apiKeyCreds
+            try Task.checkCancellation()
             try await saveCredentials(creds)
             return exchanged.accessToken
 
@@ -622,38 +666,31 @@ public actor MoneyForwardClient {
                 now: now()
             )
             creds.oauthTokens = refreshed
+            try Task.checkCancellation()
             try await saveCredentials(creds)
             return refreshed.accessToken
         }
     }
 
-    private func exchangeAPIKeyWithRetries(_ apiKey: String) async throws -> (accessToken: String, expiresAt: Date) {
+    private func exchangeAPIKeyWithRetries(
+        _ apiKey: String, deadline: Date?
+    ) async throws -> (accessToken: String, expiresAt: Date) {
+        let request = try MoneyForwardAuth.exchangeAPIKeyRequest(apiKey: apiKey, endpoint: exchangeEndpoint)
         var attempt = 0
         while true {
-            try Task.checkCancellation()
-            do {
-                return try await MoneyForwardAuth.exchangeAPIKey(
-                    apiKey,
-                    transport: transport,
-                    endpoint: exchangeEndpoint,
-                    now: now()
+            try checkRequestWindow(deadline)
+            let issuedAt = now()
+            let response = try await sendRequest(request)
+            let status = response.statusCode
+            if (status == 429 || (500...599).contains(status)), attempt < retryPolicy.maxRetries {
+                let delay = retryPolicy.delay(
+                    forAttempt: attempt, retryAfterHeader: response.headerValue(for: "Retry-After")
                 )
-            } catch let error as MoneyForwardClientError {
-                let retryable: Bool
-                switch error {
-                case .rateLimited, .maintenanceOrServerError:
-                    retryable = true
-                default:
-                    retryable = false
-                }
-                if retryable, attempt < retryPolicy.maxRetries {
-                    let delay = retryPolicy.delay(forAttempt: attempt, retryAfterHeader: nil)
-                    attempt += 1
-                    try await sleeper.sleep(for: delay)
-                    continue
-                }
-                throw error
+                try await waitForRetry(delay, deadline: deadline)
+                attempt += 1
+                continue
             }
+            return try MoneyForwardAuth.decodeAPIKeyExchange(response, now: issuedAt, attempts: attempt + 1)
         }
     }
 
@@ -676,15 +713,14 @@ public actor MoneyForwardClient {
     private func sendRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
         try Task.checkCancellation()
         do {
-            return try await transport.send(request)
+            let response = try await transport.send(request)
+            try Task.checkCancellation()
+            return response
         } catch is CancellationError {
             throw CancellationError()
-        } catch let transportError as HTTPTransportError {
-            try Task.checkCancellation()
-            throw MoneyForwardClientError.networkError(transportError.localizedDescription)
         } catch {
             try Task.checkCancellation()
-            throw MoneyForwardClientError.networkError(error.localizedDescription)
+            throw MoneyForwardClientError.networkError("the request could not complete.")
         }
     }
 
@@ -693,18 +729,19 @@ public actor MoneyForwardClient {
         return Double(c.seconds) + Double(c.attoseconds) / 1_000_000_000_000_000_000.0
     }
 
-    static func parseFirstError(_ data: Data) -> MoneyForwardAPIErrorItem? {
-        try? JSONDecoder().decode(MoneyForwardAPIErrorEnvelope.self, from: data).errors.first
+}
+
+// Settings requests and sync use the same process-wide pacing. Reserve slots before
+// suspending so concurrent requests cannot burst above three starts per second.
+private actor RequestPacer {
+    private var next = ContinuousClock.now
+
+    func waitTurn() async throws {
+        try Task.checkCancellation()
+        let slot = max(next, ContinuousClock.now)
+        next = slot.advanced(by: .milliseconds(350))
+        try await Task.sleep(until: slot, clock: .continuous)
     }
-}
-
-struct MoneyForwardAPIErrorItem: Decodable {
-    let code: String?
-    let message: String?
-}
-
-private struct MoneyForwardAPIErrorEnvelope: Decodable {
-    let errors: [MoneyForwardAPIErrorItem]
 }
 
 private struct AccessibleOfficesEnvelope: Decodable {

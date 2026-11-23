@@ -164,7 +164,10 @@ enum BackgroundRefresh {
             }
             work = Task {
                 await BackgroundRefresh.scheduleIfNeeded()
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    finish(success: false)
+                    return
+                }
                 let report = await SyncEngine.shared.run(trigger: .background, minimumInterval: 600, timeLimit: 25)
                 let succeeded: Bool
                 switch report.outcome {
@@ -179,7 +182,6 @@ enum BackgroundRefresh {
 
         private func expire() {
             work?.cancel()
-            finish(success: false)
         }
 
         private func finish(success: Bool) {

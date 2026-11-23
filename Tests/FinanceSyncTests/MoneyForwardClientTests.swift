@@ -273,7 +273,10 @@ struct MoneyForwardClientTests {
                 body: Data(#"{"errors":[{"code":"INVALID_API_KEY","message":"The provided API key is invalid or has been revoked."}]}"#.utf8)
             ),
         ])
-        let client = MoneyForwardClient(credentialStore: store, transport: transport, sleeper: RecordingSleeper())
+        let client = MoneyForwardClient(
+            credentialStore: store, transport: transport, sleeper: RecordingSleeper(),
+            now: { Date(timeIntervalSince1970: 1_760_000_000) }
+        )
 
         do {
             _ = try await client.listConnectedAccounts()
@@ -364,6 +367,54 @@ struct MoneyForwardClientTests {
             #expect(error.localizedDescription == "Money Forward refused access (plan or permission, HTTP 403)")
         }
     }
+    @Test func cachedJWTIsRenewedAfter401AndExchangeHonorsRetryAfter() async throws {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let store = InMemoryMoneyForwardCredentialStore(credentials: .init(apiKey: .init(
+            apiKey: sampleAPIKey, officeCode: sampleOfficeCode,
+            cachedJWT: "stale-jwt", jwtExpiresAt: now.addingTimeInterval(1800)
+        )))
+        let transport = FakeHTTPTransport(responses: [
+            HTTPResponse(statusCode: 401),
+            HTTPResponse(statusCode: 503, headers: ["Retry-After": "9"]),
+            HTTPResponse(statusCode: 200, body: Data(#"{"access_token":"renewed-jwt","expires_in":3600}"#.utf8)),
+            HTTPResponse(statusCode: 200, body: Data(#"{"connected_accounts":[]}"#.utf8)),
+        ])
+        let sleeper = RecordingSleeper()
+        let client = MoneyForwardClient(credentialStore: store, transport: transport, sleeper: sleeper, now: { now })
+        #expect(try await client.listConnectedAccounts().isEmpty)
+        #expect(await sleeper.durations() == [.seconds(9)])
+        let requests = await transport.requests()
+        #expect(requests.map(\.method) == ["GET", "POST", "POST", "GET"])
+        #expect(requests.last?.headers["Authorization"] == "Bearer renewed-jwt")
+        #expect(try await store.load()?.apiKey?.cachedJWT == "renewed-jwt")
+        #expect(!String(reflecting: requests).contains(sampleAPIKey))
+        #expect(!String(reflecting: requests).contains("renewed-jwt"))
+    }
+
+    @Test func splitsDateWindowsAndRejectsMalformedEncodedID() async throws {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let store = InMemoryMoneyForwardCredentialStore(credentials: .init(apiKey: .init(
+            apiKey: sampleAPIKey, officeCode: sampleOfficeCode,
+            cachedJWT: "cached-jwt", jwtExpiresAt: now.addingTimeInterval(1800)
+        )))
+        let empty = HTTPResponse(statusCode: 200, body: Data(#"{"transactions":[],"metadata":{"total_count":0,"total_pages":0}}"#.utf8))
+        let transport = FakeHTTPTransport(responses: [empty, empty])
+        let client = MoneyForwardClient(credentialStore: store, transport: transport, now: { now })
+        await #expect(throws: MoneyForwardClientError.invalidResponse("invalid encoded Money Forward ID.")) {
+            _ = try await client.transactionsPage(startDate: "2025-03-01", endDate: "2025-03-31",
+                                                   connectedAccountID: "sample%&page=2")
+        }
+
+        let result = try await client.fetchAllTransactions(startDate: "2024-02-28", endDate: "2025-03-03")
+        #expect(result.pagesFetched == 2)
+        let requests = await transport.requests()
+        #expect(requests.count == 2)
+        let first = try #require(requests.first?.url.query)
+        let second = try #require(requests.last?.url.query)
+        #expect(first.contains("start_date=2024-03-02&end_date=2025-03-03"))
+        #expect(second.contains("start_date=2024-02-28&end_date=2024-03-01"))
+    }
+
 }
 
 private final class ClockBox: @unchecked Sendable {

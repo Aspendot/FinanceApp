@@ -263,6 +263,7 @@ public enum GoogleOAuth {
         ]
         if includeGrantedScopes {
             queryItems.append(URLQueryItem(name: "include_granted_scopes", value: "true"))
+            queryItems.append(URLQueryItem(name: "prompt", value: "consent"))
         }
         components.queryItems = queryItems
         guard let url = components.url else {

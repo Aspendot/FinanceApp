@@ -63,14 +63,26 @@ enum MoneyForwardStore {
         }
     }
 
-    /// Merges newly fetched transactions with existing ones and keeps only the last `retentionDays` days.
-    static func mergeAndPrune(
+    /// Retains recent rows and any mapped bank history still ahead of the bundle.
+    static func merge(
         existing: [BankTransaction],
         fetched: [BankTransaction],
-        today: String,
-        retentionDays: Int = retentionDays
+        bundle: DataBundle?,
+        mapping: [String: String],
+        notices: [Notice],
+        today: String
     ) -> [BankTransaction] {
-        let cutoff = JST.addingDays(-max(1, retentionDays), to: today)
+        let cutoff = JST.addingDays(-retentionDays, to: today)
+        var oldestCrossSourceNotice: [String: String] = [:]
+        if let bundle, let matches = bundle.noticeSourceMatches {
+            for notice in notices where notice.amount != nil {
+                let source = notice.source.rawValue
+                if let coverage = bundle.coverage[source], notice.day < coverage.end { continue }
+                for target in matches[source] ?? [] {
+                    oldestCrossSourceNotice[target] = min(oldestCrossSourceNotice[target] ?? notice.day, notice.day)
+                }
+            }
+        }
         var byID: [String: BankTransaction] = [:]
         for tx in existing {
             byID[tx.id] = tx
@@ -80,8 +92,10 @@ enum MoneyForwardStore {
         }
         return byID.values
             .filter { tx in
-                if let cutoff { return tx.date >= cutoff }
-                return true
+                guard let cutoff, tx.date < cutoff else { return true }
+                guard let bundle, let source = tx.mappedSource(using: mapping) else { return false }
+                if let oldest = oldestCrossSourceNotice[source], tx.date >= oldest { return true }
+                return tx.date > (bundle.coverage[source]?.end ?? bundle.asOf)
             }
             .sorted { ($0.date, $0.id) > ($1.date, $1.id) }
     }
@@ -129,6 +143,7 @@ enum MoneyForwardSync {
             state.lastErrorMessage = nil
 
             if offices.count == 1, let only = offices.first {
+                if state.officeCode != only.code { state = MoneyForwardState(availableOffices: offices) }
                 creds.apiKey?.officeCode = only.code
                 try await tempStore.save(creds)
                 let accounts = try await client.listConnectedAccounts(officeCode: only.code)
@@ -144,13 +159,11 @@ enum MoneyForwardSync {
                 state.officeName = matched.name
                 state.connectedAccounts = accounts
             } else {
-                state.officeCode = nil
-                state.officeName = nil
+                state = MoneyForwardState(availableOffices: offices)
             }
 
             let finalCreds = try await tempStore.load() ?? creds
-            try KeychainMoneyForwardCredentialStore().save(finalCreds)
-            try MoneyForwardStore.saveState(state)
+            try saveConnection(finalCreds, state: state)
             return offices
         }
     }
@@ -163,19 +176,32 @@ enum MoneyForwardSync {
                 throw MoneyForwardClientError.notConnected
             }
             creds.apiKey?.officeCode = office.code
-            try keychain.save(creds)
-
-            let client = MoneyForwardClient(credentialStore: keychain, transport: transport)
+            let tempStore = InMemoryMoneyForwardCredentialStore(credentials: creds)
+            let client = MoneyForwardClient(credentialStore: tempStore, transport: transport)
             let accounts = try await client.listConnectedAccounts(officeCode: office.code)
 
-            var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+            var state = try MoneyForwardStore.loadState()
+            if state.officeCode != office.code { state = MoneyForwardState(availableOffices: state.availableOffices) }
             state.officeCode = office.code
             state.officeName = office.name
             state.connectedAccounts = accounts
             state.reconnectRequired = false
             state.accessRefusedMessage = nil
             state.lastErrorMessage = nil
+            let updated = try await tempStore.load() ?? creds
+            try saveConnection(updated, state: state)
+        }
+    }
+
+    private static func saveConnection(_ creds: MoneyForwardCredentials, state: MoneyForwardState) throws {
+        let keychain = KeychainMoneyForwardCredentialStore()
+        let previous = try keychain.load()
+        try keychain.save(creds)
+        do {
             try MoneyForwardStore.saveState(state)
+        } catch {
+            if let previous { try keychain.save(previous) } else { try keychain.clear() }
+            throw error
         }
     }
 
@@ -227,9 +253,8 @@ enum MoneyForwardSync {
             let office = try? await client.currentOffice()
 
             let finalCreds = try await tempStore.load() ?? creds
-            try KeychainMoneyForwardCredentialStore().save(finalCreds)
-
-            var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+            var state = try MoneyForwardStore.loadState()
+            if office == nil || state.officeCode != office?.code { state = MoneyForwardState() }
             state.officeCode = office?.code
             state.officeName = office?.name
             state.availableOffices = office.map { [$0] } ?? []
@@ -237,48 +262,52 @@ enum MoneyForwardSync {
             state.reconnectRequired = false
             state.accessRefusedMessage = nil
             state.lastErrorMessage = nil
-            try MoneyForwardStore.saveState(state)
+            try saveConnection(finalCreds, state: state)
         }
     }
 
     /// Refreshes the list of connected accounts from Money Forward without wiping stored data.
     static func refreshConnectedAccounts() async throws {
-        let keychain = KeychainMoneyForwardCredentialStore()
-        let client = MoneyForwardClient(credentialStore: keychain, transport: transport)
-        do {
-            let accounts = try await client.listConnectedAccounts()
-            var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
-            state.connectedAccounts = accounts
-            state.reconnectRequired = false
-            state.accessRefusedMessage = nil
-            state.lastErrorMessage = nil
-            try MoneyForwardStore.saveState(state)
-        } catch let error as MoneyForwardClientError {
-            var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
-            if error.requiresReconnect {
-                state.reconnectRequired = true
-                state.lastErrorMessage = "Reconnect Money Forward"
-            } else if case .forbidden = error {
-                state.accessRefusedMessage = error.localizedDescription
-                state.lastErrorMessage = error.localizedDescription
-            } else {
-                state.lastErrorMessage = error.localizedDescription
+        try await SyncEngine.shared.withSignIn {
+            let keychain = KeychainMoneyForwardCredentialStore()
+            let client = MoneyForwardClient(credentialStore: keychain, transport: transport)
+            do {
+                let accounts = try await client.listConnectedAccounts()
+                var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+                state.connectedAccounts = accounts
+                state.reconnectRequired = false
+                state.accessRefusedMessage = nil
+                state.lastErrorMessage = nil
+                try MoneyForwardStore.saveState(state)
+            } catch let error as MoneyForwardClientError {
+                var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+                if error.requiresReconnect {
+                    state.reconnectRequired = true
+                    state.lastErrorMessage = "Reconnect Money Forward"
+                } else if case .forbidden = error {
+                    state.accessRefusedMessage = error.localizedDescription
+                    state.lastErrorMessage = error.localizedDescription
+                } else {
+                    state.lastErrorMessage = error.localizedDescription
+                }
+                try? MoneyForwardStore.saveState(state)
+                throw error
             }
-            try? MoneyForwardStore.saveState(state)
-            throw error
         }
     }
 
     /// Saves a single account-to-source mapping entry (`nil` or empty = "Ignore").
-    static func setMapping(accountID: String, sourceKey: String?) throws {
-        var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
-        let trimmed = sourceKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if trimmed.isEmpty {
-            state.accountMapping.removeValue(forKey: accountID)
-        } else {
-            state.accountMapping[accountID] = trimmed
+    static func setMapping(accountID: String, sourceKey: String?) async throws {
+        try await SyncEngine.shared.withSignIn {
+            var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+            let trimmed = sourceKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if trimmed.isEmpty {
+                state.accountMapping.removeValue(forKey: accountID)
+            } else {
+                state.accountMapping[accountID] = trimmed
+            }
+            try MoneyForwardStore.saveState(state)
         }
-        try MoneyForwardStore.saveState(state)
     }
 
     /// Removes Money Forward credentials from the Keychain and clears local Money Forward state.

@@ -90,10 +90,39 @@ struct DriveSyncTests {
         }
         var badMagic = serialized
         badMagic[3] = UInt8(ascii: "2")
-        #expect(throws: DriveEnvelopeError.invalidMagic("FNB2")) {
+        #expect(throws: DriveEnvelopeError.invalidMagic) {
             _ = try DriveEnvelope.parse(badMagic)
         }
     }
+
+    #if canImport(CryptoKit)
+    @Test func pcAESGCMEnvelopeVector() throws {
+        let pairing = "finance-key:v1:AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        let key = try DriveSyncKey(pairingString: pairing)
+        #expect(key.keyBytes == Data(0..<32))
+        #expect(key.keyIDHex == "630dcd2966c43366")
+        #expect(key.pairingString == pairing)
+
+        let nonce = Data(100..<112)
+        let plaintext = Data(#"{"format":"finance-bundle/1","note":"test"}"#.utf8)
+        let expectedHex = "464e4231630dcd2966c433666465666768696a6b6c6d6e6f"
+            + "3339b8090b8437ea1c587d8eb30b0b9321a72b68fe02971ec2fe9d6ad781cb27e08c62fa6e66fe7789d105727f70fd1c3e3b5401fab11541f3f9c8"
+        let offsets = stride(from: 0, to: expectedHex.count, by: 2)
+        let expected = try Data(offsets.map { offset in
+            let start = expectedHex.index(expectedHex.startIndex, offsetBy: offset)
+            let end = expectedHex.index(start, offsetBy: 2)
+            return try #require(UInt8(expectedHex[start..<end], radix: 16))
+        })
+        #expect(try DriveEnvelope.open(expected, key: key) == plaintext)
+        #expect(try DriveEnvelope.seal(plaintext: plaintext, key: key, nonce: nonce) == expected)
+
+        var tampered = expected
+        tampered[tampered.count - 1] ^= 1
+        #expect(throws: DriveEnvelopeError.decryptionFailed) {
+            try DriveEnvelope.open(tampered, key: key)
+        }
+    }
+    #endif
 
     @Test("GoogleDriveClient lists appDataFolder file, downloads bytes, and reports missing Drive scope")
     func driveClientListDownloadAndMissingScope() async throws {
@@ -127,6 +156,7 @@ struct DriveSyncTests {
             scope: "\(GoogleOAuth.gmailReadOnlyScope) \(GoogleOAuth.driveAppDataScope)"
         ))
         let transport = FakeHTTPTransport()
+        await transport.enqueue(try TestJSON.response(json: ["nextPageToken": "page+2"]))
         await transport.enqueue(try TestJSON.response(json: [
             "files": [
                 [
@@ -165,12 +195,13 @@ struct DriveSyncTests {
         #expect(downloaded == rawEnvelope)
 
         let requests = await transport.requests()
-        #expect(requests.count == 2)
+        #expect(requests.count == 3)
         let listComponents = try #require(URLComponents(url: requests[0].url, resolvingAgainstBaseURL: false))
         let listQuery = Dictionary(uniqueKeysWithValues: (listComponents.queryItems ?? []).map { ($0.name, $0.value ?? "") })
         #expect(listQuery["spaces"] == "appDataFolder")
-        #expect(listQuery["fields"] == "files(id,name,modifiedTime,md5Checksum,size)")
-        #expect(requests[1].url.absoluteString.contains("/files/file-abc-123?alt=media"))
+        #expect(listQuery["fields"] == "nextPageToken,files(id,name,modifiedTime,md5Checksum,size)")
+        #expect(requests[1].url.absoluteString.contains("pageToken=page%2B2") == true)
+        #expect(requests[2].url.absoluteString.contains("/files/file-abc-123?alt=media"))
     }
 
     @Test("GoogleDriveClient maps HTTP 403 insufficientPermissions to missingDriveScope")
