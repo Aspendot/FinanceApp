@@ -21,7 +21,9 @@ struct GmailClientTests {
 
     @Test("Refreshes the access token once on 401 and retries the Gmail request")
     func refreshesOnceOn401() async throws {
-        let store = InMemoryTokenStore(tokens: validTokens(accessToken: "expired-on-server", refreshToken: "sample-refresh-1"))
+        var initial = validTokens(accessToken: "expired-on-server", refreshToken: "sample-refresh-1")
+        initial.mailboxFingerprint = "sample-fingerprint"
+        let store = InMemoryTokenStore(tokens: initial)
         let transport = FakeHTTPTransport(responses: [
             HTTPResponse(statusCode: 401, body: Data(#"{"error":{"code":401,"message":"Invalid Credentials"}}"#.utf8)),
             try TestJSON.response(json: [
@@ -57,6 +59,25 @@ struct GmailClientTests {
         let saved = try #require(await store.load())
         #expect(saved.accessToken == "fresh-access-2")
         #expect(saved.refreshToken == "sample-refresh-1")
+        #expect(saved.mailboxFingerprint == initial.mailboxFingerprint)
+    }
+
+    @Test("Reads the signed-in mailbox from the Gmail profile endpoint")
+    func readsMailboxProfile() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: ["emailAddress": "sample@example.com"]),
+        ])
+        let client = GmailClient(
+            clientID: sampleClientID,
+            tokenStore: InMemoryTokenStore(tokens: validTokens()),
+            transport: transport,
+            now: { self.fixedNow }
+        )
+
+        #expect(try await client.profileEmail() == "sample@example.com")
+        let request = try #require(await transport.requests().first)
+        #expect(request.url.path.hasSuffix("/users/me/profile"))
+        #expect(request.headers["Authorization"] == "Bearer sample-access-1")
     }
 
     @Test("Does not loop when a refreshed token still receives 401")
@@ -216,5 +237,37 @@ struct GmailClientTests {
         #expect(req2Query.contains(URLQueryItem(name: "pageToken", value: "page-2")))
         #expect(req2Query.contains(URLQueryItem(name: "maxResults", value: "2")))
         #expect(requests[2].url.absoluteString.contains("/users/me/messages/msg-1?format=full"))
+    }
+
+    @Test("Maps Google invalid_grant token refresh errors to invalidGrant requiring sign-in")
+    func mapsInvalidGrantToSignInRequired() async throws {
+        let expiredTokens = OAuthTokens(
+            accessToken: "expired-access",
+            refreshToken: "revoked-refresh",
+            expiresAt: fixedNow.addingTimeInterval(-60)
+        )
+        let store = InMemoryTokenStore(tokens: expiredTokens)
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(statusCode: 400, json: [
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked.",
+            ]),
+        ])
+        let client = GmailClient(
+            clientID: sampleClientID,
+            tokenStore: store,
+            transport: transport,
+            sleeper: RecordingSleeper(),
+            now: { self.fixedNow }
+        )
+
+        do {
+            _ = try await client.listMessageIDs()
+            Issue.record("Expected GmailClientError.invalidGrant")
+        } catch let error as GmailClientError {
+            #expect(error == .invalidGrant)
+            #expect(error.requiresSignInAgain == true)
+            #expect(error.errorDescription == "Sign in to Gmail again")
+        }
     }
 }

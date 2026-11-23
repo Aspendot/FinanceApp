@@ -15,6 +15,30 @@ public struct SyncState: Codable, Equatable, Sendable {
     }
 }
 
+/// One incremental batch committed during `NoticeSync.sync`.
+public struct SyncBatch: Equatable, Sendable {
+    /// Feed outcomes for newly fetched messages in this batch (excluding dropped one-time codes).
+    public var items: [FeedItem]
+    /// Gmail message IDs processed in this batch (including dropped one-time codes).
+    public var seenMessageIDs: [String]
+    /// Cumulative sync state after this batch.
+    public var state: SyncState
+    /// Number of one-time-code messages dropped in this batch.
+    public var droppedOneTimeCodeCount: Int
+
+    public init(
+        items: [FeedItem],
+        seenMessageIDs: [String],
+        state: SyncState,
+        droppedOneTimeCodeCount: Int = 0
+    ) {
+        self.items = items
+        self.seenMessageIDs = seenMessageIDs
+        self.state = state
+        self.droppedOneTimeCodeCount = droppedOneTimeCodeCount
+    }
+}
+
 /// Output of one incremental `NoticeSync.sync` run.
 ///
 /// Holds only parsed feed outcomes, the updated `SyncState`, and a count of
@@ -27,11 +51,19 @@ public struct SyncResult: Equatable, Sendable {
     /// Number of newly fetched messages dropped before parsing because they matched
     /// one-time-code wording.
     public var droppedOneTimeCodeCount: Int
+    /// True when the run stopped early because `deadline` was reached before all pages finished.
+    public var reachedDeadline: Bool
 
-    public init(items: [FeedItem], state: SyncState, droppedOneTimeCodeCount: Int = 0) {
+    public init(
+        items: [FeedItem],
+        state: SyncState,
+        droppedOneTimeCodeCount: Int = 0,
+        reachedDeadline: Bool = false
+    ) {
         self.items = items
         self.state = state
         self.droppedOneTimeCodeCount = droppedOneTimeCodeCount
+        self.reachedDeadline = reachedDeadline
     }
 }
 
@@ -145,66 +177,135 @@ public enum NoticeSync {
 
     /// Performs one incremental sync against `client`.
     ///
-    /// Lists matching message IDs across all pages, skips IDs already in `state`,
-    /// fetches each unseen message, drops one-time-code messages before parsing,
-    /// runs `NoticeFeed.process` on the remainder, and returns the new `FeedItem`s
-    /// together with the updated `SyncState`. Email bodies are never stored.
+    /// Processes Gmail list pages newest-first, fetches unseen messages in batches
+    /// of `batchSize`, drops one-time-code messages before parsing, and invokes
+    /// `onBatch` after each batch so callers can commit progress incrementally.
+    /// When `deadline` is reached, stops cleanly with `reachedDeadline == true`
+    /// while preserving previously committed `seenMessageIDs` so the next run continues.
+    /// Email bodies are never stored.
     public static func sync(
         client: GmailClient,
         state: SyncState = SyncState(),
         lookbackDays: Int = 30,
         pageSize: Int? = nil,
-        now: @Sendable () -> Date = { Date() }
+        batchSize: Int? = nil,
+        deadline: Date? = nil,
+        now: @Sendable () -> Date = { Date() },
+        onBatch: (@Sendable (SyncBatch) async throws -> Void)? = nil
     ) async throws -> SyncResult {
         let query = buildQuery(lookbackDays: lookbackDays)
-        var unseenIDs: [String] = []
-        var queuedIDs = Set<String>()
+        let effectiveBatchSize = batchSize.map { max(1, $0) }
+        var updatedState = state
+        var allItems: [FeedItem] = []
+        var totalDropped = 0
         var pageToken: String? = nil
         var seenPageTokens = Set<String>()
+        var reachedDeadline = false
+
+        var batchItems: [FeedItem] = []
+        var batchSeenIDs: [String] = []
+        var batchDropped = 0
+
+        func flushBatch() async throws {
+            guard !batchSeenIDs.isEmpty else { return }
+            let batch = SyncBatch(
+                items: batchItems,
+                seenMessageIDs: batchSeenIDs,
+                state: updatedState,
+                droppedOneTimeCodeCount: batchDropped
+            )
+            batchItems.removeAll(keepingCapacity: true)
+            batchSeenIDs.removeAll(keepingCapacity: true)
+            batchDropped = 0
+            try await onBatch?(batch)
+        }
 
         while true {
             try Task.checkCancellation()
+            if let deadline, now() >= deadline {
+                reachedDeadline = true
+                break
+            }
+
             let page = try await client.listMessageIDs(
                 query: query,
                 maxResults: pageSize,
                 pageToken: pageToken
             )
+
+            var pageUnseen: [String] = []
+            var queuedInPage = Set<String>()
             for stub in page.messages {
-                if state.seenMessageIDs.contains(stub.id) || queuedIDs.contains(stub.id) {
+                if updatedState.seenMessageIDs.contains(stub.id) || queuedInPage.contains(stub.id) {
                     continue
                 }
-                queuedIDs.insert(stub.id)
-                unseenIDs.append(stub.id)
+                queuedInPage.insert(stub.id)
+                pageUnseen.append(stub.id)
             }
-            guard let next = page.nextPageToken, !next.isEmpty, !seenPageTokens.contains(next) else {
+
+            for id in pageUnseen {
+                if Task.isCancelled {
+                    try await flushBatch()
+                    throw CancellationError()
+                }
+                if let deadline, now() >= deadline {
+                    try await flushBatch()
+                    reachedDeadline = true
+                    break
+                }
+
+                let gmail: GmailMessage
+                do {
+                    gmail = try await client.message(id: id)
+                } catch GmailClientError.httpError(statusCode: 404, message: _) {
+                    // The message may have been deleted after listing. Retry it
+                    // if it reappears in a later run, and keep scanning this one.
+                    continue
+                } catch {
+                    try await flushBatch()
+                    throw error
+                }
+
+                updatedState.seenMessageIDs.insert(id)
+                batchSeenIDs.append(id)
+
+                if OneTimeCodeFilter.matches(gmail) {
+                    batchDropped += 1
+                    totalDropped += 1
+                } else {
+                    let item = NoticeFeed.process(gmail)
+                    batchItems.append(item)
+                    allItems.append(item)
+                }
+
+                if let limit = effectiveBatchSize, batchSeenIDs.count >= limit {
+                    try await flushBatch()
+                }
+            }
+
+            try await flushBatch()
+            if reachedDeadline {
                 break
             }
-            seenPageTokens.insert(next)
+
+            guard let next = page.nextPageToken, !next.isEmpty else {
+                break
+            }
+            guard seenPageTokens.insert(next).inserted else {
+                throw GmailClientError.invalidResponse("message list repeated a page token.")
+            }
             pageToken = next
         }
 
-        var updatedState = state
-        var items: [FeedItem] = []
-        var droppedCount = 0
-
-        for id in unseenIDs {
-            try Task.checkCancellation()
-            let gmail = try await client.message(id: id)
-            updatedState.seenMessageIDs.insert(id)
-
-            if OneTimeCodeFilter.matches(gmail) {
-                droppedCount += 1
-                continue
-            }
-
-            items.append(NoticeFeed.process(gmail))
+        try Task.checkCancellation()
+        if !reachedDeadline {
+            updatedState.lastSyncAt = now()
         }
-
-        updatedState.lastSyncAt = now()
         return SyncResult(
-            items: items,
+            items: allItems,
             state: updatedState,
-            droppedOneTimeCodeCount: droppedCount
+            droppedOneTimeCodeCount: totalDropped,
+            reachedDeadline: reachedDeadline
         )
     }
 }

@@ -4,11 +4,14 @@ import Foundation
 public struct PendingResult: Sendable, Equatable {
     /// Pending spending items dated on or after their source's coverage end.
     public var items: [BudgetItem]
+    /// Gmail message ID of the notice that produced each item in `items`, in the same order.
+    public var noticeIDs: [String]
     /// Eligible notices dated before their source's coverage end.
     public var unmatched: [Notice]
 
-    public init(items: [BudgetItem] = [], unmatched: [Notice] = []) {
+    public init(items: [BudgetItem] = [], noticeIDs: [String] = [], unmatched: [Notice] = []) {
         self.items = items
+        self.noticeIDs = noticeIDs
         self.unmatched = unmatched
     }
 }
@@ -16,6 +19,54 @@ public struct PendingResult: Sendable, Equatable {
 /// Converts live `Notice` records into pending `BudgetItem`s using the same rules as the PC pipeline.
 public enum PendingBuilder {
     public static let missingMerchantPlaceholder = "(no merchant name in the notice)"
+
+    /// Keeps recent history and any older notices that may still affect pending totals.
+    public static func retainNotices(_ newestFirst: [Notice], bundle: DataBundle?, historyLimit: Int) -> [Notice] {
+        let limit = max(0, historyLimit)
+        guard newestFirst.count > limit else { return newestFirst }
+
+        func isUncovered(_ notice: Notice) -> Bool {
+            guard let coverage = bundle?.coverage[notice.source.rawValue] else { return true }
+            return notice.day >= coverage.end
+        }
+
+        func references(_ notice: Notice) -> [String] {
+            [notice.reference, notice.relatedReference].compactMap(nonEmpty).map { "\(notice.source.rawValue)|\($0)" }
+        }
+
+        let pending = newestFirst.filter { isPaymentNotice($0) && isUncovered($0) }
+        let pendingRefs = Set(pending.flatMap(references))
+        let receiptOrders = Set(pending.filter { $0.source == .apple }.compactMap { nonEmpty($0.reference) })
+        let cardOrders = Set(pending.filter { $0.source != .apple }.compactMap { nonEmpty($0.orderID) })
+        let receiptDays = pending.filter { $0.source == .apple }.compactMap { JST.dayNumber($0.day) }
+        let appleCardDays = pending.filter {
+            $0.source != .apple && TextFold.key($0.merchant ?? "").contains("apple")
+        }.compactMap { JST.dayNumber($0.day) }
+
+        return Array(newestFirst.prefix(limit)) + newestFirst.dropFirst(limit).filter { notice in
+            guard isPaymentNotice(notice) else { return false }
+            if isUncovered(notice) || !pendingRefs.isDisjoint(with: references(notice)) {
+                return true
+            }
+            let isReceipt = notice.source == .apple
+            let orders = isReceipt ? cardOrders : receiptOrders
+            if let order = nonEmpty(isReceipt ? notice.reference : notice.orderID), orders.contains(order) {
+                return true
+            }
+            guard isReceipt || TextFold.key(notice.merchant ?? "").contains("apple"),
+                  let day = JST.dayNumber(notice.day) else { return false }
+            let otherDays = isReceipt ? appleCardDays : receiptDays
+            return otherDays.contains { abs($0 - day) <= 3 }
+        }
+    }
+
+    private static func isPaymentNotice(_ notice: Notice) -> Bool {
+        guard notice.amount != nil else { return false }
+        switch notice.kind {
+        case .purchase, .refund, .settlement, .cancellation: return true
+        default: return false
+        }
+    }
 
     /// Returns only the pending items from `build(notices:bundle:categorizer:config:)`.
     public static func items(
@@ -37,15 +88,7 @@ public enum PendingBuilder {
         let sorted = notices.sorted { $0.messageID < $1.messageID }
 
         // Keep only purchase, refund, settlement and cancellation notices with a yen amount.
-        let eligible = sorted.filter { notice in
-            guard notice.amount != nil else { return false }
-            switch notice.kind {
-            case .purchase, .refund, .settlement, .cancellation:
-                return true
-            default:
-                return false
-            }
-        }
+        let eligible = sorted.filter(isPaymentNotice)
 
         // Pair cancellations with purchases of the same source and reference.
         var purchasesBySourceRef: [String: [String]] = [:]
@@ -139,6 +182,7 @@ public enum PendingBuilder {
         }
 
         var pendingItems: [BudgetItem] = []
+        var noticeIDs: [String] = []
         var unmatched: [Notice] = []
 
         for (notice, amount) in ordered {
@@ -178,9 +222,10 @@ public enum PendingBuilder {
                 layer: layer,
                 isPending: true
             ))
+            noticeIDs.append(notice.messageID)
         }
 
-        return PendingResult(items: pendingItems, unmatched: unmatched)
+        return PendingResult(items: pendingItems, noticeIDs: noticeIDs, unmatched: unmatched)
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

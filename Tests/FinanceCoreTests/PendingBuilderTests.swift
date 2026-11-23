@@ -90,6 +90,22 @@ private func makeBundle() throws -> DataBundle {
 
 @Suite("PendingBuilder")
 struct PendingBuilderTests {
+    @Test func historyLimitKeepsOlderNoticesStillNeededForPendingTotals() throws {
+        let notices = [
+            makeNotice("recent-diagnostic", kind: .decline),
+            makeNotice("pending-cancellation", kind: .cancellation, on: "2026-01-31", relatedRef: "SAMPLE-REF"),
+            makeNotice("covered-payment", on: "2026-01-30"),
+            makeNotice("linked-payment", on: "2026-01-30", ref: "SAMPLE-REF"),
+            makeNotice("no-coverage", source: .apple, on: "2026-01-30"),
+            makeNotice("old-diagnostic", kind: .decline),
+        ]
+
+        let retained = PendingBuilder.retainNotices(notices, bundle: try makeBundle(), historyLimit: 1)
+        #expect(retained.map(\.messageID) == ["recent-diagnostic", "pending-cancellation", "linked-payment", "no-coverage"])
+        let beforeImport = PendingBuilder.retainNotices(notices, bundle: nil, historyLimit: 1)
+        #expect(beforeImport.contains { $0.messageID == "covered-payment" })
+    }
+
     @Test func cancellationPairRemovesBothByReferenceAndRelatedReference() throws {
         let bundle = try makeBundle()
         let categorizer = Categorizer(rules: bundle.rules)
@@ -208,6 +224,41 @@ struct PendingBuilderTests {
         ])
 
         // Reversed input order produces identical output.
+        let reversed = PendingBuilder.build(notices: notices.reversed(), bundle: bundle, categorizer: categorizer, config: bundle.layerConfig)
+        #expect(reversed == result)
+    }
+
+    @Test func noticeIDsAlignOneToOneWithPendingItems() throws {
+        let bundle = try makeBundle()
+        let categorizer = Categorizer(rules: bundle.rules)
+
+        let notices = [
+            // Pre-coverage notice: unmatched, not in noticeIDs.
+            makeNotice("old-1", source: .merpay, on: "2026-01-15", amount: 500),
+            // Boundary-day duplicate of bundle item: skipped, not in noticeIDs.
+            makeNotice("dup-1", source: .merpay, on: "2026-01-31", amount: 1500),
+            // Second identical boundary-day notice: kept with its messageID.
+            makeNotice("keep-boundary", source: .merpay, on: "2026-01-31", amount: 1500),
+            // Purchase replaced by a later settlement: keeps the original purchase messageID.
+            makeNotice("buy-settled", source: .docomoDebit, kind: .purchase, received: "2026-02-02T10:00:00+09:00", on: "2026-02-02", amount: 3000, ref: "REF1"),
+            makeNotice("settle-1", source: .docomoDebit, kind: .settlement, received: "2026-02-03T10:00:00+09:00", on: "2026-02-02", amount: 3200, ref: "REF1"),
+            // Cancelled pair: neither appears in items or noticeIDs.
+            makeNotice("buy-cancel", source: .merpay, kind: .purchase, on: "2026-02-03", amount: 1000, ref: "REF2"),
+            makeNotice("cancel-1", source: .merpay, kind: .cancellation, on: "2026-02-03", amount: -1000, ref: "REF2"),
+            // Apple receipt and duplicate card notice: only Apple receipt appears.
+            makeNotice("apple-1", source: .apple, on: "2026-02-04", amount: 1200, merchant: "SAMPLE CLOUD", ref: "ORD9"),
+            makeNotice("card-apple-dup", source: .merpay, on: "2026-02-04", amount: 1200, merchant: "DIGITAL STORE", orderID: "ORD9"),
+            // Standalone settlement with no purchase: keeps its own messageID.
+            makeNotice("settle-solo", source: .docomoDebit, kind: .settlement, on: "2026-02-05", amount: 4000, merchant: "METRO TELECOM", ref: "REF3"),
+        ]
+
+        let result = PendingBuilder.build(notices: notices, bundle: bundle, categorizer: categorizer, config: bundle.layerConfig)
+        #expect(result.items.count == 4)
+        #expect(result.noticeIDs == ["keep-boundary", "buy-settled", "apple-1", "settle-solo"])
+        #expect(result.items.map(\.amount) == [1500, 3200, 1200, 4000])
+        #expect(result.unmatched.map(\.messageID) == ["old-1"])
+
+        // Input order must not change items or noticeIDs.
         let reversed = PendingBuilder.build(notices: notices.reversed(), bundle: bundle, categorizer: categorizer, config: bundle.layerConfig)
         #expect(reversed == result)
     }

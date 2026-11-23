@@ -1,7 +1,7 @@
 import Foundation
 
 /// What the app shows in its widget.
-struct WidgetSnapshot: Codable, Equatable {
+struct WidgetSnapshot: Codable, Equatable, Sendable {
     var title: String
     var value: String
     var detail: String

@@ -12,7 +12,6 @@ struct SpikeView: View {
     @State private var faceIDResult = "Not tried yet"
     @State private var notifyResult = "Not tried yet"
     @State private var refreshResult = "Not scheduled yet"
-    @State private var runs = SpikeLog.load().backgroundRuns
     @State private var clientID = GmailSync.clientID ?? ""
     @State private var signInTask: Task<Void, Never>?
     @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
@@ -62,13 +61,35 @@ struct SpikeView: View {
                 .task { notifyResult = await Notifier.status() }
                 Section("Background refresh") {
                     Text(refreshResult).font(.footnote).foregroundStyle(.secondary)
-                    Text(runs.isEmpty ? "No background runs yet" : "\(runs.count) runs, last \(runs.last!.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.footnote)
                     Button("Schedule background refresh") {
-                        refreshResult = BackgroundRefresh.schedule()
+                        Task { refreshResult = await BackgroundRefresh.scheduleIfNeeded() }
                     }
-                    Button("Reload the run count") {
-                        runs = SpikeLog.load().backgroundRuns
+                    Button("Reload run log") {
+                        model.refreshRunLog()
+                    }
+                }
+                Section("Background checks") {
+                    if model.runLog.isEmpty {
+                        Text("No checks recorded yet").font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(model.runLog.prefix(20))) { run in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(alignment: .firstTextBaseline) {
+                                    Text("\(SyncStorage.formatCheckTime(run.startedAt)) · \(run.trigger.rawValue)")
+                                        .font(.subheadline)
+                                    Spacer()
+                                    Text(Self.outcomeSummary(run))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                if let error = run.errorMessage, !error.isEmpty, error != run.outcome.label {
+                                    Text(error)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                            }
+                        }
                     }
                 }
                 Section("Gmail (read-only)") {
@@ -98,7 +119,7 @@ struct SpikeView: View {
                     }
                     Button("Fetch bank emails from the last 7 days") {
                         Task {
-                            await model.syncGmail()
+                            await model.syncGmail(userInitiated: true)
                             notices = GmailSync.recentNotices()
                             if let message = model.syncMessage { gmailResult = message }
                         }
@@ -107,13 +128,13 @@ struct SpikeView: View {
                     Button("Sign out", role: .destructive) {
                         Task {
                             do {
-                                try GmailSync.signOut()
-                                notices = []
+                                try await GmailSync.signOut()
                                 gmailResult = "Signed out"
-                                await model.reload()
                             } catch {
                                 gmailResult = "Sign-out failed: " + error.localizedDescription
                             }
+                            notices = GmailSync.recentNotices()
+                            await model.reload()
                         }
                     }
                     .disabled(model.syncing || signInTask != nil)
@@ -143,11 +164,23 @@ struct SpikeView: View {
                 }
             }
             .navigationTitle("Finance test")
+            .onAppear {
+                notices = GmailSync.recentNotices()
+                model.refreshRunLog()
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     notices = GmailSync.recentNotices()
+                    model.refreshRunLog()
                 }
             }
         }
+    }
+
+    private static func outcomeSummary(_ run: SyncRunRecord) -> String {
+        if run.outcome == .updated, run.newPayments > 0 {
+            return "Updated (\(run.newPayments) new)"
+        }
+        return run.outcome.label
     }
 }

@@ -108,6 +108,8 @@ public enum GmailClientError: Error, LocalizedError, Equatable, Sendable {
     case notSignedIn
     /// The access token expired or was rejected and no refresh token is stored.
     case missingRefreshToken
+    /// Google rejected the refresh token (`invalid_grant`, expired, or revoked).
+    case invalidGrant
     /// Refreshing the access token failed.
     case tokenRefreshFailed(String)
     /// Gmail rejected the access token even after refreshing once.
@@ -123,12 +125,24 @@ public enum GmailClientError: Error, LocalizedError, Equatable, Sendable {
     /// The underlying HTTP transport threw an error.
     case networkError(String)
 
+    /// True when the stored OAuth session can no longer be used without signing in again.
+    public var requiresSignInAgain: Bool {
+        switch self {
+        case .invalidGrant, .missingRefreshToken, .unauthorized:
+            return true
+        default:
+            return false
+        }
+    }
+
     public var errorDescription: String? {
         switch self {
         case .notSignedIn:
             return "No Google account is signed in."
         case .missingRefreshToken:
             return "The Google session expired and cannot be refreshed. Sign in again."
+        case .invalidGrant:
+            return "Sign in to Gmail again"
         case .tokenRefreshFailed(let detail):
             return "Could not refresh the Google access token: \(detail)"
         case .unauthorized:
@@ -260,7 +274,24 @@ public actor GmailClient {
         }
     }
 
+    /// Returns the email address of the mailbox associated with the current credentials.
+    public func profileEmail() async throws -> String {
+        struct Profile: Decodable {
+            let emailAddress: String
+        }
+
+        let endpoint = baseURL.appendingPathComponent("users").appendingPathComponent("me")
+            .appendingPathComponent("profile")
+        let data = try await performAuthorizedGET(endpoint)
+        guard let profile = try? JSONDecoder().decode(Profile.self, from: data),
+              !profile.emailAddress.isEmpty else {
+            throw GmailClientError.invalidResponse("could not decode Gmail profile JSON.")
+        }
+        return profile.emailAddress
+    }
+
     private func performAuthorizedGET(_ url: URL) async throws -> Data {
+        try Task.checkCancellation()
         guard var tokens = try await loadTokens() else {
             throw GmailClientError.notSignedIn
         }
@@ -329,7 +360,7 @@ public actor GmailClient {
         guard let refreshToken = current.refreshToken, !refreshToken.isEmpty else {
             throw GmailClientError.missingRefreshToken
         }
-        let refreshed: OAuthTokens
+        var refreshed: OAuthTokens
         do {
             refreshed = try await GoogleOAuth.refreshAccessToken(
                 clientID: clientID,
@@ -338,6 +369,11 @@ public actor GmailClient {
                 now: now()
             )
         } catch let oauthError as OAuthError {
+            if case .tokenEndpointError(_, let code, _) = oauthError,
+               code?.lowercased() == "invalid_grant"
+            {
+                throw GmailClientError.invalidGrant
+            }
             throw GmailClientError.tokenRefreshFailed(oauthError.localizedDescription)
         } catch let transportError as HTTPTransportError {
             throw GmailClientError.networkError(transportError.localizedDescription)
@@ -347,6 +383,8 @@ public actor GmailClient {
             throw GmailClientError.tokenRefreshFailed(error.localizedDescription)
         }
 
+        try Task.checkCancellation()
+        refreshed.mailboxFingerprint = current.mailboxFingerprint
         do {
             try await tokenStore.save(refreshed)
         } catch {
@@ -356,13 +394,16 @@ public actor GmailClient {
     }
 
     private func sendRequest(_ request: HTTPRequest) async throws -> HTTPResponse {
+        try Task.checkCancellation()
         do {
             return try await transport.send(request)
         } catch is CancellationError {
             throw CancellationError()
         } catch let transportError as HTTPTransportError {
+            try Task.checkCancellation()
             throw GmailClientError.networkError(transportError.localizedDescription)
         } catch {
+            try Task.checkCancellation()
             throw GmailClientError.networkError(error.localizedDescription)
         }
     }

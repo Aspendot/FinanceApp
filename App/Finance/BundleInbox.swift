@@ -101,7 +101,7 @@ enum BundleInbox {
             : "The data file is already imported or older than the stored data.")
     }
 
-    private static func readStoredData() throws -> Data? {
+    static func readStoredData() throws -> Data? {
         do {
             return try Data(contentsOf: storedURL)
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile {

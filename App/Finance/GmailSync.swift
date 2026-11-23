@@ -1,153 +1,121 @@
+import CryptoKit
 import FinanceCore
 import FinanceSync
 import Foundation
 
-/// Gmail on the phone: read-only sign-in, then incremental syncs of bank notices.
-/// Only parsed notices are kept, never email bodies. The refresh token lives in the
-/// app's own Keychain (no shared access group), readable after the first unlock so a
-/// background refresh can use it while the phone is locked.
+/// Gmail sign-in and sign-out on the phone.
+///
+/// The OAuth refresh token lives in the app's own Keychain with
+/// `AfterFirstUnlockThisDeviceOnly` so background runs can use it while locked.
+/// Incremental syncs run through `SyncEngine`.
 @MainActor
 enum GmailSync {
-    private static let clientIDKey = "googleClientID"
-    private static let stateKey = "gmailSyncState"
-    private static let noticesKey = "recentNotices"
-    private static let cacheKey = "gmailSyncCache"
-    private static var busy = false
+    private nonisolated static let clientIDKey = "googleClientID"
     private static let transport = URLSessionHTTPTransport(session: URLSession(configuration: .ephemeral))
 
-    private struct Cache: Codable {
-        var state: SyncState
-        var notices: [Notice]
-    }
-
-    static var clientID: String? {
+    nonisolated static var clientID: String? {
         let value = UserDefaults.standard.string(forKey: clientIDKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
         return value?.isEmpty == false ? value : nil
     }
 
-    static func hasCredentials() throws -> Bool {
+    nonisolated static func hasCredentials() throws -> Bool {
         try KeychainTokenStore().load() != nil
     }
 
-    /// Runs Google's sign-in sheet and stores the tokens.
+    /// Runs Google's sign-in sheet and stores the OAuth tokens.
     static func signIn(clientID input: String) async throws {
-        try begin()
-        defer { busy = false }
+        try await SyncEngine.shared.withSignIn {
+            try await authorize(clientID: input)
+        }
+    }
+
+    private static func authorize(clientID input: String) async throws {
+        try Task.checkCancellation()
         let requestedID = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedID.isEmpty else { throw SyncProblem.noClientID }
         let store = KeychainTokenStore()
-        if try store.load() != nil, let currentID = clientID, currentID != requestedID {
+        let currentID = clientID
+        let currentTokens = try store.load()
+        if currentTokens != nil, let currentID, currentID != requestedID {
             throw SyncProblem.signOutBeforeChangingClientID
+        }
+        var currentMailbox = currentTokens?.mailboxFingerprint
+        if currentMailbox == nil, let currentTokens, let currentID {
+            let client = GmailClient(
+                clientID: currentID,
+                tokenStore: InMemoryTokenStore(tokens: currentTokens),
+                transport: transport
+            )
+            do {
+                currentMailbox = try await mailboxFingerprint(client: client)
+            } catch let error as GmailClientError where error.requiresSignInAgain {
+                // Older versions did not store a mailbox binding.
+            }
         }
         let pkce = try PKCE.generate()
         let state = GoogleOAuth.generateState()
         let url = try GoogleOAuth.authorizationURL(clientID: requestedID, pkce: pkce, state: state)
-        let callback = try await WebAuthenticator().authenticate(authURL: url, callbackScheme: try GoogleOAuth.reversedClientID(for: requestedID))
+        let callback = try await WebAuthenticator().authenticate(
+            authURL: url,
+            callbackScheme: try GoogleOAuth.reversedClientID(for: requestedID)
+        )
         let code = try GoogleOAuth.parseCallback(callback, expectedState: state)
-        let tokens = try await GoogleOAuth.exchangeAuthorizationCode(
-            clientID: requestedID, code: code, codeVerifier: pkce.verifier,
-            redirectURI: try GoogleOAuth.redirectURI(for: requestedID), transport: transport)
+        let exchanged = try await GoogleOAuth.exchangeAuthorizationCode(
+            clientID: requestedID,
+            code: code,
+            codeVerifier: pkce.verifier,
+            redirectURI: try GoogleOAuth.redirectURI(for: requestedID),
+            transport: transport
+        )
+        let candidate = InMemoryTokenStore(tokens: exchanged)
+        let client = GmailClient(
+            clientID: requestedID,
+            tokenStore: candidate,
+            transport: transport
+        )
+        let mailbox = try await mailboxFingerprint(client: client)
+        if let currentMailbox, currentMailbox != mailbox {
+            throw SyncProblem.signOutBeforeChangingMailbox
+        }
+        var tokens = try await candidate.load() ?? exchanged
         try Task.checkCancellation()
-        clearCache()
+        if currentTokens == nil {
+            try SyncStorage.clearState()
+        }
+        if tokens.refreshToken == nil, currentMailbox == mailbox {
+            tokens.refreshToken = currentTokens?.refreshToken
+        }
+        tokens.mailboxFingerprint = mailbox
         UserDefaults.standard.set(requestedID, forKey: clientIDKey)
         try store.save(tokens)
     }
 
-    static func signOut() throws {
-        guard !busy else { throw SyncProblem.busy }
-        try KeychainTokenStore().clear()
-        clearCache()
+    static func signOut() async throws {
+        try await SyncEngine.shared.clearForSignOut()
     }
 
-    /// Fetches recent bank notices, keeps new notices and updates the widget.
-    @discardableResult
-    static func run(updateWidget: Bool = true) async throws -> [Notice] {
-        try begin()
-        defer { busy = false }
-        guard let clientID else { throw SyncProblem.noClientID }
-        let client = GmailClient(clientID: clientID, tokenStore: KeychainTokenStore(), transport: transport)
-        let cache = loadCache()
-        let result = try await NoticeSync.sync(client: client, state: cache.state, lookbackDays: 7)
-        try Task.checkCancellation()
-
-        let fresh = result.items.compactMap(\.notice)
-        var seen = Set<String>()
-        let all = (fresh + cache.notices)
-            .filter { seen.insert($0.messageID).inserted }
-            .sorted { $0.receivedAt > $1.receivedAt }
-        let updated = Cache(state: result.state, notices: Array(all.prefix(300)))
-        let data = try JSONEncoder().encode(updated)
-        UserDefaults.standard.set(data, forKey: cacheKey)
-        removeLegacyCache()
-        if updateWidget {
-            let finance = await FinanceData.load(notices: updated.notices)
-            try Task.checkCancellation()
-            if let finance {
-                FinanceData.publishWidget(finance.widgetSnapshot)
-            } else {
-                publishNoticeWidget(with: all)
-            }
-        }
-        return fresh
+    nonisolated static func mailboxFingerprint(client: GmailClient) async throws -> String {
+        let address = try await client.profileEmail()
+        return Data(SHA256.hash(data: Data(address.lowercased().utf8))).base64EncodedString()
     }
 
-    static func recentNotices() -> [Notice] {
-        loadCache().notices
+    nonisolated static func recentNotices() -> [Notice] {
+        guard (try? hasCredentials()) == true else { return [] }
+        return (try? SyncStorage.loadState().notices) ?? []
     }
 
-    /// With no usable data file, show the last week's card notices.
-    static func publishNoticeWidget(with notices: [Notice]) {
-        let now = Date()
-        let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
-        let amounts = notices.filter {
-            $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
-        }.compactMap(\.amount)
-        FinanceData.publishWidget(WidgetSnapshot(
-            title: "Card notices, 7 days",
-            value: "¥" + amounts.reduce(0, +).formatted(),
-            detail: "\(amounts.count) notices · " + now.formatted(date: .abbreviated, time: .shortened),
-            updatedAt: now))
-    }
-
-    private static func begin() throws {
-        guard !busy else { throw SyncProblem.busy }
-        try Task.checkCancellation()
-        busy = true
-    }
-
-    private static func loadCache() -> Cache {
-        let defaults = UserDefaults.standard
-        let decoder = JSONDecoder()
-        if let data = defaults.data(forKey: cacheKey),
-           let cache = try? decoder.decode(Cache.self, from: data) {
-            return cache
-        }
-        let state = defaults.data(forKey: stateKey).flatMap { try? decoder.decode(SyncState.self, from: $0) }
-        let notices = defaults.data(forKey: noticesKey).flatMap { try? decoder.decode([Notice].self, from: $0) }
-        return Cache(state: state ?? SyncState(), notices: notices ?? [])
-    }
-
-    private static func removeLegacyCache() {
-        UserDefaults.standard.removeObject(forKey: stateKey)
-        UserDefaults.standard.removeObject(forKey: noticesKey)
-    }
-
-    private static func clearCache() {
-        removeLegacyCache()
-        UserDefaults.standard.removeObject(forKey: cacheKey)
-        FinanceData.publishWidget(.placeholder)
-    }
-
-    enum SyncProblem: LocalizedError {
+    enum SyncProblem: LocalizedError, Sendable {
         case noClientID
         case busy
         case signOutBeforeChangingClientID
+        case signOutBeforeChangingMailbox
 
         var errorDescription: String? {
             switch self {
             case .noClientID: return "Paste the Google iOS client ID first."
             case .busy: return "Wait for the current Gmail operation to finish."
             case .signOutBeforeChangingClientID: return "Sign out before changing the Google client ID."
+            case .signOutBeforeChangingMailbox: return "Sign out before switching Gmail accounts."
             }
         }
     }

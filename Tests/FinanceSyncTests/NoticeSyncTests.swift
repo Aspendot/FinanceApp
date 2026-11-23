@@ -75,9 +75,6 @@ struct NoticeSyncTests {
                 "messages": [["id": "seen-1"], ["id": "new-1"]],
                 "nextPageToken": "page-2",
             ]),
-            try TestJSON.response(json: [
-                "messages": [["id": "seen-2"], ["id": "new-2"]],
-            ]),
             try TestJSON.response(json: gmailJSON(
                 id: "new-1",
                 from: "ドコモSMTBネット銀行 <post_master@netbk.co.jp>",
@@ -85,6 +82,9 @@ struct NoticeSyncTests {
                 subject: docomoSubject,
                 body: docomoBody
             )),
+            try TestJSON.response(json: [
+                "messages": [["id": "seen-2"], ["id": "new-2"]],
+            ]),
             try TestJSON.response(json: gmailJSON(
                 id: "new-2",
                 from: "ドコモSMTBネット銀行 <post_master@netbk.co.jp>",
@@ -235,5 +235,240 @@ struct NoticeSyncTests {
         #expect(OneTimeCodeFilter.matches(subject: "Notice", text: "ﾜﾝﾀｲﾑパスワード"))
         #expect(OneTimeCodeFilter.matches(subject: "Notice", text: "Enter VERIFICATION   CODE now"))
         #expect(!OneTimeCodeFilter.matches(subject: docomoSubject, text: docomoBody))
+    }
+
+    @Test("Processes newest messages in batches, stops at deadline, and resumes on the next run")
+    func batchedSyncStopsAtDeadlineAndResumes() async throws {
+        let clock = StepClock(start: fixedNow)
+        let transport = FakeHTTPTransport(responses: [
+            // Run 1: page 1 has 4 messages, newest first.
+            try TestJSON.response(json: [
+                "messages": [
+                    ["id": "msg-newest"],
+                    ["id": "msg-second"],
+                    ["id": "msg-third"],
+                    ["id": "msg-oldest"],
+                ],
+            ]),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-newest",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-second",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+        ])
+        let client = makeClient(transport: transport)
+        let batchRecorder = BatchRecorder()
+        let priorSyncAt = fixedNow.addingTimeInterval(-3600)
+        let deadline = fixedNow.addingTimeInterval(20)
+
+        let run1 = try await NoticeSync.sync(
+            client: client,
+            state: SyncState(seenMessageIDs: [], lastSyncAt: priorSyncAt),
+            lookbackDays: 7,
+            batchSize: 2,
+            deadline: deadline,
+            now: { clock.current() },
+            onBatch: { batch in
+                await batchRecorder.record(batch)
+                // Advance past the deadline right after the first batch commits.
+                clock.advance(by: 25)
+            }
+        )
+
+        #expect(run1.reachedDeadline == true)
+        #expect(run1.items.map(\.messageID) == ["msg-newest", "msg-second"])
+        #expect(run1.state.seenMessageIDs == ["msg-newest", "msg-second"])
+        // Incomplete run keeps prior lastSyncAt so throttling does not block continuation.
+        #expect(run1.state.lastSyncAt == priorSyncAt)
+
+        let batches1 = await batchRecorder.batches()
+        #expect(batches1.count == 1)
+        #expect(batches1[0].seenMessageIDs == ["msg-newest", "msg-second"])
+
+        // Run 2 resumes with the committed state and fetches only the remaining two messages.
+        let transport2 = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: [
+                "messages": [
+                    ["id": "msg-newest"],
+                    ["id": "msg-second"],
+                    ["id": "msg-third"],
+                    ["id": "msg-oldest"],
+                ],
+            ]),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-third",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-oldest",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+        ])
+        let client2 = makeClient(transport: transport2)
+        let resumeTime = fixedNow.addingTimeInterval(60)
+        let batchRecorder2 = BatchRecorder()
+
+        let run2 = try await NoticeSync.sync(
+            client: client2,
+            state: batches1[0].state,
+            lookbackDays: 7,
+            batchSize: 2,
+            deadline: resumeTime.addingTimeInterval(25),
+            now: { resumeTime },
+            onBatch: { batch in
+                await batchRecorder2.record(batch)
+            }
+        )
+
+        #expect(run2.reachedDeadline == false)
+        #expect(run2.items.map(\.messageID) == ["msg-third", "msg-oldest"])
+        #expect(run2.state.seenMessageIDs == ["msg-newest", "msg-second", "msg-third", "msg-oldest"])
+        #expect(run2.state.lastSyncAt == resumeTime)
+
+        let requests2 = await transport2.requests()
+        #expect(requests2.count == 3)
+        #expect(!requests2.contains { $0.url.absoluteString.contains("msg-newest") })
+        #expect(!requests2.contains { $0.url.absoluteString.contains("msg-second") })
+    }
+
+    @Test("Late fetch error preserves already-committed batches and partial batch progress")
+    func lateFailurePreservesCommittedBatches() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: [
+                "messages": [
+                    ["id": "m1"],
+                    ["id": "m2"],
+                    ["id": "m3"],
+                    ["id": "m4"],
+                ],
+            ]),
+            try TestJSON.response(json: gmailJSON(
+                id: "m1",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+            try TestJSON.response(json: gmailJSON(
+                id: "m2",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+            try TestJSON.response(json: gmailJSON(
+                id: "m3",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+            HTTPResponse(statusCode: 500, body: Data(#"{"error":{"code":500,"message":"Temporary failure"}}"#.utf8)),
+        ])
+        let client = makeClient(transport: transport)
+        let batchRecorder = BatchRecorder()
+
+        do {
+            _ = try await NoticeSync.sync(
+                client: client,
+                state: SyncState(),
+                lookbackDays: 7,
+                batchSize: 2,
+                now: { self.fixedNow },
+                onBatch: { batch in
+                    await batchRecorder.record(batch)
+                }
+            )
+            Issue.record("Expected HTTP 500 error")
+        } catch let error as GmailClientError {
+            #expect(error == .httpError(statusCode: 500, message: "Temporary failure"))
+        }
+
+        // Batch 1 (m1, m2) and partial batch 2 (m3) were both committed before m4 failed.
+        let batches = await batchRecorder.batches()
+        #expect(batches.count == 2)
+        #expect(batches[0].seenMessageIDs == ["m1", "m2"])
+        #expect(batches[1].seenMessageIDs == ["m3"])
+        #expect(batches[1].state.seenMessageIDs == ["m1", "m2", "m3"])
+    }
+
+    @Test("A message deleted after listing does not block subsequent notices")
+    func missingMessageDoesNotStallSync() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: ["messages": [["id": "missing"], ["id": "msg-valid"]]]),
+            HTTPResponse(statusCode: 404),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-valid",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+        ])
+
+        let run = try await NoticeSync.sync(client: makeClient(transport: transport), now: { self.fixedNow })
+        #expect(run.state.seenMessageIDs == ["msg-valid"])
+        #expect(run.items.first?.notice?.messageID == "msg-valid")
+        #expect(run.state.lastSyncAt == fixedNow)
+    }
+
+    @Test("A repeated page token does not mark the scan complete")
+    func repeatedPageTokenFails() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: ["nextPageToken": "same-page"]),
+            try TestJSON.response(json: ["nextPageToken": "same-page"]),
+        ])
+
+        await #expect(throws: GmailClientError.invalidResponse("message list repeated a page token.")) {
+            _ = try await NoticeSync.sync(client: makeClient(transport: transport), now: { self.fixedNow })
+        }
+    }
+}
+
+private final class StepClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now: Date
+
+    init(start: Date) {
+        self.now = start
+    }
+
+    func current() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return now
+    }
+
+    func advance(by seconds: TimeInterval) {
+        lock.lock()
+        now = now.addingTimeInterval(seconds)
+        lock.unlock()
+    }
+}
+
+private actor BatchRecorder {
+    private var recorded: [SyncBatch] = []
+
+    func record(_ batch: SyncBatch) {
+        recorded.append(batch)
+    }
+
+    func batches() -> [SyncBatch] {
+        recorded
     }
 }

@@ -34,7 +34,7 @@ public enum WebAuthenticatorError: Error, LocalizedError, Equatable, Sendable {
 /// an existing Google sign-in session on the device.
 @MainActor
 public final class WebAuthenticator {
-    private let anchorProvider: @MainActor () -> ASPresentationAnchor
+    private let anchorProvider: (@MainActor () -> ASPresentationAnchor)?
     private struct Attempt {
         let id: UUID
         let session: ASWebAuthenticationSession
@@ -46,7 +46,7 @@ public final class WebAuthenticator {
 
     /// Creates a web authenticator with an optional presentation anchor provider.
     public init(anchorProvider: (@MainActor () -> ASPresentationAnchor)? = nil) {
-        self.anchorProvider = anchorProvider ?? { Self.defaultPresentationAnchor() }
+        self.anchorProvider = anchorProvider
     }
 
     /// Presents `authURL` in an `ASWebAuthenticationSession` and returns the
@@ -55,9 +55,11 @@ public final class WebAuthenticator {
         authURL: URL,
         callbackScheme: String
     ) async throws -> URL {
-        guard activeAttempt == nil else { throw WebAuthenticatorError.failedToStart }
+        guard activeAttempt == nil, let anchor = anchorProvider?() ?? Self.defaultPresentationAnchor() else {
+            throw WebAuthenticatorError.failedToStart
+        }
         let id = UUID()
-        let contextProvider = PresentationContextProvider(anchorProvider: anchorProvider)
+        let contextProvider = PresentationContextProvider(anchor: anchor)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -114,7 +116,7 @@ public final class WebAuthenticator {
         finish(id, with: .failure(WebAuthenticatorError.cancelled))
     }
 
-    private static func defaultPresentationAnchor() -> ASPresentationAnchor {
+    private static func defaultPresentationAnchor() -> ASPresentationAnchor? {
         let scenes = UIApplication.shared.connectedScenes
             .filter { $0.activationState == .foregroundActive }
             .compactMap { $0 as? UIWindowScene }
@@ -127,20 +129,20 @@ public final class WebAuthenticator {
         if let firstScene = scenes.first {
             return ASPresentationAnchor(windowScene: firstScene)
         }
-        return ASPresentationAnchor(frame: .zero)
+        return nil
     }
 }
 
 @MainActor
 private final class PresentationContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
-    private let anchorProvider: @MainActor () -> ASPresentationAnchor
+    private let anchor: ASPresentationAnchor
 
-    init(anchorProvider: @escaping @MainActor () -> ASPresentationAnchor) {
-        self.anchorProvider = anchorProvider
+    init(anchor: ASPresentationAnchor) {
+        self.anchor = anchor
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        anchorProvider()
+        anchor
     }
 }
 #endif

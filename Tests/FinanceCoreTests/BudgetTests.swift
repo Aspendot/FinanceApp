@@ -36,6 +36,24 @@ struct DataBundleTests {
         #expect(bundle.layers.isEmpty)
         #expect(bundle.layerConfig == LayerConfig())
         #expect(bundle.rules == RuleSet())
+        #expect(bundle.discreetCategories == nil)
+    }
+
+    @Test func decodesOptionalDiscreetCategories() throws {
+        let json = """
+        {
+          "format": "finance-bundle/1",
+          "generatedAt": "2026-02-01T09:00:00+09:00",
+          "asOf": "2026-02-01",
+          "discreetCategories": ["Health", "Personal"]
+        }
+        """
+        let bundle = try decodeBundle(json)
+        #expect(bundle.discreetCategories == ["Health", "Personal"])
+
+        let encoded = try JSONEncoder().encode(bundle)
+        let roundTripped = try DataBundle.decode(from: encoded)
+        #expect(roundTripped.discreetCategories == ["Health", "Personal"])
     }
 
     @Test func decodesFullBundle() throws {

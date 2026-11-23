@@ -9,16 +9,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var syncMessage: String?
     @Published private(set) var syncing = false
     @Published private(set) var checkingInbox = false
+    @Published private(set) var runLog: [SyncRunRecord] = SyncStorage.loadRunLog()
 
     private var reloadGeneration = 0
 
     func reload() async {
         reloadGeneration += 1
         let generation = reloadGeneration
-        let latest = await FinanceData.load(notices: GmailSync.recentNotices())
+        let notices = GmailSync.recentNotices()
+        let latest = await FinanceData.load(notices: notices)
         guard generation == reloadGeneration else { return }
         data = latest
-        if let latest { FinanceData.publishWidget(latest.widgetSnapshot) }
+        runLog = SyncStorage.loadRunLog()
+        try? await SyncEngine.shared.publishCurrentWidget()
+    }
+
+    func refreshRunLog() {
+        runLog = SyncStorage.loadRunLog()
     }
 
     /// Takes in a data file dropped into Documents, if there is a new one.
@@ -40,20 +47,46 @@ final class AppModel: ObservableObject {
         await reload()
     }
 
-    /// Fetches new bank emails, if Gmail is set up.
-    func syncGmail() async {
-        guard !syncing, GmailSync.clientID != nil, (try? GmailSync.hasCredentials()) == true else { return }
+    /// Fetches new bank emails through `SyncEngine`.
+    func syncGmail(userInitiated: Bool = false) async {
+        guard !syncing else { return }
         syncing = true
         defer { syncing = false }
-        do {
-            let fresh = try await GmailSync.run(updateWidget: false)
-            syncMessage = fresh.isEmpty ? "Up to date" : "\(fresh.count) new bank emails"
-            await reload()
-            if data == nil { GmailSync.publishNoticeWidget(with: GmailSync.recentNotices()) }
-        } catch is CancellationError {
-            return
-        } catch {
-            syncMessage = "Gmail: " + error.localizedDescription
+
+        let report = await BackgroundAssertion.run(name: "FinanceForegroundSync") {
+            await SyncEngine.shared.run(trigger: .app, minimumInterval: 0, timeLimit: 45)
         }
+
+        switch report.outcome {
+        case .updated:
+            if report.newPayments > 0 {
+                let word = report.newPayments == 1 ? "payment" : "payments"
+                syncMessage = "\(report.newPayments) new \(word)"
+            } else if report.newNotices > 0 {
+                let word = report.newNotices == 1 ? "email" : "emails"
+                syncMessage = "\(report.newNotices) new bank \(word)"
+            } else {
+                syncMessage = "Up to date"
+            }
+        case .skipped:
+            syncMessage = "Up to date"
+        case .busy:
+            syncMessage = "Already checking Gmail"
+        case .notSignedIn:
+            if userInitiated {
+                syncMessage = "Not signed in to Gmail"
+            }
+        case .signInRequired:
+            syncMessage = "Sign in to Gmail again"
+        case .timedOut:
+            syncMessage = "Time limit reached; progress saved"
+        case .cancelled:
+            runLog = SyncStorage.loadRunLog()
+            return
+        case .failed:
+            syncMessage = "Gmail: " + (report.errorMessage ?? "Sync failed")
+        }
+
+        await reload()
     }
 }

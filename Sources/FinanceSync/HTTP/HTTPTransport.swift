@@ -109,6 +109,10 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         #else
         do {
             (data, response) = try await session.data(for: urlRequest)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled && Task.isCancelled {
+            throw CancellationError()
         } catch {
             throw HTTPTransportError.requestFailed(error.localizedDescription)
         }

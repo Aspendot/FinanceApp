@@ -69,15 +69,28 @@ struct FinanceData: Sendable {
                               detail: "for everything else" + spent, updatedAt: Date())
     }
 
-    @MainActor
-    static func publishWidget(_ snapshot: WidgetSnapshot) {
+    static func publishWidget(_ snapshot: WidgetSnapshot, force: Bool = false) {
         guard SharedStore.groupID != nil else { return }
-        if let current = SharedStore.read(),
+        if !force, let current = SharedStore.read(),
            current.title == snapshot.title, current.value == snapshot.value, current.detail == snapshot.detail {
             return
         }
         SharedStore.write(snapshot)
         WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
+    }
+
+    /// Fallback widget snapshot when no data file has been imported yet.
+    static func noticeOnlySnapshot(notices: [Notice], now: Date = Date()) -> WidgetSnapshot {
+        let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
+        let amounts = notices.filter {
+            $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
+        }.compactMap(\.amount)
+        return WidgetSnapshot(
+            title: "Card notices, 7 days",
+            value: "¥" + amounts.reduce(0, +).formatted(),
+            detail: "\(amounts.count) notices",
+            updatedAt: now
+        )
     }
 }
 
