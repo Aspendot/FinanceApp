@@ -1,11 +1,11 @@
 import AppIntents
 import Foundation
 
-/// Shortcuts action that checks Gmail in the background without opening the app.
+/// Shortcuts action that syncs Drive, Gmail and Money Forward in the background without opening the app.
 struct CheckBankEmailsIntent: AppIntent {
     static let title: LocalizedStringResource = "Check bank emails"
     static let description = IntentDescription(
-        "Checks Gmail for recent bank and card notices and updates the Finance widget."
+        "Syncs the encrypted Drive data file, recent bank emails and Money Forward transactions, then updates the Finance widget."
     )
     static let supportedModes: IntentModes = .background
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
@@ -17,33 +17,38 @@ struct CheckBankEmailsIntent: AppIntent {
         let message: String
         switch report.outcome {
         case .updated:
-            if report.newPayments == 1 {
+            if report.newBankTransactions > 0 {
+                let word = report.newBankTransactions == 1 ? "new transaction" : "new transactions"
+                message = "\(report.newBankTransactions) \(word)"
+            } else if report.newPayments == 1 {
                 message = "1 new payment"
             } else if report.newPayments > 1 {
                 message = "\(report.newPayments) new payments"
+            } else if report.driveImported {
+                message = "Updated data file"
             } else {
                 message = "Up to date"
             }
         case .skipped:
             message = "Up to date"
         case .notSignedIn:
-            message = "Not signed in to Gmail"
+            message = "No accounts connected"
         case .signInRequired:
             message = "Sign in to Gmail again"
         case .busy:
-            message = "Already checking bank emails"
+            message = "Sync already running"
         case .timedOut:
             if report.newPayments == 1 {
                 message = "1 new payment so far"
             } else if report.newPayments > 1 {
                 message = "\(report.newPayments) new payments so far"
             } else {
-                message = "Check timed out"
+                message = "Sync timed out"
             }
         case .cancelled:
-            message = "Check cancelled"
+            message = "Sync cancelled"
         case .failed:
-            message = "Could not check bank emails"
+            message = "Could not sync Finance"
         }
         return .result(dialog: IntentDialog("\(message)"))
     }

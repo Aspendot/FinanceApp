@@ -47,6 +47,7 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSFaceIDUsageDescription: Face ID keeps your finances private.
+        NSCameraUsageDescription: Camera is used to scan the Drive sync pairing QR code.
         UIBackgroundModes: [fetch, processing]
         BGTaskSchedulerPermittedIdentifiers: [io.github.aspendot.financeapp.refresh]
         FinanceAppGroup: group.io.github.aspendot.financeapp
