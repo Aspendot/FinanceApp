@@ -6,12 +6,12 @@ public enum Yen {
     /// "-1,234" and "▲1,234". Returns nil for anything else, including amounts with
     /// non-zero decimals, which are not yen.
     public static func parse(_ text: String) -> Int? {
-        let normalized = text.precomposedStringWithCompatibilityMapping
-        var s = Substring(normalized.trimmingCharacters(in: .whitespaces))
-        var sign = 1
+        let normalized = text.folding(options: .widthInsensitive, locale: nil)
+        var s = Substring(normalized.trimmingCharacters(in: .whitespacesAndNewlines))
+        var negative = false
         if let first = s.first, "-−▲△".contains(first) {
-            sign = -1
-            s = s.dropFirst()
+            negative = true
+            s = Substring(s.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines))
         }
         if s.hasPrefix("¥") {
             s = s.dropFirst()
@@ -23,7 +23,7 @@ public enum Yen {
         } else if s.hasSuffix("JPY") {
             s = s.dropLast(3)
         }
-        s = Substring(s.trimmingCharacters(in: .whitespaces))
+        s = Substring(s.trimmingCharacters(in: .whitespacesAndNewlines))
         if let dot = s.firstIndex(of: ".") {
             let decimals = s[s.index(after: dot)...]
             guard !decimals.isEmpty, decimals.allSatisfy({ $0 == "0" }) else { return nil }
@@ -31,11 +31,10 @@ public enum Yen {
         }
         let groups = s.split(separator: ",", omittingEmptySubsequences: false)
         guard let head = groups.first, !head.isEmpty,
-              head.count <= (groups.count > 1 ? 3 : 15),
+              (groups.count == 1 || head.count <= 3),
               groups.dropFirst().allSatisfy({ $0.count == 3 }),
-              groups.allSatisfy({ $0.allSatisfy { ("0"..."9").contains($0) } }),
-              let value = Int(groups.joined())
+              groups.allSatisfy({ $0.allSatisfy { ("0"..."9").contains($0) } })
         else { return nil }
-        return sign * value
+        return Int((negative ? "-" : "") + groups.joined())
     }
 }

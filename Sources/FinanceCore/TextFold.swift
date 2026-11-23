@@ -3,12 +3,13 @@ import Foundation
 /// Folds text into a key that is used only for matching, never for display.
 ///
 /// Steps: NFKC (full-width Latin and digits become ASCII, half-width kana become
-/// full-width), lowercase, drop whitespace, recompose kana with voiced marks, turn
+/// full-width), fold case, drop whitespace, recompose kana with voiced marks, turn
 /// every dash, long-vowel mark and wave dash into "-", and make small kana large.
 /// So "ﾌｧﾐﾘｰﾏｰﾄ", "フアミリ―マ―ト" and "ファミリーマート" share one key.
 public enum TextFold {
     public static func key(_ text: String) -> String {
-        let nfkc = text.precomposedStringWithCompatibilityMapping.lowercased()
+        let nfkc = text.precomposedStringWithCompatibilityMapping
+            .folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
         var kept = String.UnicodeScalarView()
         for scalar in nfkc.unicodeScalars where !scalar.properties.isWhitespace {
             kept.append(scalar)
