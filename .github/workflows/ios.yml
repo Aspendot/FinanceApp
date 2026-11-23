@@ -99,9 +99,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           python3 - <<'EOF'
-          import datetime, json, os
+          import datetime, json, os, plistlib, zipfile
           repo, tag = os.environ["GITHUB_REPOSITORY"], os.environ["TAG"]
           version = tag.removeprefix("ios-v")
+          with zipfile.ZipFile("Finance.ipa") as ipa:
+              info = plistlib.loads(ipa.read("Payload/Finance.app/Info.plist"))
+          privacy = {key: value for key, value in info.items() if key.endswith("UsageDescription")}
           source = {
               "name": "Finance",
               "identifier": "io.github.aspendot.financeapp.source",
@@ -125,7 +128,7 @@ jobs:
                   }],
                   "appPermissions": {
                       "entitlements": ["com.apple.security.application-groups"],
-                      "privacy": {"NSFaceIDUsageDescription": "Face ID keeps your finances private."},
+                      "privacy": privacy,
                   },
               }],
               "news": [],
