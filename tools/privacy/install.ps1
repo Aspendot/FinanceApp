@@ -25,6 +25,8 @@ New-Item -ItemType Directory -Force $hooks | Out-Null
 Copy-Item -LiteralPath (Join-Path $src 'guard.py'), (Join-Path $src 'gitleaks.toml') -Destination $Target -Force
 Copy-Item -Path (Join-Path $src 'hooks\*') -Destination $hooks -Force
 
-git -C $repo config core.hooksPath ($hooks -replace '\\', '/')
 git -C $repo config privacy.denylist ($deny -replace '\\', '/')
+if ($LASTEXITCODE -ne 0) { throw 'Could not configure the privacy denylist.' }
+git -C $repo config core.hooksPath ($hooks -replace '\\', '/')
+if ($LASTEXITCODE -ne 0) { throw 'Could not configure the Git hooks path.' }
 Write-Output 'Privacy guard installed for this clone.'

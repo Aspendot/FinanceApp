@@ -136,6 +136,7 @@ class GuardTest(unittest.TestCase):
     def test_pre_push_rechecks_new_ref_history(self):
         self.deny.write_text("unrelated-canary\n", encoding="utf-8")
         self.assertEqual(self.commit("a.txt", "canaryterm-7f3a\n").returncode, 0)
+        self.git("update-ref", "refs/remotes/fixture/main", "HEAD")
         self.deny.write_text(DENYLIST, encoding="utf-8")
         self.assertBlocked(self.push_check(), "canaryterm")
 
@@ -266,6 +267,39 @@ class GuardTest(unittest.TestCase):
     def test_gitleaks_rejects_repo_ignore_file(self):
         (self.repo / ".gitleaksignore").write_text("# fixture\n", encoding="utf-8")
         self.assertBlocked(self.commit("a.txt", "fine\n"), setup=True)
+
+    def test_missing_scan_path_fails_closed(self):
+        r = subprocess.run(
+            [sys.executable, "-I", str(GUARD), "scan", "missing.txt"], cwd=self.repo,
+            env={**os.environ, "PRIVACY_DENYLIST": str(self.deny)}, capture_output=True,
+            text=True, encoding="utf-8", timeout=10,
+        )
+        self.assertBlocked(r, setup=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows installer")
+    def test_installer_reports_git_config_failure(self):
+        script = r"""
+function git {
+    $global:LASTEXITCODE = 0
+    if ($args -contains 'rev-parse') {
+        $env:GUARD_TEST_REPO
+    } elseif ($args -contains 'core.hooksPath') {
+        $global:LASTEXITCODE = 1
+    }
+}
+& $env:GUARD_TEST_INSTALL -Denylist $env:PRIVACY_DENYLIST -Target $env:GUARD_TEST_TARGET
+"""
+        r = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-Command", script],
+            cwd=self.repo, text=True, encoding="utf-8", errors="replace", capture_output=True,
+            env={**os.environ, "PRIVACY_DENYLIST": str(self.deny),
+                 "GUARD_TEST_REPO": str(self.repo), "GUARD_TEST_TARGET": str(self.tmp / "install"),
+                 "GUARD_TEST_INSTALL": str(HERE / "install.ps1")},
+            timeout=15,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Could not configure the Git hooks path", r.stderr)
+        self.assertNotIn("Privacy guard installed", r.stdout)
 
     def test_gitleaks_config_blocks_postal_mark(self):
         postal = "\u3012" + "000" + "-" + "0000"
