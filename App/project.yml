@@ -43,6 +43,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        # The Documents folder shows up in Apple Devices on Windows and in Files, for the data file.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         NSFaceIDUsageDescription: Face ID keeps your finances private.
         UIBackgroundModes: [fetch, processing]
         BGTaskSchedulerPermittedIdentifiers: [io.github.aspendot.financeapp.refresh]
