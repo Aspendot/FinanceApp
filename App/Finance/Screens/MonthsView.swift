@@ -7,6 +7,7 @@ struct MonthsView: View {
     @EnvironmentObject private var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .caption2) private var chartAxisFontSize: CGFloat = 11
     @State private var selectedMonth: String?
 
     var body: some View {
@@ -62,14 +63,21 @@ struct MonthsView: View {
     private func stackedChartCard(screen: MonthsScreenModel) -> some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .center, spacing: 8) {
-                    SectionLabel("Monthly spending")
-                    Spacer(minLength: 8)
-                    monthMenuButton(screen: screen)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SectionLabel("Monthly spending")
+                        monthMenuButton(screen: screen)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 8) {
+                        SectionLabel("Monthly spending")
+                        Spacer(minLength: 8)
+                        monthMenuButton(screen: screen)
+                    }
                 }
 
                 stackedChart(screen: screen)
-                    .frame(height: 210)
+                    .frame(height: dynamicTypeSize.isAccessibilitySize ? 240 : 210)
                     .accessibilityLabel(chartAccessibilitySummary(screen: screen))
                     .accessibilityAdjustableAction { direction in
                         stepMonth(screen: screen, forward: direction == .increment)
@@ -100,6 +108,9 @@ struct MonthsView: View {
                 Text(DayText.month(screen.selectedMonth))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Theme.accent)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .allowsTightening(true)
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Theme.accent)
@@ -113,6 +124,7 @@ struct MonthsView: View {
     }
 
     private func stackedChart(screen: MonthsScreenModel) -> some View {
+        let axisSize = min(chartAxisFontSize, 15)
         let baseChart = Chart {
             ForEach(screen.segments) { segment in
                 BarMark(
@@ -134,7 +146,7 @@ struct MonthsView: View {
                 AxisValueLabel {
                     if let amount = value.as(Int.self) {
                         Text(FinanceFormat.compactYen(amount))
-                            .font(.caption2)
+                            .font(.system(size: axisSize))
                             .monospacedDigit()
                             .foregroundStyle(Theme.muted)
                     }
@@ -147,7 +159,7 @@ struct MonthsView: View {
                     if let month = value.as(String.self) {
                         let isSelected = month == screen.selectedMonth
                         Text(FinanceFormat.chartMonth(month))
-                            .font(.caption2.weight(isSelected ? .semibold : .regular))
+                            .font(.system(size: axisSize, weight: isSelected ? .semibold : .regular))
                             .foregroundStyle(isSelected ? Theme.accent : Theme.muted)
                     }
                 }
@@ -192,20 +204,46 @@ struct MonthsView: View {
     private func layerLegend(screen: MonthsScreenModel) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(screen.selectedLayerAmounts) { item in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                        .fill(item.layer.color)
-                        .frame(width: 10, height: 10)
-                        .accessibilityHidden(true)
-                    Text(item.title)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink2)
-                    Spacer(minLength: 8)
-                    Text(Money.yen(item.amount))
-                        .font(.subheadline.weight(.medium))
-                        .monospacedDigit()
-                        .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
-                        .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .center, spacing: 8) {
+                                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                    .fill(item.layer.color)
+                                    .frame(width: 12, height: 12)
+                                    .accessibilityHidden(true)
+                                Text(item.title)
+                                    .font(.subheadline)
+                                    .foregroundStyle(Theme.ink2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Text(Money.yen(item.amount))
+                                .font(.subheadline.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                                .allowsTightening(true)
+                                .padding(.leading, 20)
+                                .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(item.layer.color)
+                                .frame(width: 10, height: 10)
+                                .accessibilityHidden(true)
+                            Text(item.title)
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.ink2)
+                            Spacer(minLength: 8)
+                            Text(Money.yen(item.amount))
+                                .font(.subheadline.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
+                                .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
+                        }
+                    }
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -307,16 +345,35 @@ struct MonthsView: View {
         color: Color,
         emphasized: Bool = false
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(title)
-                .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
-                .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .accessibilityLabel(accessibilityValue)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(value)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .allowsTightening(true)
+                        .accessibilityLabel(accessibilityValue)
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(title)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
+                    Spacer(minLength: 8)
+                    Text(value)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                        .accessibilityLabel(accessibilityValue)
+                }
+            }
         }
         .accessibilityElement(children: .combine)
     }
@@ -326,12 +383,22 @@ struct MonthsView: View {
     private func whereItWentCard(screen: MonthsScreenModel) -> some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    SectionLabel("Where it went")
-                    Spacer(minLength: 8)
-                    Text("Tap to filter")
-                        .font(.caption)
-                        .foregroundStyle(Theme.muted)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 4) {
+                        SectionLabel("Where it went")
+                        Text("Tap to filter")
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        SectionLabel("Where it went")
+                        Spacer(minLength: 8)
+                        Text("Tap to filter")
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                    }
                 }
 
                 if screen.categoryBars.isEmpty {
@@ -339,7 +406,7 @@ struct MonthsView: View {
                         .font(.subheadline)
                         .foregroundStyle(Theme.muted)
                 } else {
-                    VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(screen.categoryBars.enumerated()), id: \.element.id) { index, bar in
                             if index > 0 {
                                 HairlineDivider()
@@ -367,6 +434,8 @@ struct MonthsView: View {
                             Text(bar.name)
                                 .font(.body.weight(.medium))
                                 .foregroundStyle(Theme.ink)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 8)
                             Image(systemName: "chevron.right")
                                 .font(.caption.weight(.semibold))
@@ -377,9 +446,13 @@ struct MonthsView: View {
                             .font(.body.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(Theme.ink)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .allowsTightening(true)
                         Text("\(bar.count) \(paymentWord) · \(percent)%")
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {

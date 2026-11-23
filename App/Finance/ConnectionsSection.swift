@@ -4,6 +4,7 @@ import SwiftUI
 /// and links to each connection's settings screen.
 struct ConnectionsSection: View {
     @EnvironmentObject private var model: AppModel
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var footerText: String? = nil
 
     var body: some View {
@@ -55,7 +56,7 @@ struct ConnectionsSection: View {
             Text(status)
                 .font(.footnote)
                 .foregroundStyle(warning ? Theme.bad : Theme.muted)
-                .lineLimit(1)
+                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
         }
         .padding(.vertical, 2)
     }
