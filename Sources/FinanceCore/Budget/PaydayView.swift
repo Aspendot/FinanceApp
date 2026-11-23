@@ -43,8 +43,7 @@ public struct PaydayView: Codable, Sendable, Equatable {
         self.next = next
     }
 
-    /// Computes the payday view for the active pay cycle leading up to the first entry marked `next == true`.
-    /// Starts at the latest `payday == true` entry before `next` when one exists, otherwise from the start of the timeline.
+    /// Computes the payday view up to the first entry marked `next == true`.
     /// Returns nil when no entry is marked `next == true` or either date is invalid.
     public static func compute(timeline: [TimelineEntry], today: String) -> PaydayView? {
         guard let next = timeline.first(where: { $0.next == true }),
@@ -54,9 +53,7 @@ public struct PaydayView: Codable, Sendable, Equatable {
             return nil
         }
 
-        let prior = timeline.filter { $0.next != true && $0.date < next.date }
-        let cycleStart = prior.filter { $0.payday == true }.map(\.date).max()
-        let period = cycleStart.map { start in prior.filter { $0.date >= start } } ?? prior
+        let period = timeline.filter { $0.next != true && $0.date < next.date }
         let ins = period.filter { $0.amount < 0 && $0.borrowed != true }
         let outs = period.filter { $0.amount > 0 }
         let borrowed = period.filter { $0.borrowed == true }

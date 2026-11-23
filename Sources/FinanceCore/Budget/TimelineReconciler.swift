@@ -145,12 +145,14 @@ public enum TimelineReconciler {
         }
 
         // Cycle roll: move `next` to the following payday entry when the current `next` becomes done.
+        var newCycleStart: String?
         while let currentIdx = result.firstIndex(where: { $0.next == true }),
               matchedEntries.contains(currentIdx)
         {
             let originalDate = timeline[currentIdx].date
             let updatedDate = result[currentIdx].date
             result[currentIdx].next = nil
+            newCycleStart = updatedDate
 
             let following = result.indices
                 .filter { idx in
@@ -168,6 +170,12 @@ public enum TimelineReconciler {
             }
         }
 
+        // After a roll the finished cycle's entries no longer belong to the plan: PaydayView sums everything
+        // before `next`, and the data file's own pre-payday items (money that arrived just before payday)
+        // must only count in the cycle the PC built them for.
+        if let start = newCycleStart {
+            return result.filter { $0.date >= start }
+        }
         return result
     }
 }

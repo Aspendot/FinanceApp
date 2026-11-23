@@ -268,16 +268,20 @@ struct TimelineReconcilerTests {
 
         let reconciled = TimelineReconciler.reconcile(timeline: timeline, bankRows: rows)
 
+        // The finished cycle (March salary, April rent) is dropped from the plan.
+        #expect(reconciled.map(\.date) == ["2026-04-24", "2026-05-01", "2026-05-15", "2026-05-25"])
+
         // April salary marked done on actual arrival date, actual amount, next cleared.
-        #expect(reconciled[2].done == true)
-        #expect(reconciled[2].date == "2026-04-24")
-        #expect(reconciled[2].amount == -285000)
-        #expect(reconciled[2].estimate == nil)
-        #expect(reconciled[2].next == nil)
+        let april = try #require(reconciled.first(where: { $0.date == "2026-04-24" }))
+        #expect(april.done == true)
+        #expect(april.amount == -285000)
+        #expect(april.estimate == nil)
+        #expect(april.next == nil)
 
         // May salary is now marked next.
-        #expect(reconciled[5].next == true)
-        #expect(reconciled[5].done == nil)
+        let may = try #require(reconciled.first(where: { $0.date == "2026-05-25" }))
+        #expect(may.next == true)
+        #expect(may.done == nil)
 
         // PaydayView immediately reflects the new cycle (Apr 24 -> May 25) without double-counting March.
         let view = try #require(PaydayView.compute(timeline: reconciled, today: "2026-04-24"))
@@ -395,5 +399,20 @@ struct TimelineReconcilerTests {
         #expect(reconciled[0].done == true)
         #expect(reconciled[0].amount == 1650)
         #expect(reconciled[0].estimate == nil)
+    }
+
+    @Test func moneyBeforeTheCurrentPaydayStillCountsWhenNothingRolls() throws {
+        // The PC keeps money that arrived just before payday in this cycle's plan; without a roll it stays counted.
+        let timeline = [
+            TimelineEntry(date: "2026-04-21", item: "Sample cashback", amount: -50000, done: true),
+            TimelineEntry(date: "2026-04-24", item: "Monthly salary", amount: -280000, payday: true, done: true),
+            TimelineEntry(date: "2026-05-01", item: "May rent", amount: 80000),
+            TimelineEntry(date: "2026-05-25", item: "Monthly salary", amount: -280000, payday: true, next: true, estimate: true),
+        ]
+        let reconciled = TimelineReconciler.reconcile(timeline: timeline, bankRows: [])
+        #expect(reconciled.count == 4)
+        let view = try #require(PaydayView.compute(timeline: reconciled, today: "2026-04-26"))
+        #expect(view.inSum == 330000)
+        #expect(view.left == 250000)
     }
 }
