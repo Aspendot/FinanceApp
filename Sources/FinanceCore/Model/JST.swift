@@ -17,6 +17,12 @@ public enum JST {
             + pad(c.hour) + ":" + pad(c.minute) + ":" + pad(c.second) + "+09:00"
     }
 
+    /// Formats a moment as a Japan-time calendar day "2026-01-15".
+    public static func day(_ date: Date) -> String {
+        let c = calendar.dateComponents([.year, .month, .day], from: date)
+        return pad(c.year, 4) + "-" + pad(c.month) + "-" + pad(c.day)
+    }
+
     /// Reads "2026/01/15 09:30:00" or "2026/01/15 09:30" (Japan time) as
     /// "2026-01-15T09:30:00+09:00". Returns nil unless the date and time are real.
     public static func timestamp(slashed text: String) -> String? {
