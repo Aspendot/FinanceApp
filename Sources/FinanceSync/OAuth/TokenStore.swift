@@ -81,7 +81,7 @@ public struct KeychainTokenStore: TokenStore, Sendable {
 
     public func load() throws -> OAuthTokens? {
         var query = baseQuery()
-        query[kSecReturnData as String] = kCFBooleanTrue
+        query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
 
         var item: CFTypeRef?
