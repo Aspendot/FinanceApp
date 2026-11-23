@@ -1,7 +1,6 @@
 import FinanceCore
 import FinanceSync
 import Foundation
-import WidgetKit
 
 /// Gmail on the phone: read-only sign-in, then incremental syncs of bank notices.
 /// Only parsed notices are kept, never email bodies. The refresh token lives in the
@@ -62,7 +61,7 @@ enum GmailSync {
 
     /// Fetches recent bank notices, keeps new notices and updates the widget.
     @discardableResult
-    static func run() async throws -> [Notice] {
+    static func run(updateWidget: Bool = true) async throws -> [Notice] {
         try begin()
         defer { busy = false }
         guard let clientID else { throw SyncProblem.noClientID }
@@ -80,7 +79,15 @@ enum GmailSync {
         let data = try JSONEncoder().encode(updated)
         UserDefaults.standard.set(data, forKey: cacheKey)
         removeLegacyCache()
-        updateWidget(with: all)
+        if updateWidget {
+            let finance = await FinanceData.load(notices: updated.notices)
+            try Task.checkCancellation()
+            if let finance {
+                FinanceData.publishWidget(finance.widgetSnapshot)
+            } else {
+                publishNoticeWidget(with: all)
+            }
+        }
         return fresh
     }
 
@@ -88,24 +95,18 @@ enum GmailSync {
         loadCache().notices
     }
 
-    /// With a data file, the widget shows what's left until payday; without one, the
-    /// total of the last week's card notices.
-    private static func updateWidget(with notices: [Notice]) {
-        if BundleInbox.storedData() != nil {
-            FinanceData.refreshWidget()
-            return
-        }
+    /// With no usable data file, show the last week's card notices.
+    static func publishNoticeWidget(with notices: [Notice]) {
         let now = Date()
         let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
         let amounts = notices.filter {
             $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
         }.compactMap(\.amount)
-        SharedStore.write(WidgetSnapshot(
+        FinanceData.publishWidget(WidgetSnapshot(
             title: "Card notices, 7 days",
             value: "¥" + amounts.reduce(0, +).formatted(),
             detail: "\(amounts.count) notices · " + now.formatted(date: .abbreviated, time: .shortened),
             updatedAt: now))
-        WidgetCenter.shared.reloadAllTimelines()
     }
 
     private static func begin() throws {
@@ -134,8 +135,7 @@ enum GmailSync {
     private static func clearCache() {
         removeLegacyCache()
         UserDefaults.standard.removeObject(forKey: cacheKey)
-        SharedStore.write(.placeholder)
-        WidgetCenter.shared.reloadAllTimelines()
+        FinanceData.publishWidget(.placeholder)
     }
 
     enum SyncProblem: LocalizedError {

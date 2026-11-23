@@ -27,7 +27,7 @@ public struct CoverageRange: Codable, Sendable, Equatable {
 /// One spending, income or transfer line item in the budget.
 ///
 /// Amounts are whole yen; positive is money out and negative is money in.
-public struct BudgetItem: Codable, Sendable, Equatable {
+public struct BudgetItem: Codable, Sendable, Hashable {
     public var date: String
     public var source: String
     public var merchant: String
@@ -92,7 +92,7 @@ public struct BudgetItem: Codable, Sendable, Equatable {
 /// One scheduled or past event on the cashflow timeline.
 ///
 /// Negative amounts are money in; positive amounts are money out.
-public struct TimelineEntry: Codable, Sendable, Equatable {
+public struct TimelineEntry: Codable, Sendable, Hashable {
     public var date: String
     public var item: String
     public var amount: Int
@@ -300,11 +300,11 @@ public struct LayerConfig: Codable, Sendable, Equatable {
             || group == debtGroup
     }
 
-    var resolvedIncomeGroup: String? {
+    public var resolvedIncomeGroup: String? {
         incomeGroup ?? notSpendingGroups.first
     }
 
-    func resolvedLayer(for item: BudgetItem, layers: [LayerDefinition] = []) -> String? {
+    public func resolvedLayer(for item: BudgetItem, layers: [LayerDefinition] = []) -> String? {
         if isNotSpending(group: item.group) {
             return nil
         }

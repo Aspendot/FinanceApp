@@ -19,7 +19,10 @@ struct MoreView: View {
                     if let message = model.importMessage {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
                     }
-                    Button("Check for a new data file") { model.checkInbox() }
+                    Button(model.checkingInbox ? "Checking for a data file…" : "Check for a new data file") {
+                        Task { await model.checkInbox() }
+                    }
+                    .disabled(model.checkingInbox)
                     Text("To update it: on your PC, open Apple Devices → your iPhone → Files → Finance, and drag in finance-bundle.json from Documents\\Finance\\data\\export.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -32,7 +35,7 @@ struct MoreView: View {
                     }
                     .disabled(model.syncing)
                     if let data = model.data, !data.unmatched.isEmpty {
-                        Text("\(data.unmatched.count) bank emails fall inside the statements' period without a matching row. They aren't counted.")
+                        Text("\(data.unmatched.count) older bank emails are before the statement cutoff and aren’t counted.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }

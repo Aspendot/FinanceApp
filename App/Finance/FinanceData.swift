@@ -4,70 +4,97 @@ import WidgetKit
 
 /// Everything the screens show: the imported data file plus the Gmail notices kept
 /// on the phone, which become pending payments with the PC's own rules.
-struct FinanceData {
+struct FinanceData: Sendable {
     let bundle: DataBundle
-    let pending: [BudgetItem]
-    /// Notices dated inside the statements' period that no statement row explains.
+    /// Notices before the statement cutoff, kept outside the pending totals.
     let unmatched: [Notice]
-    let today: String
+    let payday: PaydayView?
+    let comingUp: [ComingUpGroup]
+    let lastPayday: String?
+    let spentSincePayday: Int?
+    let pendingSincePayday: Int
+    let months: [String]
+    let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
 
-    /// Reads the stored data file and the kept notices. GmailSync lives on the main actor.
-    @MainActor
-    static func load(now: Date = Date()) -> FinanceData? {
-        guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
-        let categorizer = Categorizer(rules: bundle.rules)
-        let result = PendingBuilder.build(notices: GmailSync.recentNotices(), bundle: bundle,
-                                          categorizer: categorizer, config: bundle.layerConfig)
-        return FinanceData(bundle: bundle, pending: result.items, unmatched: result.unmatched, today: JST.day(now))
+    static func load(notices: [Notice], now: Date = Date()) async -> FinanceData? {
+        await Task.detached(priority: .utility) {
+            guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
+            return FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+        }.value
     }
 
-    var items: [BudgetItem] { bundle.items + pending }
-    var payday: PaydayView? { PaydayView.compute(timeline: bundle.timeline, today: today) }
-    var comingUp: [ComingUpGroup] { ComingUp.groups(timeline: bundle.timeline, today: today) }
-    var incomeGroup: String { bundle.layerConfig.incomeGroup ?? "Income" }
+    init(bundle: DataBundle, notices: [Notice], today: String) {
+        self.bundle = bundle
+        let config = bundle.layerConfig
+        let result = PendingBuilder.build(notices: notices, bundle: bundle,
+                                          categorizer: Categorizer(rules: bundle.rules), config: config)
+        unmatched = result.unmatched
+        let items = bundle.items + result.items
 
-    /// The latest payday on or before today.
-    var lastPayday: String? {
-        bundle.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
-    }
+        let upcoming = PaydayView.compute(timeline: bundle.timeline, today: today)
+        payday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
+        comingUp = ComingUp.groups(timeline: bundle.timeline, today: today)
+        let start = bundle.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
+        lastPayday = start
+        spentSincePayday = start.map {
+            PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
+        }
+        pendingSincePayday = start.map { day in
+            result.items.filter {
+                $0.date >= day && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
+            }.count
+        } ?? 0
 
-    /// Spending since the last payday, from statements and pending bank emails.
-    var spentSincePayday: Int? {
-        lastPayday.map { PaydayView.spentSince(day: $0, items: items, config: bundle.layerConfig, layers: bundle.layers) }
-    }
-
-    var pendingSincePayday: Int {
-        guard let start = lastPayday else { return 0 }
-        return pending.filter { $0.date >= start }.count
-    }
-
-    var months: [String] { Set(items.map { String($0.date.prefix(7)) }).sorted() }
-
-    /// A month's payments, newest first, as the dashboard lists them (income left out).
-    func payments(in month: String) -> [BudgetItem] {
-        items.filter { $0.date.hasPrefix(month) && $0.group != incomeGroup }
+        let incomeGroup = config.resolvedIncomeGroup ?? "Income"
+        let payments = items.filter { $0.group != incomeGroup }
             .sorted { ($0.date, $0.amount) > ($1.date, $1.amount) }
+        paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
+        months = paymentsByMonth.keys.sorted()
     }
 
     func layer(of item: BudgetItem) -> String? {
-        item.layer ?? bundle.layer(for: item)
+        bundle.layerConfig.resolvedLayer(for: item, layers: bundle.layers)
     }
+
 
     var widgetSnapshot: WidgetSnapshot {
         guard let p = payday else {
-            return WidgetSnapshot(title: "Finance", value: "–", detail: "No payday in the data file", updatedAt: Date())
+            return WidgetSnapshot(title: "Finance", value: "–", detail: "No upcoming payday in the data file", updatedAt: Date())
         }
         let spent = spentSincePayday.map { " · spent " + Money.yen($0) } ?? ""
         return WidgetSnapshot(title: "Until payday · \(p.daysToPayday) days", value: Money.yen(p.left),
                               detail: "for everything else" + spent, updatedAt: Date())
     }
 
-    /// Writes the widget's value from the current data, if there is a data file.
     @MainActor
-    static func refreshWidget() {
-        guard let data = load() else { return }
-        SharedStore.write(data.widgetSnapshot)
-        WidgetCenter.shared.reloadAllTimelines()
+    static func publishWidget(_ snapshot: WidgetSnapshot) {
+        guard SharedStore.groupID != nil else { return }
+        if let current = SharedStore.read(),
+           current.title == snapshot.title, current.value == snapshot.value, current.detail == snapshot.detail {
+            return
+        }
+        SharedStore.write(snapshot)
+        WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
+    }
+}
+
+/// Values identify rows across filters. The occurrence keeps identical rows distinct.
+struct NumberedRow<Value: Hashable & Sendable>: Identifiable, Sendable {
+    struct ID: Hashable, Sendable {
+        let value: Value
+        let occurrence: Int
+    }
+
+    let id: ID
+    var value: Value { id.value }
+
+    static func make(from values: [Value]) -> [Self] {
+        var counts: [Value: Int] = [:]
+        return values.map { value in
+            let occurrence = counts[value, default: 0]
+            counts[value] = occurrence + 1
+            return Self(id: ID(value: value, occurrence: occurrence))
+        }
     }
 }
 

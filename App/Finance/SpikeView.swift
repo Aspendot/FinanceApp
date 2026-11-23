@@ -7,6 +7,7 @@ import WidgetKit
 /// after SideStore has signed the app. Each row shows the latest result.
 struct SpikeView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var model: AppModel
     @State private var groupResult = SharedStore.groupID.map { "App Group: \($0)" } ?? "No App Group available"
     @State private var faceIDResult = "Not tried yet"
     @State private var notifyResult = "Not tried yet"
@@ -16,31 +17,21 @@ struct SpikeView: View {
     @State private var signInTask: Task<Void, Never>?
     @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
-    @State private var dataResult = BundleInbox.storedData() == nil ? "No data file yet" : "A data file is stored"
-
-    private func checkDataFile() {
-        switch BundleInbox.check() {
-        case .nothingNew:
-            dataResult = BundleInbox.storedData() == nil ? "No data file yet. Add it with the Apple Devices app on your PC." : "A data file is stored; nothing new to import"
-        case .imported(let generatedAt, let items):
-            dataResult = "Imported \(items) payments from the file made \(generatedAt.prefix(16).replacingOccurrences(of: "T", with: " "))"
-        case .rejected(let reason):
-            dataResult = "Not imported: " + reason
-        }
-    }
 
     var body: some View {
         Group {
             List {
                 Section("Data file") {
-                    Text(dataResult).font(.footnote).foregroundStyle(.secondary)
-                    Button("Check for a new data file") { checkDataFile() }
+                    Text(model.importMessage ?? (model.data == nil ? "No data file yet" : "A data file is stored"))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Check for a new data file") { Task { await model.checkInbox() } }
+                        .disabled(model.checkingInbox)
                 }
                 Section("Widget") {
                     Text(groupResult).font(.footnote).foregroundStyle(.secondary)
                     Button("Send a test value to the widget") {
                         SharedStore.write(WidgetSnapshot(title: "Test value", value: "¥12,345", detail: "Sent " + Date().formatted(date: .omitted, time: .shortened), updatedAt: Date()))
-                        WidgetCenter.shared.reloadAllTimelines()
+                        WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
                         groupResult = SharedStore.groupID.map { "Sent through \($0). Add the Finance widget to see it." } ?? "No App Group: the widget can't receive data"
                     }
                 }
@@ -96,6 +87,7 @@ struct SpikeView: View {
                                     try await GmailSync.signIn(clientID: clientID)
                                     notices = GmailSync.recentNotices()
                                     gmailResult = "Signed in with read-only Gmail access"
+                                    await model.reload()
                                 } catch {
                                     gmailResult = Task.isCancelled
                                         ? "Sign-in cancelled"
@@ -106,24 +98,25 @@ struct SpikeView: View {
                     }
                     Button("Fetch bank emails from the last 7 days") {
                         Task {
+                            await model.syncGmail()
+                            notices = GmailSync.recentNotices()
+                            if let message = model.syncMessage { gmailResult = message }
+                        }
+                    }
+                    .disabled(model.syncing || signInTask != nil)
+                    Button("Sign out", role: .destructive) {
+                        Task {
                             do {
-                                let fresh = try await GmailSync.run()
-                                notices = GmailSync.recentNotices()
-                                gmailResult = "\(fresh.count) new notices; the widget was updated"
+                                try GmailSync.signOut()
+                                notices = []
+                                gmailResult = "Signed out"
+                                await model.reload()
                             } catch {
-                                gmailResult = "Fetch failed: " + error.localizedDescription
+                                gmailResult = "Sign-out failed: " + error.localizedDescription
                             }
                         }
                     }
-                    Button("Sign out", role: .destructive) {
-                        do {
-                            try GmailSync.signOut()
-                            notices = []
-                            gmailResult = "Signed out"
-                        } catch {
-                            gmailResult = "Sign-out failed: " + error.localizedDescription
-                        }
-                    }
+                    .disabled(model.syncing || signInTask != nil)
                 }
                 if !notices.isEmpty {
                     Section("Recent notices") {
@@ -150,10 +143,8 @@ struct SpikeView: View {
                 }
             }
             .navigationTitle("Finance test")
-            .onAppear { checkDataFile() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
-                    checkDataFile()
                     notices = GmailSync.recentNotices()
                 }
             }

@@ -2,7 +2,6 @@ import BackgroundTasks
 import Foundation
 import LocalAuthentication
 import UserNotifications
-import WidgetKit
 
 /// Face ID.
 enum Biometrics {
@@ -136,13 +135,15 @@ enum BackgroundRefresh {
                     if !Task.isCancelled, !fresh.isEmpty {
                         await Notifier.post(title: "Finance", body: "Open the app to see new notices.")
                     }
+                } else if let data = await FinanceData.load(notices: []) {
+                    guard !Task.isCancelled else { return }
+                    FinanceData.publishWidget(data.widgetSnapshot)
                 } else {
-                    SharedStore.write(WidgetSnapshot(
+                    FinanceData.publishWidget(WidgetSnapshot(
                         title: "Background refresh",
                         value: "\(log.backgroundRuns.count) runs",
                         detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
                         updatedAt: Date()))
-                    WidgetCenter.shared.reloadAllTimelines()
                     await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
                 }
                 succeeded = true

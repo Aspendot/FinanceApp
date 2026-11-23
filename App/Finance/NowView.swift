@@ -13,6 +13,8 @@ struct NowView: View {
                             PaydayCard(payday: payday, spent: data.spentSincePayday,
                                        lastPayday: data.lastPayday, pendingCount: data.pendingSincePayday)
                         }
+                    } else {
+                        Section { Text("No upcoming payday in the data file.") }
                     }
                     Section("Coming up") {
                         ForEach(data.comingUp, id: \.date) { group in
@@ -87,18 +89,18 @@ struct SplitBar: View {
         VStack(alignment: .leading, spacing: 6) {
             GeometryReader { geo in
                 HStack(spacing: 2) {
-                    ForEach(parts.indices, id: \.self) { i in
-                        Capsule().fill(parts[i].1)
-                            .frame(width: max(4, geo.size.width * CGFloat(parts[i].0) / CGFloat(total) - 2))
+                    ForEach(parts, id: \.2) { part in
+                        Capsule().fill(part.1)
+                            .frame(width: max(4, geo.size.width * CGFloat(part.0) / CGFloat(total) - 2))
                     }
                 }
             }
             .frame(height: 10)
             HStack(spacing: 12) {
-                ForEach(parts.indices, id: \.self) { i in
+                ForEach(parts, id: \.2) { part in
                     HStack(spacing: 4) {
-                        Circle().fill(parts[i].1).frame(width: 8, height: 8)
-                        Text("\(parts[i].2) \(Money.yen(parts[i].0))").font(.caption).foregroundStyle(.secondary)
+                        Circle().fill(part.1).frame(width: 8, height: 8)
+                        Text("\(part.2) \(Money.yen(part.0))").font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -141,8 +143,8 @@ struct ComingUpDay: View {
                 if group.isToday {
                     Text("TODAY").font(.caption2.weight(.bold)).foregroundStyle(.blue)
                 }
-                ForEach(group.entries.indices, id: \.self) { i in
-                    entryRow(group.entries[i])
+                ForEach(NumberedRow.make(from: group.entries)) { row in
+                    entryRow(row.value)
                 }
             }
         }
