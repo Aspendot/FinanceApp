@@ -57,6 +57,12 @@ public struct Notice: Codable, Sendable, Equatable {
     public var merchant: String?
     /// 承認番号, 取引番号 or an order ID, when the notice has one.
     public var reference: String?
+    /// An Apple order number named in another source's notice, which links the
+    /// two records so the payment is counted once.
+    public var orderID: String?
+    /// How the total was paid, in whole yen, when the notice splits it:
+    /// "credit", "points", "balance", "discount", or the label as written.
+    public var parts: [String: Int]?
     /// The parser and its version, such as "docomo_debit/1".
     public var parser: String
 
@@ -64,8 +70,11 @@ public struct Notice: Codable, Sendable, Equatable {
         messageID: String, source: NoticeSource, kind: NoticeKind, receivedAt: String,
         occurredAt: String? = nil, occurredOn: String? = nil, amount: Int? = nil,
         currency: String? = nil, foreignAmount: String? = nil, merchant: String? = nil,
-        reference: String? = nil, parser: String
+        reference: String? = nil, orderID: String? = nil, parts: [String: Int]? = nil,
+        parser: String
     ) {
+        self.orderID = orderID
+        self.parts = parts
         self.messageID = messageID
         self.source = source
         self.kind = kind

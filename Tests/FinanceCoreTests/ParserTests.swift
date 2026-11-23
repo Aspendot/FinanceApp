@@ -74,6 +74,7 @@ struct JSTTests {
 
     @Test func readsSlashedDates() {
         #expect(JST.timestamp(slashed: "2026/01/15 09:28:41") == "2026-01-15T09:28:41+09:00")
+        #expect(JST.timestamp(slashed: "2026/01/15 09:28") == "2026-01-15T09:28:00+09:00")
         #expect(JST.day(slashed: "2026/02/28") == "2026-02-28")
     }
 
@@ -83,7 +84,7 @@ struct JSTTests {
         #expect(JST.day(slashed: text) == nil)
     }
 
-    @Test(arguments: ["2026/01/15 24:00:00", "2026/01/15 09:60:00", "2026/01/15 09:28", "2026/01/15"])
+    @Test(arguments: ["2026/01/15 24:00:00", "2026/01/15 09:60:00", "2026/01/15 9:28", "2026/01/15", "2026/01/15 09:28:4"])
     func rejectsTimes(_ text: String) {
         #expect(JST.timestamp(slashed: text) == nil)
     }

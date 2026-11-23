@@ -17,13 +17,15 @@ public enum JST {
             + pad(c.hour) + ":" + pad(c.minute) + ":" + pad(c.second) + "+09:00"
     }
 
-    /// Reads "2026/01/15 09:30:00" (Japan time) as "2026-01-15T09:30:00+09:00".
-    /// Returns nil unless the date and time are real.
+    /// Reads "2026/01/15 09:30:00" or "2026/01/15 09:30" (Japan time) as
+    /// "2026-01-15T09:30:00+09:00". Returns nil unless the date and time are real.
     public static func timestamp(slashed text: String) -> String? {
         let parts = text.split(separator: " ", omittingEmptySubsequences: true)
         guard parts.count == 2, let day = day(slashed: String(parts[0])) else { return nil }
-        let t = parts[1].split(separator: ":").map { Int($0) }
-        guard t.count == 3, let h = t[0], let m = t[1], let s = t[2],
+        let raw = parts[1].split(separator: ":", omittingEmptySubsequences: false)
+        guard (2...3).contains(raw.count), raw.allSatisfy({ $0.count == 2 }) else { return nil }
+        let t = raw.map { Int($0) }
+        guard let h = t[0], let m = t[1], let s = t.count == 3 ? t[2] : 0,
               (0...23).contains(h), (0...59).contains(m), (0...59).contains(s)
         else { return nil }
         return day + "T" + pad(h) + ":" + pad(m) + ":" + pad(s) + "+09:00"

@@ -20,6 +20,8 @@ public enum NoticeParsers {
             return MUFGDebitParser.parse(email)
         case DocomoDebitParser.sender:
             return DocomoDebitParser.parse(email)
+        case MerpayParser.sender:
+            return MerpayParser.parse(email)
         default:
             return .quarantined("no parser for this sender yet")
         }
