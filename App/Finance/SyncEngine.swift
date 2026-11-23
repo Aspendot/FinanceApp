@@ -35,6 +35,12 @@ enum PaymentNotifications {
         let content = UNMutableNotificationContent()
         let hasShop = !alert.merchant.isEmpty && alert.merchant != PendingBuilder.missingMerchantPlaceholder
         let amount = Money.payment(alert.amount)
+        if alert.isDecline == true {
+            let amountLabel = alert.amount == 0 ? "Payment declined" : "Declined · \(amount)"
+            content.title = hasShop ? "\(amountLabel) · \(alert.merchant)" : "\(amountLabel) · \(alert.sourceLabel)"
+            content.body = "\(alert.sourceLabel) · payment could not go through"
+            return request(id: "decline-\(alert.messageID)", content: content)
+        }
         if alert.isConfirmed == true {
             if alert.isDiscreet || !hasShop {
                 content.title = "\(amount) · \(alert.sourceLabel)"
@@ -141,29 +147,47 @@ actor SyncEngine {
             nextState.notices = keptNotices
 
             var addedPayments = 0
+            let prefs = LocalDataStore.loadNotificationPreferences()
             // An incomplete initial scan remains a silent baseline across runs.
             if storeState.syncState.lastSyncAt != nil, let bundle, let categorizer, !newlySeenIDs.isEmpty {
-                let pending = PendingBuilder.build(
-                    notices: keptNotices,
-                    bundle: bundle,
-                    categorizer: categorizer,
-                    config: bundle.layerConfig
-                )
                 var queuedIDs = Set(nextState.alertQueue.map(\.messageID))
-                for (item, messageID) in zip(pending.items, pending.noticeIDs)
-                where newlySeenIDs.contains(messageID) && queuedIDs.insert(messageID).inserted {
-                    let isDiscreet = discreetCategories.contains(
-                        item.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if prefs.paymentAlertsEnabled {
+                    let pending = PendingBuilder.build(
+                        notices: keptNotices,
+                        bundle: bundle,
+                        categorizer: categorizer,
+                        config: bundle.layerConfig
                     )
-                    nextState.alertQueue.append(PendingPaymentAlert(
-                        messageID: messageID,
-                        amount: item.amount,
-                        merchant: isDiscreet ? "" : item.merchant,
-                        sourceLabel: item.source,
-                        isDiscreet: isDiscreet,
-                        isConfirmed: false
-                    ))
-                    addedPayments += 1
+                    for (item, messageID) in zip(pending.items, pending.noticeIDs)
+                    where newlySeenIDs.contains(messageID) && queuedIDs.insert(messageID).inserted {
+                        let isDiscreet = discreetCategories.contains(
+                            item.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        )
+                        nextState.alertQueue.append(PendingPaymentAlert(
+                            messageID: messageID,
+                            amount: item.amount,
+                            merchant: isDiscreet ? "" : item.merchant,
+                            sourceLabel: item.source,
+                            isDiscreet: isDiscreet,
+                            isConfirmed: false
+                        ))
+                        addedPayments += 1
+                    }
+                }
+                if prefs.declineAlertsEnabled {
+                    for notice in freshNotices where notice.kind == .decline && queuedIDs.insert(notice.messageID).inserted {
+                        let sourceLabel = bundle.sourceLabels[notice.source.rawValue] ?? notice.source.rawValue
+                        nextState.alertQueue.append(PendingPaymentAlert(
+                            messageID: notice.messageID,
+                            amount: notice.amount ?? 0,
+                            merchant: notice.merchant ?? "",
+                            sourceLabel: sourceLabel,
+                            isDiscreet: false,
+                            isConfirmed: false,
+                            isDecline: true
+                        ))
+                        addedPayments += 1
+                    }
                 }
             }
 
@@ -296,6 +320,9 @@ actor SyncEngine {
             var nextState = storeState
             let cachedIDs = Set(storeState.notices.map(\.messageID))
             nextState.alertQueue = storeState.alertQueue.compactMap { alert -> PendingPaymentAlert? in
+                if alert.isDecline == true {
+                    return alert
+                }
                 if alert.isConfirmed == true {
                     return confirmedIDs.contains(alert.messageID) ? alert : nil
                 }
@@ -338,6 +365,7 @@ actor SyncEngine {
         let hasCredentials = try GmailSync.hasCredentials()
         let notices = hasCredentials ? try SyncStorage.loadState().notices : []
         let mfState = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+        let localMods = LocalDataStore.loadModifications()
         let now = Date()
         if let bytes = try BundleInbox.readStoredData() {
             let bundle = try DataBundle.decode(from: bytes)
@@ -346,6 +374,7 @@ actor SyncEngine {
                 notices: notices,
                 bankTransactions: mfState.transactions,
                 accountMapping: mfState.accountMapping,
+                localModifications: localMods,
                 today: JST.day(now)
             )
             FinanceData.publishWidget(finance.widgetSnapshot)
@@ -607,6 +636,23 @@ actor SyncEngine {
             } catch {
                 postProcessingError = "Could not update the widget snapshot."
             }
+            if let bundle {
+                let mfState = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
+                let localMods = LocalDataStore.loadModifications()
+                let notices = await committer.storeState.notices
+                let finance = FinanceData(
+                    bundle: bundle,
+                    notices: notices,
+                    bankTransactions: mfState.transactions,
+                    accountMapping: mfState.accountMapping,
+                    localModifications: localMods,
+                    today: JST.day(Date())
+                )
+                await BillReminderScheduler.sync(
+                    timeline: finance.timeline,
+                    preferences: LocalDataStore.loadNotificationPreferences()
+                )
+            }
         }
         do {
             try await committer.deliverAlerts(until: deadline)
@@ -800,7 +846,9 @@ actor SyncEngine {
         }
 
         // Silent first sync; afterwards notify on newly confirmed money-in bank items (e.g. salary).
-        if wasInitialized, let bundle, !newlySeenIDs.isEmpty {
+        if wasInitialized,
+           LocalDataStore.loadNotificationPreferences().paymentAlertsEnabled,
+           let bundle, !newlySeenIDs.isEmpty {
             let layered = BankLayering.build(
                 bundle: bundle,
                 bankTransactions: merged,

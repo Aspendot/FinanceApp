@@ -2,6 +2,7 @@
   "format": "finance-bundle/1",
   "generatedAt": "2026-04-12T21:15:00+09:00",
   "asOf": "2026-04-12",
+  "planWindow": ["2026-01", "2026-02", "2026-03"],
   "coverage": {
     "mufg_debit": { "start": "2025-11-01", "end": "2026-04-12" },
     "docomo_debit": { "start": "2025-11-01", "end": "2026-04-12" },
@@ -110,7 +111,7 @@
     { "date": "2026-04-04", "source": "Sample Wallet", "merchant": "さくら珈琲店", "amount": 1240, "group": "Living", "category": "Coffee", "layer": "Day-to-day" },
     { "date": "2026-04-05", "source": "Sample Bank Card", "merchant": "あおいガス", "amount": 5100, "group": "Bills", "category": "Utilities", "layer": "Bills & taxes" },
     { "date": "2026-04-06", "source": "Sample Bank Card", "merchant": "Sample Savings Transfer", "amount": 20000, "group": "Transfers", "category": "Savings" },
-    { "date": "2026-04-07", "source": "Sample Bank Card", "merchant": "はな食堂", "amount": 3850, "group": "Living", "category": "Dining", "layer": "Day-to-day" },
+    { "date": "2026-04-07", "source": "Sample Bank Card", "merchant": "はな食堂", "amount": 8850, "group": "Living", "category": "Dining", "layer": "Day-to-day" },
     { "date": "2026-04-08", "source": "Sample Bank Card", "merchant": "たけだ書店", "amount": 2860, "group": "Living", "category": "Books", "layer": "Day-to-day" },
     { "date": "2026-04-09", "source": "Sample Bank Card", "merchant": "たけだ書店", "amount": -1200, "group": "Living", "category": "Books", "layer": "Day-to-day" },
     { "date": "2026-04-10", "source": "Sample App Store", "merchant": "そらクラウド", "amount": 1300, "group": "Subscriptions", "category": "Cloud storage", "layer": "Subscriptions" },
@@ -125,20 +126,36 @@
     { "date": "2026-03-25", "item": "Monthly salary", "amount": -290000, "note": "Sample Corp", "payday": true, "done": true },
     { "date": "2026-04-01", "item": "Apartment rent", "amount": 82000, "note": "April rent", "done": true },
     { "date": "2026-04-16", "item": "みどり電気", "amount": 9800, "note": "Monthly electricity", "estimate": true },
+    { "date": "2026-04-18", "item": "Weekend trip", "amount": 0, "note": "Train pass already purchased", "event": true },
     { "date": "2026-04-20", "item": "ひかり通信", "amount": 4400, "note": "Mobile plan" },
     { "date": "2026-04-22", "item": "Sample Card bill", "amount": 38500, "note": "March statement" },
     { "date": "2026-04-25", "item": "Monthly salary", "amount": -290000, "note": "Sample Corp", "payday": true, "next": true },
-    { "date": "2026-05-01", "item": "Apartment rent", "amount": 82000, "note": "May rent" }
+    { "date": "2026-05-01", "item": "Apartment rent", "amount": 82000, "note": "May rent" },
+    { "date": "2026-05-29", "item": "Sample mid-year bonus", "amount": -180000, "note": "Estimate based on prior year", "estimate": true, "label": "late" }
   ],
+  "afterNote": "Regular bills after the next payday are estimated from recent months until they post.",
   "debts": [
-    { "name": "Sample Card Revolving", "balance": 64000, "limit": 200000, "lines": ["Monthly ¥10,000"] },
-    { "name": "Sample Study Loan", "balance": 180000, "lines": ["Monthly ¥15,000 · 12 payments left"] }
+    { "name": "Sample Card Revolving", "balance": 64000, "limit": 200000, "lines": ["15.0% a year", "Monthly ¥10,000"] },
+    { "name": "Sample Study Loan", "balance": 180000, "lines": ["3.0% a year", "Monthly ¥15,000 · 12 payments left"] }
+  ],
+  "notes": [
+    "Sample Card: keep purchases on single payment rather than revolving.",
+    "Water is billed every two months; next bill arrives in May."
   ],
   "subs": [
-    { "name": "ひかり通信", "monthly": 4400, "via": "Sample Bank Card", "status": "active" },
-    { "name": "そらクラウド", "monthly": 1300, "via": "Sample App Store", "status": "active" },
-    { "name": "サンプル音楽", "monthly": 1080, "via": "Sample App Store", "status": "active" },
-    { "name": "サンプル新聞", "monthly": 980, "via": "Sample Bank Card", "status": "active" }
+    { "name": "ひかり通信", "monthly": 4400, "via": "Sample Bank Card", "status": "Keep" },
+    { "name": "そらクラウド", "monthly": 1300, "via": "Sample App Store", "status": "Check" },
+    { "name": "サンプル音楽", "monthly": 1080, "via": "Sample App Store", "status": "Keep" },
+    { "name": "サンプル新聞", "monthly": 980, "via": "Sample Bank Card", "status": "Review" },
+    { "name": "サンプル動画プラン", "monthly": 1980, "via": "Sample App Store", "status": "Cancelled" },
+    { "name": "サンプル旧ジム", "monthly": 3500, "via": "Sample Bank Card", "status": "Stopped" }
+  ],
+  "plan": [
+    { "category": "Dining", "now": 16800, "target": 10000, "status": "Cut", "note": "Keep weekday lunches at home" },
+    { "category": "Household", "now": 11800, "target": 8000, "status": "Cut", "note": "Pause impulse household orders" },
+    { "category": "Coffee", "now": 3500, "target": 2000, "status": "Cut", "note": "Brew at home before commuting" },
+    { "category": "Groceries", "now": 32567, "target": 35000, "status": "Raise", "note": "Shift meal spending from dining" },
+    { "category": "Media", "now": 4040, "target": 2060, "status": "Done", "note": "Cancelled extra video subscription" }
   ],
   "rules": {
     "rules": [

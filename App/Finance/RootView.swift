@@ -7,6 +7,7 @@ struct RootView: View {
     @StateObject private var model = AppModel()
     @StateObject private var session = AppSession()
     @Environment(\.scenePhase) private var phase
+    @State private var csvImportAlertMessage: String?
 
     var body: some View {
         Group {
@@ -22,6 +23,52 @@ struct RootView: View {
         .preferredColorScheme(session.demoColorScheme)
         .environmentObject(model)
         .environmentObject(session)
+        .sheet(item: $session.activeSheet) { sheet in
+            Group {
+                switch sheet {
+                case .quickAdd:
+                    QuickAddSheet()
+                case .ask:
+                    AskFinanceSheet()
+                case .debtPayoff:
+                    DebtPayoffSheet()
+                case .targets:
+                    if let data = session.resolvedData(from: model) {
+                        NavigationStack {
+                            WhereToCutView(plan: data.planSummary, isPresentedModally: true)
+                        }
+                    } else {
+                        NoDataView()
+                    }
+                }
+            }
+            .tint(Theme.accent)
+            .preferredColorScheme(session.demoColorScheme)
+            .environmentObject(model)
+            .environmentObject(session)
+        }
+        .onOpenURL { url in
+            guard !session.isDemo, url.pathExtension.lowercased() == "csv" else { return }
+            Task {
+                do {
+                    let result = try await model.importPayPayCSV(url: url)
+                    csvImportAlertMessage = "Imported \(result.entries.count) payments from \(url.lastPathComponent). Skipped \(result.skippedDuplicates) duplicates."
+                } catch {
+                    csvImportAlertMessage = error.localizedDescription
+                }
+            }
+        }
+        .alert(
+            "CSV Import",
+            isPresented: Binding(
+                get: { csvImportAlertMessage != nil },
+                set: { if !$0 { csvImportAlertMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { csvImportAlertMessage = nil }
+        } message: {
+            Text(csvImportAlertMessage ?? "")
+        }
         .onChange(of: phase, initial: true) { _, newPhase in
             guard !session.isDemo else { return }
             if newPhase == .background {
@@ -51,13 +98,13 @@ struct RootView: View {
             Tab("Now", systemImage: "calendar", value: AppTab.now) {
                 NowView()
             }
-            Tab("Payments", systemImage: "list.bullet", value: AppTab.payments) {
+            Tab("Payments", systemImage: "list.bullet.rectangle", value: AppTab.payments) {
                 PaymentsView()
             }
-            Tab("Months", systemImage: "chart.bar", value: AppTab.months) {
+            Tab("Months", systemImage: "chart.bar.fill", value: AppTab.months) {
                 MonthsView()
             }
-            Tab("More", systemImage: "ellipsis.circle", value: AppTab.more) {
+            Tab("More", systemImage: "slider.horizontal.3", value: AppTab.more) {
                 MoreView()
             }
         }
@@ -91,25 +138,45 @@ struct LockGate<Content: View>: View {
                 Theme.page.ignoresSafeArea()
             }
             if phase == .active && enabled && !unlocked {
-                VStack(spacing: 14) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(Theme.muted)
-                        .accessibilityHidden(true)
-                    Text("Finance is locked")
-                        .font(.headline)
-                        .foregroundStyle(Theme.ink)
-                    if !message.isEmpty {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                            .multilineTextAlignment(.center)
+                VStack(spacing: 18) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Theme.heroTop, Theme.heroBottom],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 72, height: 72)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .strokeBorder(Theme.heroAccent.opacity(0.30), lineWidth: 1)
+                            )
+                            .shadow(color: Theme.accent.opacity(0.22), radius: 16, y: 8)
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(Theme.heroAccent)
                     }
-                    Button("Unlock") { Task { await unlock() } }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                        .frame(minHeight: Theme.minTouchTarget)
-                        .disabled(context != nil)
+                    .accessibilityHidden(true)
+
+                    VStack(spacing: 6) {
+                        Text("Finance is locked")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Theme.ink)
+                        if !message.isEmpty {
+                            Text(message)
+                                .font(.footnote)
+                                .foregroundStyle(Theme.muted)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+
+                    PrimaryActionButton(title: "Unlock with Face ID") {
+                        Task { await unlock() }
+                    }
+                    .frame(maxWidth: 220)
+                    .disabled(context != nil)
                 }
                 .padding(32)
             }

@@ -1,7 +1,7 @@
 import FinanceCore
 import SwiftUI
 
-/// Visual tokens matching the approved personal-finance design system.
+/// Visual tokens for the personal-finance design system.
 ///
 /// Colors are loaded from named color sets in `Assets.xcassets` so light and dark
 /// mode stay exact without hardcoded hex logic in views.
@@ -21,8 +21,25 @@ enum Theme {
     static let badWash = Color("BadWash")
     static let track = Color("Track")
 
-    static let cardRadius: CGFloat = 14
-    static let cardPadding: CGFloat = 16
+    /// Warm burnished amber for approaching limits and cautionary indicators.
+    static let warn = Color("LayerDayToDay")
+
+    /// Soft recessed interior container matching the warm alabaster / obsidian palette.
+    static let well = Color("Track")
+
+    /// Signature Midnight Forest Obsidian palette for hero centerpieces and widgets.
+    static let heroTop = Color(red: 0.055, green: 0.195, blue: 0.149)
+    static let heroMid = Color(red: 0.043, green: 0.130, blue: 0.108)
+    static let heroBottom = Color(red: 0.045, green: 0.082, blue: 0.078)
+    static let heroGlow = Color(red: 0.200, green: 0.780, blue: 0.560)
+    static let heroInk = Color(red: 0.976, green: 0.984, blue: 0.980)
+    static let heroInkMuted = Color(red: 0.720, green: 0.825, blue: 0.780)
+    static let heroAccent = Color(red: 0.360, green: 0.890, blue: 0.660)
+    static let heroCoral = Color(red: 0.970, green: 0.520, blue: 0.470)
+
+    static let cardRadius: CGFloat = 20
+    static let innerRadius: CGFloat = 13
+    static let cardPadding: CGFloat = 18
     static let cardSpacing: CGFloat = 16
     static let screenPadding: CGFloat = 16
     static let minTouchTarget: CGFloat = 44

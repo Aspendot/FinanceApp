@@ -16,13 +16,26 @@ enum MoreDestination: String, Hashable {
     case gmail
     case moneyForward
     case drive
+    case notifications
+    case localData
+    case syncHealth
     case diagnostics
+}
+
+/// Modal sheets launchable from any primary tab or via demo arguments.
+enum ActiveSheet: String, Identifiable, Hashable {
+    case quickAdd
+    case ask
+    case debtPayoff
+    case targets
+
+    var id: String { rawValue }
 }
 
 /// Shared UI coordination across tabs and launch-argument demo mode.
 ///
-/// Keeps screen navigation, category cross-filtering, and `-demo` / `-screen` / `-appearance`
-/// launch arguments outside `AppModel` and `FinanceData`.
+/// Keeps screen navigation, category/query cross-filtering, modal sheets, and
+/// `-demo` / `-screen` / `-appearance` launch arguments outside `AppModel` and `FinanceData`.
 @MainActor
 final class AppSession: ObservableObject {
     let isDemo: Bool
@@ -35,6 +48,12 @@ final class AppSession: ObservableObject {
     @Published var morePath: [MoreDestination]
     @Published var paymentsMonth: String?
     @Published var paymentsCategory: String?
+    @Published var paymentsQuery: String = ""
+    @Published var paymentsAllMonths: Bool = false
+    @Published var paymentsOnlyUncategorized: Bool = false
+    @Published var paymentsSource: String? = nil
+    @Published var monthsSelectedMonth: String?
+    @Published var activeSheet: ActiveSheet?
     @Published var hasCompletedInitialLoad: Bool
 
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -43,6 +62,7 @@ final class AppSession: ObservableObject {
         self.isDemo = demo
         self.selectedTab = target.tab
         self.morePath = target.destination.map { [$0] } ?? []
+        self.activeSheet = target.sheet
         if demo {
             let loaded = DemoData.load()
             self.demoData = loaded?.data
@@ -74,35 +94,73 @@ final class AppSession: ObservableObject {
         demoToday ?? JST.day(Date())
     }
 
-    /// Navigates from Months to Payments with the tapped month and category applied.
-    func openPayments(month: String, category: String?) {
-        paymentsMonth = month
+    /// Navigates to Payments with optional month, category, search query, source, or uncategorized filter.
+    func openPayments(
+        month: String?,
+        category: String?,
+        query: String? = nil,
+        source: String? = nil,
+        onlyUncategorized: Bool = false
+    ) {
+        if let month {
+            paymentsMonth = month
+            paymentsAllMonths = false
+        } else {
+            paymentsAllMonths = true
+        }
         paymentsCategory = category
+        paymentsQuery = query ?? ""
+        paymentsSource = source
+        paymentsOnlyUncategorized = onlyUncategorized
         selectedTab = .payments
     }
 
-    private static func parseInitialScreen(from arguments: [String]) -> (tab: AppTab, destination: MoreDestination?) {
+    /// Navigates to Months focused on a specific month.
+    func openMonths(month: String?) {
+        if let month {
+            monthsSelectedMonth = month
+        }
+        selectedTab = .months
+    }
+
+    private static func parseInitialScreen(
+        from arguments: [String]
+    ) -> (tab: AppTab, destination: MoreDestination?, sheet: ActiveSheet?) {
         guard let index = arguments.firstIndex(of: "-screen"),
               arguments.indices.contains(index + 1) else {
-            return (.now, nil)
+            return (.now, nil, nil)
         }
         switch arguments[index + 1].lowercased() {
         case "now":
-            return (.now, nil)
+            return (.now, nil, nil)
         case "payments":
-            return (.payments, nil)
+            return (.payments, nil, nil)
         case "months":
-            return (.months, nil)
+            return (.months, nil, nil)
         case "more":
-            return (.more, nil)
+            return (.more, nil, nil)
         case "gmail":
-            return (.more, .gmail)
+            return (.more, .gmail, nil)
         case "money-forward", "moneyforward":
-            return (.more, .moneyForward)
+            return (.more, .moneyForward, nil)
         case "drive", "google-drive":
-            return (.more, .drive)
+            return (.more, .drive, nil)
+        case "notifications":
+            return (.more, .notifications, nil)
+        case "local-data", "imports":
+            return (.more, .localData, nil)
+        case "sync-health":
+            return (.more, .syncHealth, nil)
+        case "ask":
+            return (.now, nil, .ask)
+        case "targets", "plan":
+            return (.months, nil, .targets)
+        case "debt-payoff", "payoff":
+            return (.now, nil, .debtPayoff)
+        case "quick-add":
+            return (.now, nil, .quickAdd)
         default:
-            return (.now, nil)
+            return (.now, nil, nil)
         }
     }
 

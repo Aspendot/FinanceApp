@@ -1,13 +1,37 @@
 import Foundation
 
-/// What the app shows in its widget.
+/// Compact bill summary rendered in medium widgets.
+struct WidgetBill: Codable, Equatable, Sendable, Identifiable {
+    var id: String { "\(date)|\(title)|\(amount)" }
+    var title: String
+    var date: String
+    var dateLabel: String
+    var amount: Int
+    var isEstimate: Bool
+}
+
+/// What the app shows in its Home Screen and Lock Screen widgets.
+///
+/// New fields are optional so snapshots written by earlier app versions continue to decode cleanly.
 struct WidgetSnapshot: Codable, Equatable, Sendable {
     var title: String
     var value: String
     var detail: String
     var updatedAt: Date
+    var compactValue: String? = nil
+    var daysToPayday: Int? = nil
+    var cycleProgress: Double? = nil
+    var billsSum: Int? = nil
+    var leftSum: Int? = nil
+    var borrowedSum: Int? = nil
+    var upcomingBills: [WidgetBill]? = nil
 
-    static let placeholder = WidgetSnapshot(title: "Finance", value: "–", detail: "Open the app to sync", updatedAt: .distantPast)
+    static let placeholder = WidgetSnapshot(
+        title: "Finance",
+        value: "–",
+        detail: "Open the app to sync",
+        updatedAt: .distantPast
+    )
 }
 
 /// Data shared between the app and its widget through an App Group.

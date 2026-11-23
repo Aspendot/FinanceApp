@@ -50,6 +50,11 @@ targets:
         # The Documents folder shows up in Apple Devices on Windows and in Files, for the data file.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: CSV Statement
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - public.comma-separated-values-text
         NSFaceIDUsageDescription: Face ID keeps your finances private.
         NSCameraUsageDescription: Camera is used to scan the Drive sync pairing QR code.
         UIBackgroundModes: [fetch, processing]

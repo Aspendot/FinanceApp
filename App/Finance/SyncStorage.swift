@@ -2,7 +2,7 @@ import FinanceCore
 import FinanceSync
 import Foundation
 
-/// One payment or deposit alert persisted until `UNUserNotificationCenter.add` succeeds.
+/// One payment, decline or deposit alert persisted until `UNUserNotificationCenter.add` succeeds.
 struct PendingPaymentAlert: Codable, Equatable, Sendable {
     var messageID: String
     var amount: Int
@@ -11,6 +11,8 @@ struct PendingPaymentAlert: Codable, Equatable, Sendable {
     var isDiscreet: Bool
     /// True for confirmed Money Forward bank items (e.g. incoming deposits); nil/false for pending Gmail notices.
     var isConfirmed: Bool? = nil
+    /// True for declined or failed payment notices.
+    var isDecline: Bool? = nil
 }
 
 struct PendingPaymentSummary: Codable, Equatable, Sendable {
