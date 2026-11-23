@@ -170,10 +170,6 @@ enum DriveSync {
             scopes: [GoogleOAuth.gmailReadOnlyScope, GoogleOAuth.driveAppDataScope],
             includeGrantedScopes: true
         )
-        var state = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
-        state.needsDriveConsent = !GmailSync.hasDriveScope()
-        state.lastErrorMessage = nil
-        try? DriveSyncStore.saveState(state)
     }
 
     /// Checks Google Drive's `appDataFolder` for `finance-bundle.fnb`, downloading and
@@ -188,16 +184,19 @@ enum DriveSync {
         do {
             files = try await client.listAppDataFiles(name: GoogleDriveClient.bundleFileName)
         } catch let error as GoogleDriveClientError where error.requiresDriveConsent {
+            try Task.checkCancellation()
             state.needsDriveConsent = true
             state.lastErrorMessage = error.localizedDescription
             try? DriveSyncStore.saveState(state)
             return .needsConsent
         } catch {
+            try Task.checkCancellation()
             state.lastErrorMessage = diagnostic(for: error)
             try? DriveSyncStore.saveState(state)
             throw error
         }
 
+        try Task.checkCancellation()
         state.needsDriveConsent = false
         guard let newest = files.first else {
             state.lastCheckedAt = now
@@ -206,7 +205,8 @@ enum DriveSync {
             return .noFile
         }
 
-        if let md5 = newest.md5Checksum, !md5.isEmpty, md5 == state.lastImportedMD5 {
+        if let md5 = newest.md5Checksum, !md5.isEmpty, md5 == state.lastImportedMD5,
+           newest.id == state.lastImportedFileID, try BundleInbox.readStoredData() != nil {
             state.lastCheckedAt = now
             state.lastErrorMessage = nil
             try? DriveSyncStore.saveState(state)
@@ -217,11 +217,13 @@ enum DriveSync {
         do {
             encrypted = try await client.downloadFile(id: newest.id)
         } catch {
+            try Task.checkCancellation()
             state.lastErrorMessage = diagnostic(for: error)
             try? DriveSyncStore.saveState(state)
             throw error
         }
 
+        try Task.checkCancellation()
         let plaintext: Data
         do {
             plaintext = try DriveEnvelope.open(encrypted, key: key)
@@ -231,6 +233,7 @@ enum DriveSync {
             throw error
         }
 
+        try Task.checkCancellation()
         let stored: BundleInbox.StoreOutcome
         do {
             stored = try BundleInbox.storeIfNewer(plaintext)
@@ -268,6 +271,8 @@ enum DriveSync {
                 return "Google Drive request failed (HTTP \(status))."
             case .networkError:
                 return "Could not reach Google Drive."
+            case .tokenRefreshFailed:
+                return "Could not refresh Google Drive access."
             default:
                 return driveError.localizedDescription
             }

@@ -71,7 +71,7 @@ struct DriveSyncSettingsView: View {
                 }
                 .disabled(busy)
 
-                TextField("finance-key:v1:...", text: $pastedKey)
+                SecureField("finance-key:v1:...", text: $pastedKey)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .font(.footnote.monospaced())
@@ -117,13 +117,7 @@ struct DriveSyncSettingsView: View {
         .sheet(isPresented: $showingScanner) {
             KeyPairingScannerSheet { scannedKey in
                 showingScanner = false
-                do {
-                    try DriveSync.saveKey(scannedKey)
-                    feedback = "Paired key \(scannedKey.keyIDFormatted)"
-                    model.refreshConnectionStates()
-                } catch {
-                    feedback = error.localizedDescription
-                }
+                saveKey(scannedKey)
             }
         }
         .onAppear {
@@ -152,22 +146,40 @@ struct DriveSyncSettingsView: View {
     private func savePastedKey() {
         do {
             let key = try DriveSyncKey(pairingString: pastedKey)
-            try DriveSync.saveKey(key)
-            pastedKey = ""
-            feedback = "Saved key \(key.keyIDFormatted)"
-            model.refreshConnectionStates()
+            saveKey(key)
         } catch {
             feedback = error.localizedDescription
         }
     }
 
+    private func saveKey(_ key: DriveSyncKey) {
+        updateKey {
+            try DriveSync.saveKey(key)
+        } success: {
+            pastedKey = ""
+            feedback = "Saved key \(key.keyIDFormatted)"
+        }
+    }
+
     private func removeKey() {
-        do {
+        updateKey {
             try DriveSync.clearKey()
+        } success: {
             feedback = "Key removed"
-            model.refreshConnectionStates()
-        } catch {
-            feedback = error.localizedDescription
+        }
+    }
+
+    private func updateKey(_ change: @escaping @MainActor @Sendable () throws -> Void, success: @escaping () -> Void) {
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                try await SyncEngine.shared.withSignIn { try change() }
+                success()
+                model.refreshConnectionStates()
+            } catch {
+                feedback = error.localizedDescription
+            }
         }
     }
 }

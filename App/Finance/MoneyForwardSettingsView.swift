@@ -23,9 +23,9 @@ struct MoneyForwardSettingsView: View {
     }
 
     private var sortedBundleSources: [(key: String, label: String)] {
-        guard let labels = model.data?.bundle.sourceLabels else { return [] }
-        return labels
-            .map { (key: $0.key, label: $0.value) }
+        guard let bundle = model.data?.bundle else { return [] }
+        return bundle.coverage.keys
+            .map { (key: $0, label: bundle.sourceLabels[$0] ?? $0) }
             .sorted { ($0.label.lowercased(), $0.key) < ($1.label.lowercased(), $1.key) }
     }
 
@@ -190,13 +190,18 @@ struct MoneyForwardSettingsView: View {
 
     private func mappingBinding(for accountID: String) -> Binding<String> {
         Binding(
-            get: { model.moneyForwardState.accountMapping[accountID] ?? "" },
+            get: {
+                let key = model.moneyForwardState.accountMapping[accountID] ?? ""
+                return sortedBundleSources.contains { $0.key == key } ? key : ""
+            },
             set: { newValue in
-                do {
-                    try MoneyForwardSync.setMapping(accountID: accountID, sourceKey: newValue)
-                    Task { await model.reload() }
-                } catch {
-                    feedback = error.localizedDescription
+                Task {
+                    do {
+                        try await MoneyForwardSync.setMapping(accountID: accountID, sourceKey: newValue)
+                        await model.reload()
+                    } catch {
+                        feedback = error.localizedDescription
+                    }
                 }
             }
         )

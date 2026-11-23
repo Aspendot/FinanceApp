@@ -141,23 +141,39 @@ public actor GoogleDriveClient {
         let escapedName = name
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
-        components.queryItems = [
-            URLQueryItem(name: "spaces", value: "appDataFolder"),
-            URLQueryItem(name: "q", value: "name = '\(escapedName)' and trashed = false"),
-            URLQueryItem(name: "fields", value: "files(id,name,modifiedTime,md5Checksum,size)"),
-            URLQueryItem(name: "orderBy", value: "modifiedTime desc"),
-            URLQueryItem(name: "pageSize", value: "10"),
+        let query = [
+            ("spaces", "appDataFolder"),
+            ("q", "name = '\(escapedName)' and trashed = false"),
+            ("fields", "nextPageToken,files(id,name,modifiedTime,md5Checksum,size)"),
+            ("orderBy", "modifiedTime desc"),
+            ("pageSize", "100"),
         ]
-        guard let url = components.url else {
-            throw GoogleDriveClientError.invalidResponse("could not build Drive files URL.")
-        }
-
-        let data = try await performAuthorizedGET(url, accept: "application/json")
-        do {
-            return try JSONDecoder().decode(DriveFileListEnvelope.self, from: data).files
-        } catch {
-            throw GoogleDriveClientError.invalidResponse("could not decode Drive file list JSON.")
-        }
+        var files: [DriveFileMetadata] = []
+        var pageToken: String?
+        var seenTokens: Set<String> = []
+        repeat {
+            var pairs = query
+            if let pageToken {
+                guard seenTokens.insert(pageToken).inserted else {
+                    throw GoogleDriveClientError.invalidResponse("Drive returned a repeated page token.")
+                }
+                pairs.append(("pageToken", pageToken))
+            }
+            components.percentEncodedQuery = String(decoding: FormURLEncoder.encode(pairs), as: UTF8.self)
+            guard let url = components.url else {
+                throw GoogleDriveClientError.invalidResponse("could not build Drive files URL.")
+            }
+            let data = try await performAuthorizedGET(url, accept: "application/json")
+            let page: DriveFileListEnvelope
+            do {
+                page = try JSONDecoder().decode(DriveFileListEnvelope.self, from: data)
+            } catch {
+                throw GoogleDriveClientError.invalidResponse("could not decode Drive file list JSON.")
+            }
+            files.append(contentsOf: page.files)
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+        return files
     }
 
     /// Downloads the raw bytes of a Drive file (`alt=media`).
@@ -240,8 +256,7 @@ public actor GoogleDriveClient {
                 )
             }
 
-            let message = parseDriveError(response.body)?.message
-            throw GoogleDriveClientError.httpError(statusCode: response.statusCode, message: message)
+            throw GoogleDriveClientError.httpError(statusCode: response.statusCode, message: nil)
         }
     }
 
@@ -249,7 +264,7 @@ public actor GoogleDriveClient {
         do {
             return try await tokenStore.load()
         } catch {
-            throw GoogleDriveClientError.tokenRefreshFailed(error.localizedDescription)
+            throw GoogleDriveClientError.tokenRefreshFailed("could not load or refresh Google credentials.")
         }
     }
 
@@ -271,13 +286,13 @@ public actor GoogleDriveClient {
             {
                 throw GoogleDriveClientError.invalidGrant
             }
-            throw GoogleDriveClientError.tokenRefreshFailed(oauthError.localizedDescription)
-        } catch let transportError as HTTPTransportError {
-            throw GoogleDriveClientError.networkError(transportError.localizedDescription)
+            throw GoogleDriveClientError.tokenRefreshFailed("Google rejected the token refresh.")
+        } catch is HTTPTransportError {
+            throw GoogleDriveClientError.networkError("the request could not complete.")
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            throw GoogleDriveClientError.tokenRefreshFailed(error.localizedDescription)
+            throw GoogleDriveClientError.tokenRefreshFailed("could not load or refresh Google credentials.")
         }
 
         try Task.checkCancellation()
@@ -299,12 +314,12 @@ public actor GoogleDriveClient {
             return try await transport.send(request)
         } catch is CancellationError {
             throw CancellationError()
-        } catch let transportError as HTTPTransportError {
+        } catch is HTTPTransportError {
             try Task.checkCancellation()
-            throw GoogleDriveClientError.networkError(transportError.localizedDescription)
+            throw GoogleDriveClientError.networkError("the request could not complete.")
         } catch {
             try Task.checkCancellation()
-            throw GoogleDriveClientError.networkError(error.localizedDescription)
+            throw GoogleDriveClientError.networkError("the request could not complete.")
         }
     }
 
@@ -370,14 +385,16 @@ public actor GoogleDriveClient {
 
 private struct DriveFileListEnvelope: Decodable {
     let files: [DriveFileMetadata]
+    let nextPageToken: String?
 
     enum CodingKeys: String, CodingKey {
-        case files
+        case files, nextPageToken
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         files = try c.decodeIfPresent([DriveFileMetadata].self, forKey: .files) ?? []
+        nextPageToken = try c.decodeIfPresent(String.self, forKey: .nextPageToken)
     }
 }
 

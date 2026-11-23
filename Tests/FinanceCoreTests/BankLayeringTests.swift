@@ -197,7 +197,7 @@ struct BankLayeringTests {
         #expect(result.effectiveCoverage["bank_main"]?.end == "2026-04-25")
     }
 
-    @Test func matchesNoticesWithinZeroToThreeDaysAndDropsOlderUnmatchedNotices() throws {
+    @Test func matchesNoticesWithinZeroToThreeDaysAndKeepsUnmatchedNotices() throws {
         let bundle = try makeLayeringBundle()
         let categorizer = Categorizer(rules: bundle.rules)
         let mapping = ["acc-debit": "mufg_debit"]
@@ -216,7 +216,7 @@ struct BankLayeringTests {
             makeNotice("n1", source: .mufgDebit, on: "2026-04-05", amount: 1000, merchant: "SAMPLE MART"),
             // Matched at offset +3.
             makeNotice("n2", source: .mufgDebit, on: "2026-04-05", amount: 2000, merchant: "DEMO CAFE"),
-            // Older notice (2026-04-03) with no match: drops out of pending under extended coverage 2026-04-12.
+            // An earlier post-bundle notice can still be pending.
             makeNotice("n-old", source: .mufgDebit, on: "2026-04-03", amount: 7777, merchant: "OLD SHOP"),
             // Notice on 2026-04-13 (after effective coverage): stays pending.
             makeNotice("n-new", source: .mufgDebit, on: "2026-04-13", amount: 3000, merchant: "NEW SHOP"),
@@ -237,8 +237,8 @@ struct BankLayeringTests {
 
         #expect(result.matchedPairs.map(\.noticeID) == ["n1", "n2"])
         #expect(result.matchedPairs.map(\.dayOffset) == [0, 3])
-        #expect(result.unmatched.map(\.messageID) == ["n-old"])
-        #expect(result.pendingNoticeIDs == ["n-boundary", "n-after-tx", "n-new"])
+        #expect(result.unmatched.isEmpty)
+        #expect(result.pendingNoticeIDs == ["n-old", "n-boundary", "n-after-tx", "n-new"])
         #expect(result.pendingItems.allSatisfy { $0.isPending })
 
         // Input order does not change output.
@@ -376,10 +376,57 @@ struct BankLayeringTests {
         #expect(byNotice["n-ref-d"]?.transactionID == "tx-d")
         #expect(byNotice["n-ref-d"]?.referenceAgrees == true)
 
-        // Displayed bank item descriptions stay verbatim.
+        // Matched notices supply display text. Unmatched rows keep their bank text.
         let merchantsByTxID = Dictionary(uniqueKeysWithValues: zip(result.bankTransactionIDs, result.bankItems.map(\.merchant)))
-        #expect(merchantsByTxID["tx-a"] == "デビット1 123456 SAMPLE-M")
-        #expect(merchantsByTxID["tx-c"] == "デビット 654321")
+        #expect(merchantsByTxID["tx-a"] == "SAMPLE MART TOKYO")
+        #expect(merchantsByTxID["tx-c"] == "SHOP ONE")
         #expect(merchantsByTxID["tx-int"] == "利息")
+        #expect(result.bankItems.first { $0.merchant == "SAMPLE MART TOKYO" }?.category == "Groceries")
     }
+    @Test func asOfProtectsUncoveredSourceAndRefundMatchesAcrossMonths() throws {
+        var bundle = try makeLayeringBundle(noticeSourceMatches: ["docomo_debit": ["sample_bank"]])
+        bundle.statementLineRules = ["sample_bank": [
+            StatementLineRule(pattern: #"^REVERSAL (\d+)$"#, referenceGroup: 1)
+        ]]
+        let mapping = ["sample": "sample_bank"]
+        let rows = [
+            BankTransaction(id: "covered", connectedAccountID: "sample", date: "2026-03-31", amount: 1500, description: "SAMPLE MART"),
+            BankTransaction(id: "refund", connectedAccountID: "sample", date: "2026-05-01", amount: -2000, description: "REVERSAL 111"),
+            BankTransaction(id: "other", connectedAccountID: "sample", date: "2026-05-01", amount: -2000, description: "REVERSAL 222"),
+        ]
+        let notice = makeNotice("refund-notice", source: .docomoDebit, kind: .refund,
+                                on: "2026-04-30", amount: -2000, merchant: "SAMPLE MART", ref: "111")
+        func layer(_ data: DataBundle) -> BankLayeringResult {
+            BankLayering.build(bundle: data, bankTransactions: rows, accountMapping: mapping,
+                               notices: [notice], categorizer: Categorizer(rules: data.rules), config: data.layerConfig)
+        }
+        let result = layer(bundle)
+        #expect(result.bankTransactionIDs == ["other", "refund"])
+        #expect(result.matchedPairs.first?.transactionID == "refund")
+        #expect(result.matchedPairs.first?.dayOffset == 1)
+        #expect(result.bankItems.last?.merchant == "SAMPLE MART")
+        #expect(result.pendingItems.isEmpty)
+
+        bundle.coverage["sample_bank"] = CoverageRange(start: "2026-03-31", end: "2026-05-01")
+        let covered = layer(bundle)
+        #expect(covered.bankItems.isEmpty)
+        #expect(covered.pendingItems.isEmpty)
+    }
+
+    @Test func cancellationStaysPendingWhenPurchaseClearedButReversalHasNot() throws {
+        let bundle = try makeLayeringBundle()
+        let rows = [
+            BankTransaction(id: "purchase", connectedAccountID: "sample", date: "2026-04-06", amount: 2400, description: "DEMO SHOP")
+        ]
+        let notices = [
+            makeNotice("purchase-notice", on: "2026-04-05", amount: 2400, merchant: "DEMO SHOP", ref: "111"),
+            makeNotice("cancel-notice", kind: .cancellation, on: "2026-04-07", amount: -2400, merchant: "DEMO SHOP", ref: "111"),
+        ]
+        let result = BankLayering.build(bundle: bundle, bankTransactions: rows, accountMapping: ["sample": "mufg_debit"],
+                                        notices: notices, categorizer: Categorizer(rules: bundle.rules), config: bundle.layerConfig)
+        #expect(result.bankTransactionIDs == ["purchase"])
+        #expect(result.pendingNoticeIDs == ["cancel-notice"])
+        #expect(result.pendingItems.first?.amount == -2400)
+    }
+
 }

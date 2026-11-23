@@ -102,18 +102,29 @@ enum GmailSync {
         }
         var tokens = try await candidate.load() ?? exchanged
         try Task.checkCancellation()
-        if currentTokens == nil {
-            try SyncStorage.clearState()
-        }
+        // OAuth allows a missing scope field when the granted scopes equal the requested ones.
+        if tokens.scope == nil { tokens.scope = scopes.joined(separator: " ") }
         if tokens.refreshToken == nil, currentMailbox == mailbox {
+            if tokens.hasScope(GoogleOAuth.driveAppDataScope),
+               currentTokens?.hasScope(GoogleOAuth.driveAppDataScope) != true {
+                throw SyncProblem.missingDriveRefreshToken
+            }
             tokens.refreshToken = currentTokens?.refreshToken
         }
-        if tokens.scope == nil, currentMailbox == mailbox {
-            tokens.scope = currentTokens?.scope
+        if scopes.contains(GoogleOAuth.driveAppDataScope), tokens.hasScope(GoogleOAuth.driveAppDataScope),
+           tokens.refreshToken == nil {
+            throw SyncProblem.missingDriveRefreshToken
         }
+        if currentTokens == nil { try SyncStorage.clearState() }
         tokens.mailboxFingerprint = mailbox
         UserDefaults.standard.set(requestedID, forKey: clientIDKey)
         try store.save(tokens)
+        if scopes.contains(GoogleOAuth.driveAppDataScope) {
+            var driveState = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
+            driveState.needsDriveConsent = !tokens.hasScope(GoogleOAuth.driveAppDataScope)
+            driveState.lastErrorMessage = nil
+            try? DriveSyncStore.saveState(driveState)
+        }
     }
 
     static func signOut() async throws {
@@ -135,6 +146,7 @@ enum GmailSync {
         case busy
         case signOutBeforeChangingClientID
         case signOutBeforeChangingMailbox
+        case missingDriveRefreshToken
 
         var errorDescription: String? {
             switch self {

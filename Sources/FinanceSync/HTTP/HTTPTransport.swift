@@ -4,7 +4,7 @@ import FoundationNetworking
 #endif
 
 /// An outgoing HTTP request with pure value semantics.
-public struct HTTPRequest: Sendable, Equatable {
+public struct HTTPRequest: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     /// HTTP method such as `"GET"` or `"POST"`.
     public var method: String
     /// Destination URL.
@@ -26,6 +26,9 @@ public struct HTTPRequest: Sendable, Equatable {
         self.body = body
     }
 
+    public var description: String { "HTTPRequest(<redacted>)" }
+    public var debugDescription: String { description }
+
     /// Converts this value into a Foundation `URLRequest`.
     public func makeURLRequest() -> URLRequest {
         var request = URLRequest(url: url)
@@ -39,7 +42,7 @@ public struct HTTPRequest: Sendable, Equatable {
 }
 
 /// A received HTTP response with pure value semantics.
-public struct HTTPResponse: Sendable, Equatable {
+public struct HTTPResponse: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
     /// HTTP status code, such as 200 or 401.
     public var statusCode: Int
     /// Response header fields.
@@ -56,6 +59,9 @@ public struct HTTPResponse: Sendable, Equatable {
         self.headers = headers
         self.body = body
     }
+
+    public var description: String { "HTTPResponse(statusCode: \(statusCode), body: <redacted>)" }
+    public var debugDescription: String { description }
 
     /// Returns the first header value whose name matches `name` case-insensitively.
     public func headerValue(for name: String) -> String? {
