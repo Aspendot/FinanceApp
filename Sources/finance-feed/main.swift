@@ -12,7 +12,24 @@ finance-feed: notice emails in, notice lines and a match report out.
   finance-feed match <notices.jsonl> <rows.jsonl> <coverage.json> <report.json>
       Matches notices to statement rows inside each source's coverage
       ({"<source>": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}}).
+
+  finance-feed show <message.json>
+      Prints the sender, subject and the text a parser sees, then the outcome.
+      For writing parsers on a private machine; it prints email content.
 """
+
+func show(_ path: String) throws {
+    let gmail = try JSONDecoder().decode(GmailMessage.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+    let mail = MailMessage(gmail: gmail)
+    print("from: \(mail.from?.address ?? "?")")
+    print("subject: \(mail.subject)")
+    print("issues: \(mail.issues)")
+    print("---")
+    print(mail.textBody ?? mail.htmlBody.map(HTMLText.plainText) ?? "<no body>")
+    print("---")
+    let item = NoticeFeed.process(gmail)
+    print("\(item.status.rawValue): \(item.reason ?? "") \(try item.notice.map { try $0.jsonLine() } ?? "")")
+}
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write(Data((message + "\n").utf8))
@@ -126,6 +143,7 @@ do {
     switch (args.first, args.count) {
     case ("parse", 4): try parse(args[1], args[2], args[3])
     case ("match", 5): try match(args[1], args[2], args[3], args[4])
+    case ("show", 2): try show(args[1])
     default: fail(usage)
     }
 } catch {
