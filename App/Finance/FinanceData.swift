@@ -11,6 +11,8 @@ struct FinanceData {
     let unmatched: [Notice]
     let today: String
 
+    /// Reads the stored data file and the kept notices. GmailSync lives on the main actor.
+    @MainActor
     static func load(now: Date = Date()) -> FinanceData? {
         guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
         let categorizer = Categorizer(rules: bundle.rules)
@@ -61,6 +63,7 @@ struct FinanceData {
     }
 
     /// Writes the widget's value from the current data, if there is a data file.
+    @MainActor
     static func refreshWidget() {
         guard let data = load() else { return }
         SharedStore.write(data.widgetSnapshot)
