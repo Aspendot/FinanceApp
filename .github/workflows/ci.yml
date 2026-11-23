@@ -31,14 +31,17 @@ jobs:
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           rm gitleaks gitleaks.tar.gz
       - name: Scan the full history
-        run: gitleaks git --redact --no-banner --verbose --config tools/privacy/gitleaks.toml .
+        run: |
+          gitleaks git --redact=100 --no-banner --ignore-gitleaks-allow \
+            --config tools/privacy/gitleaks.toml \
+            --log-opts="--all --root --diff-merges=first-parent --no-ext-diff --no-textconv --text" .
       - name: Guard canary tests
-        run: python3 tools/privacy/test_guard.py -v
+        run: python3 -I tools/privacy/test_guard.py -v
 
   swift-linux:
     name: Swift tests (Linux)
     runs-on: ubuntu-24.04
-    container: swift:6.4.3-noble
+    container: swift:6.4.3-noble@sha256:4ed5e0210b244aab174450e0b79014c17db60c63c6daf0709347fe50c767293a
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
