@@ -31,7 +31,7 @@ struct SpikeView: View {
                     Text(groupResult).font(.footnote).foregroundStyle(.secondary)
                     Button("Send a test value to the widget") {
                         SharedStore.write(WidgetSnapshot(title: "Test value", value: "¥12,345", detail: "Sent " + Date().formatted(date: .omitted, time: .shortened), updatedAt: Date()))
-                        WidgetCenter.shared.reloadAllTimelines()
+                        WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
                         groupResult = SharedStore.groupID.map { "Sent through \($0). Add the Finance widget to see it." } ?? "No App Group: the widget can't receive data"
                     }
                 }
@@ -87,6 +87,7 @@ struct SpikeView: View {
                                     try await GmailSync.signIn(clientID: clientID)
                                     notices = GmailSync.recentNotices()
                                     gmailResult = "Signed in with read-only Gmail access"
+                                    await model.reload()
                                 } catch {
                                     gmailResult = Task.isCancelled
                                         ? "Sign-in cancelled"
@@ -97,24 +98,25 @@ struct SpikeView: View {
                     }
                     Button("Fetch bank emails from the last 7 days") {
                         Task {
+                            await model.syncGmail()
+                            notices = GmailSync.recentNotices()
+                            if let message = model.syncMessage { gmailResult = message }
+                        }
+                    }
+                    .disabled(model.syncing || signInTask != nil)
+                    Button("Sign out", role: .destructive) {
+                        Task {
                             do {
-                                let fresh = try await GmailSync.run()
-                                notices = GmailSync.recentNotices()
-                                gmailResult = "\(fresh.count) new notices; the widget was updated"
+                                try GmailSync.signOut()
+                                notices = []
+                                gmailResult = "Signed out"
+                                await model.reload()
                             } catch {
-                                gmailResult = "Fetch failed: " + error.localizedDescription
+                                gmailResult = "Sign-out failed: " + error.localizedDescription
                             }
                         }
                     }
-                    Button("Sign out", role: .destructive) {
-                        do {
-                            try GmailSync.signOut()
-                            notices = []
-                            gmailResult = "Signed out"
-                        } catch {
-                            gmailResult = "Sign-out failed: " + error.localizedDescription
-                        }
-                    }
+                    .disabled(model.syncing || signInTask != nil)
                 }
                 if !notices.isEmpty {
                     Section("Recent notices") {

@@ -33,6 +33,7 @@ struct FinanceWidgetView: View {
             Text(entry.snapshot.title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .privacySensitive()
             Text(entry.snapshot.value)
                 .font(.title2.weight(.semibold))
                 .minimumScaleFactor(0.6)

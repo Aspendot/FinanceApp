@@ -15,8 +15,8 @@ struct RootView: View {
             }
         }
         .environmentObject(model)
-        .task(id: phase) {
-            guard phase == .active else { return }
+        .task(id: phase == .background) {
+            guard phase != .background else { return }
             await model.checkInbox()
             guard !Task.isCancelled else { return }
             await model.syncGmail()

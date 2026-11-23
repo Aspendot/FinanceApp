@@ -6,7 +6,7 @@ import WidgetKit
 /// on the phone, which become pending payments with the PC's own rules.
 struct FinanceData: Sendable {
     let bundle: DataBundle
-    /// Notices dated inside the statements' period that no statement row explains.
+    /// Notices before the statement cutoff, kept outside the pending totals.
     let unmatched: [Notice]
     let payday: PaydayView?
     let comingUp: [ComingUpGroup]
@@ -16,9 +16,11 @@ struct FinanceData: Sendable {
     let months: [String]
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
 
-    static func load(notices: [Notice], now: Date = Date()) -> FinanceData? {
-        guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
-        return FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+    static func load(notices: [Notice], now: Date = Date()) async -> FinanceData? {
+        await Task.detached(priority: .utility) {
+            guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
+            return FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+        }.value
     }
 
     init(bundle: DataBundle, notices: [Notice], today: String) {
@@ -64,12 +66,15 @@ struct FinanceData: Sendable {
                               detail: "for everything else" + spent, updatedAt: Date())
     }
 
-    /// Writes the widget's value from the current data, if there is a data file.
     @MainActor
-    static func refreshWidget() {
-        guard let data = load(notices: GmailSync.recentNotices()) else { return }
-        SharedStore.write(data.widgetSnapshot)
-        WidgetCenter.shared.reloadAllTimelines()
+    static func publishWidget(_ snapshot: WidgetSnapshot) {
+        guard SharedStore.groupID != nil else { return }
+        if let current = SharedStore.read(),
+           current.title == snapshot.title, current.value == snapshot.value, current.detail == snapshot.detail {
+            return
+        }
+        SharedStore.write(snapshot)
+        WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
     }
 }
 

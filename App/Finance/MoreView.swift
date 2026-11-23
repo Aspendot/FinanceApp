@@ -35,7 +35,7 @@ struct MoreView: View {
                     }
                     .disabled(model.syncing)
                     if let data = model.data, !data.unmatched.isEmpty {
-                        Text("\(data.unmatched.count) bank emails fall inside the statements' period without a matching row. They aren't counted.")
+                        Text("\(data.unmatched.count) older bank emails are before the statement cutoff and aren’t counted.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
