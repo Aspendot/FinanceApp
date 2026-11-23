@@ -13,7 +13,7 @@ struct SpikeView: View {
     @State private var refreshResult = "Not scheduled yet"
     @State private var runs = SpikeLog.load().backgroundRuns
     @State private var clientID = GmailSync.clientID ?? ""
-    @State private var gmailResult = GmailSync.isSignedIn ? "Signed in" : "Not signed in"
+    @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
 
     var body: some View {
@@ -76,7 +76,7 @@ struct SpikeView: View {
                     Button("Fetch bank emails from the last 7 days") {
                         Task {
                             do {
-                                let fresh = try await GmailSync.run(days: 7)
+                                let fresh = try await GmailSync.run()
                                 notices = GmailSync.recentNotices()
                                 gmailResult = "\(fresh.count) new notices; the widget was updated"
                             } catch {
@@ -103,7 +103,7 @@ struct SpikeView: View {
                                     Text("\(n.day) · \(n.source.rawValue) · \(n.kind.rawValue)").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "–")
+                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + $0.magnitude.formatted() } ?? "–")
                                     .font(.subheadline.monospacedDigit())
                             }
                         }

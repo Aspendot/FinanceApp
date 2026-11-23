@@ -26,8 +26,8 @@ enum GmailSync {
         return value?.isEmpty == false ? value : nil
     }
 
-    static var isSignedIn: Bool {
-        (try? KeychainTokenStore().load()) != nil
+    static func hasCredentials() throws -> Bool {
+        try KeychainTokenStore().load() != nil
     }
 
     /// Runs Google's sign-in sheet and stores the tokens.
@@ -62,13 +62,13 @@ enum GmailSync {
 
     /// Fetches recent bank notices, keeps new notices and updates the widget.
     @discardableResult
-    static func run(days: Int) async throws -> [Notice] {
+    static func run() async throws -> [Notice] {
         try begin()
         defer { busy = false }
         guard let clientID else { throw SyncProblem.noClientID }
         let client = GmailClient(clientID: clientID, tokenStore: KeychainTokenStore(), transport: transport)
         let cache = loadCache()
-        let result = try await NoticeSync.sync(client: client, state: cache.state, lookbackDays: days)
+        let result = try await NoticeSync.sync(client: client, state: cache.state, lookbackDays: 7)
         try Task.checkCancellation()
 
         let fresh = result.items.compactMap(\.notice)
@@ -88,21 +88,18 @@ enum GmailSync {
         loadCache().notices
     }
 
-    /// Card spending in the last 7 days, as the widget shows it. Declines, top-ups,
-    /// bills, card checks and account moves are not spending.
-    static func weekSpending(_ notices: [Notice], now: Date = Date()) -> (total: Int, count: Int) {
+    private static func updateWidget(with notices: [Notice]) {
+        let now = Date()
         let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
-        let spending = notices.filter { [.purchase, .refund, .settlement, .cancellation].contains($0.kind) && $0.receivedAt >= since }
-        return (spending.compactMap(\.amount).reduce(0, +), spending.count)
-    }
-
-    static func updateWidget(with notices: [Notice]) {
-        let week = weekSpending(notices)
+        let amounts = notices.filter {
+            $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
+        }.compactMap(\.amount)
+        let total = amounts.reduce(Decimal.zero) { $0 + Decimal($1) }
         SharedStore.write(WidgetSnapshot(
-            title: "Card spending, 7 days",
-            value: "¥" + week.total.formatted(),
-            detail: "\(week.count) payments · " + Date().formatted(date: .omitted, time: .shortened),
-            updatedAt: Date()))
+            title: "7-day card notice total",
+            value: "?" + total.formatted(),
+            detail: "\(amounts.count) notices ? " + now.formatted(date: .abbreviated, time: .shortened),
+            updatedAt: now))
         WidgetCenter.shared.reloadAllTimelines()
     }
 

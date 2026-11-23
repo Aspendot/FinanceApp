@@ -106,26 +106,25 @@ enum BackgroundRefresh {
             var log = SpikeLog.load()
             log.backgroundRuns.append(Date())
             log.save()
-            if GmailSync.isSignedIn {
-                do {
-                    let fresh = try await GmailSync.run(days: 3)
+            do {
+                if try GmailSync.hasCredentials() {
+                    let fresh = try await GmailSync.run()
                     if !Task.isCancelled, !fresh.isEmpty {
                         await Notifier.post(title: "Finance", body: "Open the app to see new notices.")
                     }
-                    succeeded = true
-                } catch {
-                    return
+                } else {
+                    SharedStore.write(WidgetSnapshot(
+                        title: "Background refresh",
+                        value: "\(log.backgroundRuns.count) runs",
+                        detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
+                        updatedAt: Date()))
+                    WidgetCenter.shared.reloadAllTimelines()
+                    await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
                 }
+                succeeded = true
+            } catch {
                 return
             }
-            SharedStore.write(WidgetSnapshot(
-                title: "Background refresh",
-                value: "\(log.backgroundRuns.count) runs",
-                detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
-                updatedAt: Date()))
-            WidgetCenter.shared.reloadAllTimelines()
-            await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
-            succeeded = true
         }
         task.expirationHandler = {
             work.cancel()
