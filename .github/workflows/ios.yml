@@ -40,8 +40,12 @@ jobs:
       - name: Build for iPhone without signing
         working-directory: App
         run: |
+          # The version comes from the release tag (ios-v1.2.3 -> 1.2.3), so SideStore can tell builds apart.
+          VERSION=0.0.0
+          case "$GITHUB_REF" in refs/tags/ios-v*) VERSION="${GITHUB_REF_NAME#ios-v}" ;; esac
           xcodebuild -quiet -project FinanceiOS.xcodeproj -scheme Finance -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
           test -d "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/Finance.app"
       - name: Embed entitlements and pack the .ipa
@@ -78,3 +82,48 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: gh release create "$TAG" Finance.ipa --verify-tag --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."
+      - name: Update the SideStore source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'EOF'
+          import datetime, json, os
+          repo, tag = os.environ["GITHUB_REPOSITORY"], os.environ["TAG"]
+          version = tag.removeprefix("ios-v")
+          source = {
+              "name": "Finance",
+              "identifier": "io.github.aspendot.financeapp.source",
+              "sourceURL": f"https://github.com/{repo}/releases/download/sidestore-source/source.json",
+              "apps": [{
+                  "name": "Finance",
+                  "bundleIdentifier": "io.github.aspendot.financeapp",
+                  "developerName": "Aspendot",
+                  "subtitle": "Personal finance",
+                  "localizedDescription": "A personal finance app, built unsigned on GitHub Actions for SideStore.",
+                  "iconURL": f"https://raw.githubusercontent.com/{repo}/{os.environ['GITHUB_SHA']}/App/Finance/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
+                  "tintColor": "16925F",
+                  "versions": [{
+                      "version": version,
+                      "buildVersion": os.environ["GITHUB_RUN_NUMBER"],
+                      "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      "downloadURL": f"https://github.com/{repo}/releases/download/{tag}/Finance.ipa",
+                      "size": os.path.getsize("Finance.ipa"),
+                      "minOSVersion": "26.0",
+                      "localizedDescription": f"Finance {version}",
+                  }],
+                  "appPermissions": {
+                      "entitlements": ["com.apple.security.application-groups"],
+                      "privacy": {"NSFaceIDUsageDescription": "Face ID keeps your finances private."},
+                  },
+              }],
+              "news": [],
+          }
+          with open("source.json", "w") as f:
+              json.dump(source, f, indent=1)
+          EOF
+          if ! gh release view sidestore-source --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create sidestore-source --repo "$GITHUB_REPOSITORY" --latest=false --title "SideStore source" \
+              --notes "Add this source in SideStore: https://github.com/$GITHUB_REPOSITORY/releases/download/sidestore-source/source.json"
+          fi
+          gh release upload sidestore-source source.json --clobber --repo "$GITHUB_REPOSITORY"

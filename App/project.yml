@@ -52,6 +52,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.aspendot.financeapp
         PRODUCT_NAME: Finance
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
   FinanceWidget:
     type: app-extension
     platform: iOS
