@@ -156,8 +156,8 @@ def identity_hits(label: str, name: str, email: str, entries: list[Entry]) -> li
     return hits
 
 
-def gitleaks(data: bytes, label: str) -> list[str]:
-    if not data:
+def gitleaks(data: bytes | None, label: str, *mode: str) -> list[str]:
+    if data == b"":
         return []
     exe = shutil.which("gitleaks")
     if not exe:
@@ -165,14 +165,25 @@ def gitleaks(data: bytes, label: str) -> list[str]:
     if not GITLEAKS_CONFIG.is_file():
         raise SetupError("the installed gitleaks config is missing")
     # The installed directory is trusted. Do not load repository suppressions.
-    cmd = [exe, "stdin", "--redact=100", "--no-banner", "--ignore-gitleaks-allow",
+    cmd = [exe, *(mode or ("stdin",)), "--redact=100", "--no-banner", "--ignore-gitleaks-allow",
            "--exit-code", "3", "--config", str(GITLEAKS_CONFIG)]
-    r = subprocess.run(cmd, cwd=HERE, input=data, capture_output=True, timeout=COMMAND_TIMEOUT)
+    r = subprocess.run(
+        cmd, cwd=HERE, input=data, capture_output=True, timeout=COMMAND_TIMEOUT,
+        env={**os.environ, "GIT_NO_REPLACE_OBJECTS": "1"},
+    )
     if r.returncode == 3:
         return [f"{label}: gitleaks found a possible secret (value not shown)"]
     if r.returncode != 0:
         raise SetupError("gitleaks failed to scan")
     return []
+
+
+def gitleaks_git(label: str, *options: str) -> list[str]:
+    """Retain the detector's filename-dependent rules alongside full-blob checks."""
+    root = git("rev-parse", "--show-toplevel").decode("utf-8").rstrip("\n")
+    if os.path.lexists(Path(root) / ".gitleaksignore"):
+        raise SetupError("a repository .gitleaksignore file is unsupported")
+    return gitleaks(None, label, "git", *options, root)
 
 
 def blob(oid: str, label: str) -> bytes:
@@ -211,7 +222,12 @@ def pre_commit(entries: list[Entry]) -> list[str]:
             raise SetupError(f"cannot read the {label} identity")
         hits += identity_hits(label, m.group(1), m.group(2), entries)
         hits += gitleaks(ident.encode("utf-8"), f"{label} identity")
-    return hits + changes_hits(git("diff", "--cached", *DIFF), entries, "the staged files")
+    label = "the staged files"
+    changed = git("diff", "--cached", *DIFF)
+    hits += changes_hits(changed, entries, label)
+    if changed and not hits:
+        hits += gitleaks_git(label, "--pre-commit", "--staged")
+    return hits
 
 
 def commit_msg(path: str, entries: list[Entry]) -> list[str]:
@@ -245,7 +261,11 @@ def commit_hits(oid: str, parents: list[str], entries: list[Entry]) -> list[str]
     # A merge's result can contain changes that are in none of its parents.
     compared = [parents[0], oid] if parents else ["--root", oid]
     changed = git("diff-tree", "--no-commit-id", "-r", *DIFF, *compared)
-    return hits + changes_hits(changed, entries, label)
+    hits += changes_hits(changed, entries, label)
+    if changed and not hits:
+        log_opts = f"-1 --root --diff-merges=first-parent --no-ext-diff --no-textconv --text {oid}"
+        hits += gitleaks_git(label, "--log-opts", log_opts)
+    return hits
 
 
 def pre_push(entries: list[Entry], stdin: str) -> list[str]:

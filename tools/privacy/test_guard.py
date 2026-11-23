@@ -258,6 +258,15 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn("scan timed out", r.stderr)
 
+    def test_gitleaks_preserves_filename_dependent_rules(self):
+        r = self.commit("fixture.p12", "invented text in a sensitive file type\n")
+        self.assertBlocked(r)
+        self.assertIn("gitleaks found a possible secret", r.stderr)
+
+    def test_gitleaks_rejects_repo_ignore_file(self):
+        (self.repo / ".gitleaksignore").write_text("# fixture\n", encoding="utf-8")
+        self.assertBlocked(self.commit("a.txt", "fine\n"), setup=True)
+
     def test_gitleaks_config_blocks_postal_mark(self):
         postal = "\u3012" + "000" + "-" + "0000"
         self.assertBlocked(self.commit("a.txt", postal), postal)
