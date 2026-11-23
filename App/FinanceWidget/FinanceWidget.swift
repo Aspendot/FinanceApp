@@ -13,7 +13,7 @@ struct SnapshotProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (SnapshotEntry) -> Void) {
-        completion(current())
+        completion(context.isPreview ? placeholder(in: context) : current())
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SnapshotEntry>) -> Void) {
@@ -37,10 +37,12 @@ struct FinanceWidgetView: View {
                 .font(.title2.weight(.semibold))
                 .minimumScaleFactor(0.6)
                 .lineLimit(1)
+                .privacySensitive()
             Text(entry.hasGroup ? entry.snapshot.detail : "No shared data (App Group missing)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+                .privacySensitive()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .containerBackground(.fill.tertiary, for: .widget)

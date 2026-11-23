@@ -1,5 +1,4 @@
 import BackgroundTasks
-import FinanceCore
 import Foundation
 import LocalAuthentication
 import UserNotifications
@@ -110,10 +109,8 @@ enum BackgroundRefresh {
             if GmailSync.isSignedIn {
                 do {
                     let fresh = try await GmailSync.run(days: 3)
-                    let spending = fresh.filter { [.purchase, .refund, .settlement].contains($0.kind) }
-                    for n in spending.prefix(3) {
-                        let amount = n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "an amount"
-                        await Notifier.post(title: amount, body: (n.merchant ?? "A payment") + " · " + n.source.rawValue)
+                    if !Task.isCancelled, !fresh.isEmpty {
+                        await Notifier.post(title: "Finance", body: "Open the app to see new notices.")
                     }
                     succeeded = true
                 } catch {
