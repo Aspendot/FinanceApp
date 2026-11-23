@@ -873,7 +873,7 @@ struct NowView: View {
                 HStack(alignment: .center, spacing: 11) {
                     MonogramBadge(
                         text: sub.name,
-                        tint: item.isRunning ? Color("LayerSubscriptions") : Theme.muted,
+                        tint: !item.isOff ? Color("LayerSubscriptions") : Theme.muted,
                         size: 32
                     )
                     VStack(alignment: .leading, spacing: 3) {
