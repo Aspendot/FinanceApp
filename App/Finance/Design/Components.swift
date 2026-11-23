@@ -186,49 +186,147 @@ struct FlowLayout: Layout {
     var verticalSpacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
+        let proposedWidth = proposal.width
+        let maxWidth = proposedWidth ?? .infinity
+        let layout = arrange(maxWidth: maxWidth, subviews: subviews)
+        let width: CGFloat
+        if let proposedWidth, proposedWidth.isFinite, proposedWidth > 0 {
+            width = proposedWidth
+        } else {
+            width = ceil(layout.widestRow)
+        }
+        return CGSize(width: width, height: ceil(layout.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let layout = arrange(maxWidth: bounds.width, subviews: subviews)
+        for placement in layout.placements {
+            subviews[placement.index].place(
+                at: CGPoint(x: bounds.minX + placement.x, y: bounds.minY + placement.y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: placement.width, height: placement.height)
+            )
+        }
+    }
+
+    private struct Placement {
+        let index: Int
+        let x: CGFloat
+        let y: CGFloat
+        let width: CGFloat
+        let height: CGFloat
+    }
+
+    private struct Arrangement {
+        let placements: [Placement]
+        let widestRow: CGFloat
+        let height: CGFloat
+    }
+
+    private func arrange(maxWidth: CGFloat, subviews: Subviews) -> Arrangement {
+        let limit = maxWidth.isFinite ? max(0, maxWidth) : CGFloat.infinity
+        let tolerance: CGFloat = 0.5
+        var placements: [Placement] = []
+        placements.reserveCapacity(subviews.count)
+
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
         var widestRow: CGFloat = 0
 
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
-            if x > 0 && x + size.width > maxWidth {
+        for (index, subview) in subviews.enumerated() {
+            let subviewProposal = limit.isFinite ? ProposedViewSize(width: limit, height: nil) : .unspecified
+            let size = subview.sizeThatFits(subviewProposal)
+            let clampedWidth = limit.isFinite ? min(size.width, limit) : size.width
+
+            if x > 0 && x + clampedWidth > limit + tolerance {
                 widestRow = max(widestRow, x - horizontalSpacing)
                 x = 0
                 y += rowHeight + verticalSpacing
                 rowHeight = 0
             }
-            x += size.width + horizontalSpacing
+
+            placements.append(
+                Placement(
+                    index: index,
+                    x: x,
+                    y: y,
+                    width: clampedWidth,
+                    height: size.height
+                )
+            )
+            x += clampedWidth + horizontalSpacing
             rowHeight = max(rowHeight, size.height)
         }
+
         if x > 0 {
             widestRow = max(widestRow, x - horizontalSpacing)
         }
-        return CGSize(width: min(widestRow, maxWidth), height: y + rowHeight)
+
+        let totalHeight = placements.isEmpty ? 0 : y + rowHeight
+        return Arrangement(placements: placements, widestRow: widestRow, height: totalHeight)
+    }
+}
+
+/// Calm primary action button with guaranteed contrast in both light and dark modes.
+struct PrimaryActionButton: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isEnabled) private var isEnabled
+
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(foreground)
+                .frame(maxWidth: .infinity, minHeight: Theme.minTouchTarget)
+                .background(background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        let maxWidth = bounds.width
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
+    private var foreground: Color {
+        guard isEnabled else { return Theme.muted }
+        return colorScheme == .dark ? Theme.page : Color.white
+    }
 
-        for subview in subviews {
-            let size = subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
-            if x > bounds.minX && x + size.width > bounds.maxX {
-                x = bounds.minX
-                y += rowHeight + verticalSpacing
-                rowHeight = 0
-            }
-            subview.place(
-                at: CGPoint(x: x, y: y),
-                anchor: .topLeading,
-                proposal: ProposedViewSize(width: min(size.width, maxWidth), height: size.height)
-            )
-            x += size.width + horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
+    private var background: Color {
+        isEnabled ? Theme.accent : Theme.track
+    }
+}
+
+/// Consistent key-value status row for settings and About lists.
+struct SettingsValueRow: View {
+    let label: String
+    let value: String
+    var valueColor: Color = Theme.ink2
+    var monospaced: Bool = false
+    var selectable: Bool = false
+
+    var body: some View {
+        LabeledContent {
+            valueText
+                .multilineTextAlignment(.trailing)
+        } label: {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
+        }
+    }
+
+    @ViewBuilder
+    private var valueText: some View {
+        let base = Text(value)
+            .font(monospaced ? Font.footnote.monospaced() : Font.subheadline)
+            .monospacedDigit()
+            .foregroundStyle(valueColor)
+        if selectable {
+            base.textSelection(.enabled)
+        } else {
+            base
         }
     }
 }

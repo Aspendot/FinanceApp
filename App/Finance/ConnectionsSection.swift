@@ -4,18 +4,19 @@ import SwiftUI
 /// and links to each connection's settings screen.
 struct ConnectionsSection: View {
     @EnvironmentObject private var model: AppModel
+    var footerText: String? = nil
 
     var body: some View {
-        Section("Connections") {
-            NavigationLink {
-                GmailSettingsView()
-            } label: {
-                connectionRow(title: "Gmail", status: model.gmailStatusLine)
+        Section {
+            NavigationLink(value: MoreDestination.gmail) {
+                connectionRow(
+                    title: "Gmail",
+                    status: model.gmailStatusLine,
+                    warning: model.runLog.first?.outcome == .signInRequired
+                )
             }
 
-            NavigationLink {
-                MoneyForwardSettingsView()
-            } label: {
+            NavigationLink(value: MoreDestination.moneyForward) {
                 connectionRow(
                     title: "Money Forward",
                     status: model.moneyForwardStatusLine,
@@ -24,16 +25,23 @@ struct ConnectionsSection: View {
                 )
             }
 
-            NavigationLink {
-                DriveSyncSettingsView()
-            } label: {
+            NavigationLink(value: MoreDestination.drive) {
                 connectionRow(
                     title: "Google Drive",
                     status: model.driveStatusLine,
                     warning: model.driveState.needsDriveConsent
                 )
             }
+        } header: {
+            SectionLabel("Connections")
+        } footer: {
+            if let footerText, !footerText.isEmpty {
+                Text(footerText)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
         }
+        .listRowBackground(Theme.surface)
         .onAppear {
             model.refreshConnectionStates()
         }
@@ -42,10 +50,13 @@ struct ConnectionsSection: View {
     private func connectionRow(title: String, status: String, warning: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Theme.ink)
             Text(status)
                 .font(.footnote)
-                .foregroundStyle(warning ? Color.orange : Color.secondary)
+                .foregroundStyle(warning ? Theme.bad : Theme.muted)
                 .lineLimit(1)
         }
+        .padding(.vertical, 2)
     }
 }
