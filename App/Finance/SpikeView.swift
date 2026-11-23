@@ -7,6 +7,7 @@ import WidgetKit
 /// after SideStore has signed the app. Each row shows the latest result.
 struct SpikeView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var model: AppModel
     @State private var groupResult = SharedStore.groupID.map { "App Group: \($0)" } ?? "No App Group available"
     @State private var faceIDResult = "Not tried yet"
     @State private var notifyResult = "Not tried yet"
@@ -16,25 +17,15 @@ struct SpikeView: View {
     @State private var signInTask: Task<Void, Never>?
     @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
-    @State private var dataResult = BundleInbox.storedData() == nil ? "No data file yet" : "A data file is stored"
-
-    private func checkDataFile() {
-        switch BundleInbox.check() {
-        case .nothingNew:
-            dataResult = BundleInbox.storedData() == nil ? "No data file yet. Add it with the Apple Devices app on your PC." : "A data file is stored; nothing new to import"
-        case .imported(let generatedAt, let items):
-            dataResult = "Imported \(items) payments from the file made \(generatedAt.prefix(16).replacingOccurrences(of: "T", with: " "))"
-        case .rejected(let reason):
-            dataResult = "Not imported: " + reason
-        }
-    }
 
     var body: some View {
         Group {
             List {
                 Section("Data file") {
-                    Text(dataResult).font(.footnote).foregroundStyle(.secondary)
-                    Button("Check for a new data file") { checkDataFile() }
+                    Text(model.importMessage ?? (model.data == nil ? "No data file yet" : "A data file is stored"))
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Check for a new data file") { Task { await model.checkInbox() } }
+                        .disabled(model.checkingInbox)
                 }
                 Section("Widget") {
                     Text(groupResult).font(.footnote).foregroundStyle(.secondary)
@@ -150,10 +141,8 @@ struct SpikeView: View {
                 }
             }
             .navigationTitle("Finance test")
-            .onAppear { checkDataFile() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
-                    checkDataFile()
                     notices = GmailSync.recentNotices()
                 }
             }

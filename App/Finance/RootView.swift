@@ -15,15 +15,11 @@ struct RootView: View {
             }
         }
         .environmentObject(model)
-        .task {
-            model.checkInbox()
+        .task(id: phase) {
+            guard phase == .active else { return }
+            await model.checkInbox()
+            guard !Task.isCancelled else { return }
             await model.syncGmail()
-        }
-        .onChange(of: phase) { _, newPhase in
-            guard newPhase == .active else { return }
-            model.checkInbox()
-            model.reload()
-            Task { await model.syncGmail() }
         }
     }
 }

@@ -19,7 +19,10 @@ struct MoreView: View {
                     if let message = model.importMessage {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
                     }
-                    Button("Check for a new data file") { model.checkInbox() }
+                    Button(model.checkingInbox ? "Checking for a data file…" : "Check for a new data file") {
+                        Task { await model.checkInbox() }
+                    }
+                    .disabled(model.checkingInbox)
                     Text("To update it: on your PC, open Apple Devices → your iPhone → Files → Finance, and drag in finance-bundle.json from Documents\\Finance\\data\\export.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
