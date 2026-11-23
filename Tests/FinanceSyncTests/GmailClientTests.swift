@@ -217,4 +217,36 @@ struct GmailClientTests {
         #expect(req2Query.contains(URLQueryItem(name: "maxResults", value: "2")))
         #expect(requests[2].url.absoluteString.contains("/users/me/messages/msg-1?format=full"))
     }
+
+    @Test("Maps Google invalid_grant token refresh errors to invalidGrant requiring sign-in")
+    func mapsInvalidGrantToSignInRequired() async throws {
+        let expiredTokens = OAuthTokens(
+            accessToken: "expired-access",
+            refreshToken: "revoked-refresh",
+            expiresAt: fixedNow.addingTimeInterval(-60)
+        )
+        let store = InMemoryTokenStore(tokens: expiredTokens)
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(statusCode: 400, json: [
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked.",
+            ]),
+        ])
+        let client = GmailClient(
+            clientID: sampleClientID,
+            tokenStore: store,
+            transport: transport,
+            sleeper: RecordingSleeper(),
+            now: { self.fixedNow }
+        )
+
+        do {
+            _ = try await client.listMessageIDs()
+            Issue.record("Expected GmailClientError.invalidGrant")
+        } catch let error as GmailClientError {
+            #expect(error == .invalidGrant)
+            #expect(error.requiresSignInAgain == true)
+            #expect(error.errorDescription == "Sign in to Gmail again")
+        }
+    }
 }

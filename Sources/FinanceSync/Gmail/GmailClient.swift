@@ -108,6 +108,8 @@ public enum GmailClientError: Error, LocalizedError, Equatable, Sendable {
     case notSignedIn
     /// The access token expired or was rejected and no refresh token is stored.
     case missingRefreshToken
+    /// Google rejected the refresh token (`invalid_grant`, expired, or revoked).
+    case invalidGrant
     /// Refreshing the access token failed.
     case tokenRefreshFailed(String)
     /// Gmail rejected the access token even after refreshing once.
@@ -123,12 +125,24 @@ public enum GmailClientError: Error, LocalizedError, Equatable, Sendable {
     /// The underlying HTTP transport threw an error.
     case networkError(String)
 
+    /// True when the stored OAuth session can no longer be used without signing in again.
+    public var requiresSignInAgain: Bool {
+        switch self {
+        case .invalidGrant, .missingRefreshToken, .unauthorized:
+            return true
+        default:
+            return false
+        }
+    }
+
     public var errorDescription: String? {
         switch self {
         case .notSignedIn:
             return "No Google account is signed in."
         case .missingRefreshToken:
             return "The Google session expired and cannot be refreshed. Sign in again."
+        case .invalidGrant:
+            return "Sign in to Gmail again"
         case .tokenRefreshFailed(let detail):
             return "Could not refresh the Google access token: \(detail)"
         case .unauthorized:
@@ -338,6 +352,11 @@ public actor GmailClient {
                 now: now()
             )
         } catch let oauthError as OAuthError {
+            if case .tokenEndpointError(_, let code, _) = oauthError,
+               code?.lowercased() == "invalid_grant"
+            {
+                throw GmailClientError.invalidGrant
+            }
             throw GmailClientError.tokenRefreshFailed(oauthError.localizedDescription)
         } catch let transportError as HTTPTransportError {
             throw GmailClientError.networkError(transportError.localizedDescription)

@@ -4,11 +4,14 @@ import Foundation
 public struct PendingResult: Sendable, Equatable {
     /// Pending spending items dated on or after their source's coverage end.
     public var items: [BudgetItem]
+    /// Gmail message ID of the notice that produced each item in `items`, in the same order.
+    public var noticeIDs: [String]
     /// Eligible notices dated before their source's coverage end.
     public var unmatched: [Notice]
 
-    public init(items: [BudgetItem] = [], unmatched: [Notice] = []) {
+    public init(items: [BudgetItem] = [], noticeIDs: [String] = [], unmatched: [Notice] = []) {
         self.items = items
+        self.noticeIDs = noticeIDs
         self.unmatched = unmatched
     }
 }
@@ -139,6 +142,7 @@ public enum PendingBuilder {
         }
 
         var pendingItems: [BudgetItem] = []
+        var noticeIDs: [String] = []
         var unmatched: [Notice] = []
 
         for (notice, amount) in ordered {
@@ -178,9 +182,10 @@ public enum PendingBuilder {
                 layer: layer,
                 isPending: true
             ))
+            noticeIDs.append(notice.messageID)
         }
 
-        return PendingResult(items: pendingItems, unmatched: unmatched)
+        return PendingResult(items: pendingItems, noticeIDs: noticeIDs, unmatched: unmatched)
     }
 
     private static func nonEmpty(_ text: String?) -> String? {

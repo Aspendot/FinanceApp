@@ -417,6 +417,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
     public var layers: [LayerDefinition]
     public var layerConfig: LayerConfig
     public var rules: RuleSet
+    /// Categories whose payment notifications omit the shop name.
+    public var discreetCategories: [String]?
 
     public init(
         format: String = DataBundle.supportedFormat,
@@ -434,7 +436,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
         planWindow: [String]? = nil,
         layers: [LayerDefinition] = [],
         layerConfig: LayerConfig = LayerConfig(),
-        rules: RuleSet = RuleSet()
+        rules: RuleSet = RuleSet(),
+        discreetCategories: [String]? = nil
     ) {
         self.format = format
         self.generatedAt = generatedAt
@@ -452,11 +455,13 @@ public struct DataBundle: Codable, Sendable, Equatable {
         self.layers = layers
         self.layerConfig = layerConfig
         self.rules = rules
+        self.discreetCategories = discreetCategories
     }
 
     private enum CodingKeys: String, CodingKey {
         case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
         case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
+        case discreetCategories
     }
 
     public init(from decoder: Decoder) throws {
@@ -481,6 +486,7 @@ public struct DataBundle: Codable, Sendable, Equatable {
         layers = try c.decodeIfPresent([LayerDefinition].self, forKey: .layers) ?? []
         layerConfig = try c.decodeIfPresent(LayerConfig.self, forKey: .layerConfig) ?? LayerConfig()
         rules = try c.decodeIfPresent(RuleSet.self, forKey: .rules) ?? RuleSet()
+        discreetCategories = try c.decodeIfPresent([String].self, forKey: .discreetCategories)
     }
 
     /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.
