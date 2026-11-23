@@ -1,4 +1,5 @@
 import BackgroundTasks
+import FinanceCore
 import Foundation
 import LocalAuthentication
 import UserNotifications
@@ -100,6 +101,20 @@ enum BackgroundRefresh {
             var log = SpikeLog.load()
             log.backgroundRuns.append(Date())
             log.save()
+            if GmailSync.isSignedIn {
+                do {
+                    let fresh = try await GmailSync.run(days: 3)
+                    let spending = fresh.filter { [.purchase, .refund, .settlement].contains($0.kind) }
+                    for n in spending.prefix(3) {
+                        let amount = n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "an amount"
+                        await Notifier.post(title: amount, body: (n.merchant ?? "A payment") + " · " + n.source.rawValue)
+                    }
+                    task.setTaskCompleted(success: true)
+                } catch {
+                    task.setTaskCompleted(success: false)
+                }
+                return
+            }
             SharedStore.write(WidgetSnapshot(
                 title: "Background refresh",
                 value: "\(log.backgroundRuns.count) runs",

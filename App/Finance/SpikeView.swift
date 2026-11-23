@@ -1,3 +1,4 @@
+import FinanceCore
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -10,6 +11,9 @@ struct SpikeView: View {
     @State private var notifyResult = "Not tried yet"
     @State private var refreshResult = "Not scheduled yet"
     @State private var runs = SpikeLog.load().backgroundRuns
+    @State private var clientID = GmailSync.clientID ?? ""
+    @State private var gmailResult = GmailSync.isSignedIn ? "Signed in" : "Not signed in"
+    @State private var notices = GmailSync.recentNotices()
 
     var body: some View {
         NavigationStack {
@@ -51,8 +55,54 @@ struct SpikeView: View {
                         runs = SpikeLog.load().backgroundRuns
                     }
                 }
-                Section("Gmail") {
-                    Text("Sign-in arrives in the next build.").font(.footnote).foregroundStyle(.secondary)
+                Section("Gmail (read-only)") {
+                    TextField("Google iOS client ID", text: $clientID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.footnote)
+                        .onSubmit { GmailSync.setClientID(clientID) }
+                    Text(gmailResult).font(.footnote).foregroundStyle(.secondary)
+                    Button("Sign in with Google") {
+                        GmailSync.setClientID(clientID)
+                        Task {
+                            do {
+                                try await GmailSync.signIn()
+                                gmailResult = "Signed in with read-only Gmail access"
+                            } catch {
+                                gmailResult = "Sign-in failed: " + error.localizedDescription
+                            }
+                        }
+                    }
+                    Button("Fetch bank emails from the last 7 days") {
+                        Task {
+                            do {
+                                let fresh = try await GmailSync.run(days: 7)
+                                notices = GmailSync.recentNotices()
+                                gmailResult = "\(fresh.count) new notices; the widget was updated"
+                            } catch {
+                                gmailResult = "Fetch failed: " + error.localizedDescription
+                            }
+                        }
+                    }
+                    Button("Sign out", role: .destructive) {
+                        GmailSync.signOut()
+                        gmailResult = "Signed out"
+                    }
+                }
+                if !notices.isEmpty {
+                    Section("Recent notices") {
+                        ForEach(notices.prefix(40), id: \.messageID) { n in
+                            HStack(alignment: .firstTextBaseline) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(n.merchant ?? "(no shop name)").font(.subheadline).lineLimit(1)
+                                    Text("\(n.day) · \(n.source.rawValue) · \(n.kind.rawValue)").font(.caption).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + abs($0).formatted() } ?? "–")
+                                    .font(.subheadline.monospacedDigit())
+                            }
+                        }
+                    }
                 }
                 Section("This install") {
                     LabeledContent("Bundle ID", value: Bundle.main.bundleIdentifier ?? "?")

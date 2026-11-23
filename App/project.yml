@@ -31,6 +31,8 @@ targets:
     dependencies:
       - package: FinanceKit
         product: FinanceCore
+      - package: FinanceKit
+        product: FinanceSync
       - target: FinanceWidget
     info:
       path: Finance/Info.plist
