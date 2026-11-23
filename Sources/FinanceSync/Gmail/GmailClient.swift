@@ -84,7 +84,15 @@ public struct RetryPolicy: Sendable, Equatable {
             return .seconds(min(retryAfterSeconds, maxSeconds))
         }
         let baseSeconds = Self.seconds(from: initialDelay)
-        let computed = baseSeconds * pow(backoffMultiplier, Double(max(0, attempt)))
+        var computed = baseSeconds
+        if attempt > 0 {
+            for _ in 0..<attempt {
+                computed = min(computed * backoffMultiplier, maxSeconds)
+                if computed >= maxSeconds {
+                    break
+                }
+            }
+        }
         return .seconds(min(computed, maxSeconds))
     }
 
