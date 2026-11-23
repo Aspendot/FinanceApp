@@ -6,6 +6,9 @@ struct NowScreenModel: Sendable {
     struct TimelineDay: Identifiable, Sendable {
         var id: String { date }
         let date: String
+        let monthKey: String
+        let showsMonthHeader: Bool
+        let label: String?
         let entries: [NumberedRow<TimelineEntry>]
         let isPast: Bool
         let isToday: Bool
@@ -13,23 +16,33 @@ struct NowScreenModel: Sendable {
         let isNextPayday: Bool
     }
 
+    let alerts: [FinanceAlert]
     let payday: PaydayView?
+    let paydayBreakdown: PaydayBreakdown?
     let lastPayday: String?
     let spentSincePayday: Int?
     let pendingSincePayday: Int
+    let watchList: [PlanRow]
     let timelineDays: [TimelineDay]
+    let phoneCheckedBillKeys: Set<String>
+    let afterNote: String?
     let recentPending: [NumberedRow<BudgetItem>]
     let pendingSpendingTotal: Int
     let debts: [DebtEntry]
     let totalDebt: Int
-    let subscriptions: [SubscriptionEntry]
-    let totalMonthlySubscriptions: Int
+    let notes: [String]
+    let subscriptionSummary: SubscriptionSummary
 
     init(data: FinanceData, today: String) {
+        self.alerts = data.alerts
         self.payday = data.payday
+        self.paydayBreakdown = data.paydayBreakdown
         self.lastPayday = data.lastPayday
         self.spentSincePayday = data.spentSincePayday
         self.pendingSincePayday = data.pendingSincePayday
+        self.watchList = data.planSummary.watchList
+        self.phoneCheckedBillKeys = data.phoneCheckedBillKeys
+        self.afterNote = data.bundle.afterNote
 
         let nextPaydayDate = data.payday?.next.date
         var groups = data.comingUp
@@ -45,17 +58,27 @@ struct NowScreenModel: Sendable {
             groups.sort { $0.date < $1.date }
         }
 
-        self.timelineDays = groups.map { group in
+        var lastMonthKey: String? = nil
+        var builtDays: [TimelineDay] = []
+        for group in groups {
+            let mKey = String(group.date.prefix(7))
+            let showHeader = (lastMonthKey != nil && lastMonthKey != mKey) || (lastMonthKey == nil && groups.count > 1)
+            lastMonthKey = mKey
             let isNext = group.date == nextPaydayDate || group.entries.contains { $0.next == true }
-            return TimelineDay(
+            let dayLabel = group.entries.compactMap(\.label).first { !$0.isEmpty }
+            builtDays.append(TimelineDay(
                 date: group.date,
+                monthKey: mKey,
+                showsMonthHeader: showHeader,
+                label: dayLabel,
                 entries: NumberedRow.make(from: group.entries),
                 isPast: group.date < today,
                 isToday: group.date == today,
                 hasPayday: group.hasPayday,
                 isNextPayday: isNext
-            )
+            ))
         }
+        self.timelineDays = builtDays
 
         let pending = data.paymentsByMonth.values
             .flatMap { $0 }
@@ -76,13 +99,7 @@ struct NowScreenModel: Sendable {
 
         self.debts = data.bundle.debts
         self.totalDebt = data.bundle.debts.reduce(0) { $0 + $1.balance }
-
-        self.subscriptions = data.bundle.subs.sorted {
-            if $0.monthly != $1.monthly {
-                return $0.monthly > $1.monthly
-            }
-            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-        self.totalMonthlySubscriptions = data.bundle.subs.reduce(0) { $0 + $1.monthly }
+        self.notes = data.bundle.notes ?? []
+        self.subscriptionSummary = data.subscriptionSummary
     }
 }

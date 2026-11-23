@@ -14,12 +14,30 @@ struct MoreView: View {
         guard let data = activeData else { return nil }
         var parts = [
             "Statements through \(DayText.long(data.bundle.asOf))",
-            "\(data.bundle.items.count.formatted()) payments"
+            "\(data.allItems.count.formatted()) items"
         ]
         if data.pendingCount > 0 {
             parts.append("\(data.pendingCount) pending")
         }
         return parts.joined(separator: " · ")
+    }
+
+    private var localDataSummary: String {
+        let mods = model.localModifications
+        let total = mods.manualEntries.count + mods.importedEntries.count
+        var parts: [String] = []
+        if total > 0 { parts.append("\(total) local") }
+        if !mods.categoryOverrides.isEmpty { parts.append("\(mods.categoryOverrides.count) rules") }
+        return parts.isEmpty ? "PayPay CSV, overrides, backup" : parts.joined(separator: " · ")
+    }
+
+    private var notificationsSummary: String {
+        let p = model.notificationPreferences
+        var enabled: [String] = []
+        if p.paymentAlertsEnabled { enabled.append("Payments") }
+        if p.declineAlertsEnabled { enabled.append("Declines") }
+        if p.billRemindersEnabled { enabled.append("Bills") }
+        return enabled.isEmpty ? "All off" : enabled.joined(separator: " · ")
     }
 
     private var appVersion: String {
@@ -30,6 +48,21 @@ struct MoreView: View {
         NavigationStack(path: $session.morePath) {
             List {
                 ConnectionsSection(footerText: dataSummaryLine)
+
+                Section {
+                    NavigationLink(value: MoreDestination.notifications) {
+                        moreRow(title: "Notifications & bill reminders", subtitle: notificationsSummary)
+                    }
+                    NavigationLink(value: MoreDestination.localData) {
+                        moreRow(title: "Imports, rules & backup", subtitle: localDataSummary)
+                    }
+                    NavigationLink(value: MoreDestination.syncHealth) {
+                        moreRow(title: "Sync health & coverage", subtitle: "Statement cutoffs and recent sync log")
+                    }
+                } header: {
+                    SectionLabel("App & Data")
+                }
+                .listRowBackground(Theme.surface)
 
                 Section {
                     Toggle("Lock with Face ID", isOn: $faceIDLock)
@@ -78,6 +111,12 @@ struct MoreView: View {
                     MoneyForwardSettingsView()
                 case .drive:
                     DriveSyncSettingsView()
+                case .notifications:
+                    NotificationSettingsView()
+                case .localData:
+                    LocalDataSettingsView()
+                case .syncHealth:
+                    SyncHealthView()
                 case .diagnostics:
                     SpikeView()
                 }
@@ -88,5 +127,17 @@ struct MoreView: View {
                 }
             }
         }
+    }
+
+    private func moreRow(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Theme.ink)
+            Text(subtitle)
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
+        }
+        .padding(.vertical, 2)
     }
 }

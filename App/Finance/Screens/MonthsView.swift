@@ -3,19 +3,33 @@ import FinanceCore
 import SwiftUI
 
 struct MonthsView: View {
+    private enum BreakdownTab: String, CaseIterable, Identifiable {
+        case categories = "Categories"
+        case merchants = "Merchants"
+        case cards = "Cards"
+
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .caption2) private var chartAxisFontSize: CGFloat = 11
-    @State private var selectedMonth: String?
+
+    @State private var breakdownTab: BreakdownTab = .categories
+    @State private var showAllCategories = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = session.resolvedData(from: model) {
-                        let screen = MonthsScreenModel(data: data, selectedMonth: selectedMonth)
+                        let screen = MonthsScreenModel(
+                            data: data,
+                            selectedMonth: session.monthsSelectedMonth,
+                            today: session.today
+                        )
                         if screen.months.isEmpty {
                             StateCard(
                                 kind: .empty,
@@ -23,9 +37,12 @@ struct MonthsView: View {
                                 message: "Turn on Google Drive sync in More → Connections."
                             )
                         } else {
-                            stackedChartCard(screen: screen)
+                            stackedChartCard(screen: screen, asOf: data.bundle.asOf)
                             spentVsIncomeCard(screen: screen)
-                            whereItWentCard(screen: screen)
+                            if !screen.planSummary.isEmpty {
+                                whereToCutSummaryCard(screen: screen)
+                            }
+                            breakdownCard(screen: screen)
                         }
                     } else if !session.hasCompletedInitialLoad {
                         StateCard(
@@ -51,6 +68,26 @@ struct MonthsView: View {
             }
             .background(Theme.page)
             .navigationTitle("Months")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        session.activeSheet = .ask
+                    } label: {
+                        Label("Ask", systemImage: "text.magnifyingglass")
+                            .labelStyle(.titleAndIcon)
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .accessibilityLabel("Ask Finance")
+                }
+                if let data = session.resolvedData(from: model), !data.planSummary.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Targets") {
+                            session.activeSheet = .targets
+                        }
+                        .font(.subheadline.weight(.medium))
+                    }
+                }
+            }
             .refreshable {
                 guard !session.isDemo else { return }
                 await model.syncGmail()
@@ -58,21 +95,46 @@ struct MonthsView: View {
         }
     }
 
-    // MARK: - Stacked bar chart card
+    // MARK: - Stacked bar chart card with Income overlay & MoM delta
 
-    private func stackedChartCard(screen: MonthsScreenModel) -> some View {
-        FinanceCard {
+    private func stackedChartCard(screen: MonthsScreenModel, asOf: String) -> some View {
+        let comp = screen.comparison
+        return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 6) {
-                        SectionLabel("Monthly spending")
+                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending")
                         monthMenuButton(screen: screen)
                     }
                 } else {
                     HStack(alignment: .center, spacing: 8) {
-                        SectionLabel("Monthly spending")
+                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending")
                         Spacer(minLength: 8)
                         monthMenuButton(screen: screen)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HeroMoneyText(amount: screen.selectedTotals.total, color: Theme.ink)
+
+                    FlowLayout(horizontalSpacing: 8, verticalSpacing: 6) {
+                        if let delta = comp.deltaFromPrevious, let prev = comp.previousMonth {
+                            let isUp = delta > 0
+                            let arrow = isUp ? "▲" : "▼"
+                            let verb = isUp ? "more than" : "less than"
+                            QuietTag(
+                                "\(arrow) \(Money.yen(abs(delta))) \(verb) \(DayText.shortMonth(prev + "-01"))",
+                                tone: isUp ? .bad : .good
+                            )
+                        } else if comp.isInProgress {
+                            QuietTag("Month in progress · through \(DayText.short(asOf))", tone: .accent)
+                        }
+                        if let avg = comp.baselineAverage {
+                            Text("Avg \(Money.yen(avg))/mo")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.muted)
+                        }
                     }
                 }
 
@@ -96,10 +158,11 @@ struct MonthsView: View {
                 Button {
                     selectMonth(month)
                 } label: {
+                    let suffix = month == screen.inProgressMonth ? " (so far)" : ""
                     if month == screen.selectedMonth {
-                        Label(DayText.month(month), systemImage: "checkmark")
+                        Label(DayText.month(month) + suffix, systemImage: "checkmark")
                     } else {
-                        Text(DayText.month(month))
+                        Text(DayText.month(month) + suffix)
                     }
                 }
             }
@@ -127,6 +190,11 @@ struct MonthsView: View {
         let axisSize = min(chartAxisFontSize, 15)
         let baseChart = Chart {
             ForEach(screen.segments) { segment in
+                let isSelected = segment.month == screen.selectedMonth
+                let opacity: Double = {
+                    if segment.isInProgress { return isSelected ? 0.72 : 0.32 }
+                    return isSelected ? 1.0 : 0.42
+                }()
                 BarMark(
                     x: .value("Month", segment.month),
                     yStart: .value("Start", segment.yStart),
@@ -134,7 +202,25 @@ struct MonthsView: View {
                     width: .ratio(0.56)
                 )
                 .foregroundStyle(segment.layer.color)
-                .opacity(segment.month == screen.selectedMonth ? 1.0 : 0.42)
+                .opacity(opacity)
+            }
+
+            if screen.incomePoints.count >= 2 {
+                ForEach(screen.incomePoints) { pt in
+                    LineMark(
+                        x: .value("Month", pt.month),
+                        y: .value("Income", pt.income)
+                    )
+                    .foregroundStyle(Theme.ink)
+                    .lineStyle(StrokeStyle(lineWidth: 1.75))
+
+                    PointMark(
+                        x: .value("Month", pt.month),
+                        y: .value("Income", pt.income)
+                    )
+                    .foregroundStyle(Theme.ink)
+                    .symbolSize(28)
+                }
             }
         }
         .chartLegend(.hidden)
@@ -158,7 +244,8 @@ struct MonthsView: View {
                 AxisValueLabel {
                     if let month = value.as(String.self) {
                         let isSelected = month == screen.selectedMonth
-                        Text(FinanceFormat.chartMonth(month))
+                        let label = FinanceFormat.chartMonth(month) + (month == screen.inProgressMonth ? "*" : "")
+                        Text(label)
                             .font(.system(size: axisSize, weight: isSelected ? .semibold : .regular))
                             .foregroundStyle(isSelected ? Theme.accent : Theme.muted)
                     }
@@ -204,6 +291,7 @@ struct MonthsView: View {
     private func layerLegend(screen: MonthsScreenModel) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(screen.selectedLayerAmounts) { item in
+                let pct = Int((item.share * 100).rounded())
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: 2) {
@@ -217,7 +305,7 @@ struct MonthsView: View {
                                     .foregroundStyle(Theme.ink2)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
-                            Text(Money.yen(item.amount))
+                            Text("\(Money.yen(item.amount)) · \(pct)%")
                                 .font(.subheadline.weight(.medium))
                                 .monospacedDigit()
                                 .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
@@ -225,7 +313,7 @@ struct MonthsView: View {
                                 .minimumScaleFactor(0.5)
                                 .allowsTightening(true)
                                 .padding(.leading, 20)
-                                .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
+                                .accessibilityLabel("\(FinanceFormat.yenAccessibility(item.amount)), \(pct) percent")
                         }
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -242,10 +330,27 @@ struct MonthsView: View {
                                 .monospacedDigit()
                                 .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
                                 .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
+                            Text("\(pct)%")
+                                .font(.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.muted)
+                                .frame(minWidth: 32, alignment: .trailing)
                         }
                     }
                 }
                 .accessibilityElement(children: .combine)
+            }
+            if screen.incomePoints.count >= 2 {
+                HStack(spacing: 8) {
+                    Rectangle()
+                        .fill(Theme.ink)
+                        .frame(width: 12, height: 2)
+                        .accessibilityHidden(true)
+                    Text("Line shows completed months' income")
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                }
+                .padding(.top, 2)
             }
         }
     }
@@ -254,13 +359,24 @@ struct MonthsView: View {
 
     private func spentVsIncomeCard(screen: MonthsScreenModel) -> some View {
         let totals = screen.selectedTotals
+        let comp = screen.comparison
         let hasIncome = totals.income > 0
         let overspent = hasIncome && totals.total > totals.income
         let ratio = hasIncome ? min(1.0, Double(max(0, totals.total)) / Double(totals.income)) : 0
 
         return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                SectionLabel("Spent vs income")
+                HStack {
+                    SectionLabel("Spent vs income")
+                    Spacer()
+                    if let rate = comp.savingsRate, !comp.isInProgress {
+                        let pct = Int((rate * 100).rounded())
+                        QuietTag(
+                            pct >= 0 ? "Saved \(pct)%" : "Over by \(-pct)%",
+                            tone: pct >= 0 ? .good : .bad
+                        )
+                    }
+                }
 
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 12) {
@@ -277,22 +393,24 @@ struct MonthsView: View {
                 }
 
                 if hasIncome {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(Theme.track)
-                            Capsule()
-                                .fill(overspent ? Theme.bad : Theme.accent)
-                                .frame(width: max(ratio > 0 ? 6 : 0, geo.size.width * ratio))
-                        }
-                    }
-                    .frame(height: 8)
-                    .accessibilityHidden(true)
+                    ProgressMeter(ratio: ratio, tint: overspent ? Theme.bad : Theme.accent, height: 8)
                 }
 
                 HairlineDivider()
 
                 VStack(alignment: .leading, spacing: 8) {
+                    summaryDetailRow(
+                        title: "Fixed (rent, bills, subs)",
+                        value: Money.yen(comp.fixedCosts),
+                        accessibilityValue: FinanceFormat.yenAccessibility(comp.fixedCosts),
+                        color: Theme.ink2
+                    )
+                    summaryDetailRow(
+                        title: "Day-to-day",
+                        value: Money.yen(comp.dayToDayCosts),
+                        accessibilityValue: FinanceFormat.yenAccessibility(comp.dayToDayCosts),
+                        color: Theme.ink
+                    )
                     if totals.debt != 0 {
                         summaryDetailRow(
                             title: "Debt payments",
@@ -310,9 +428,10 @@ struct MonthsView: View {
                         )
                     }
                     if hasIncome {
+                        HairlineDivider()
                         let leftPositive = totals.left >= 0
                         summaryDetailRow(
-                            title: leftPositive ? "Left after spending" : "Over income",
+                            title: leftPositive ? "Left after spending" : "Short by",
                             value: Money.signed(totals.left),
                             accessibilityValue: FinanceFormat.yenAccessibility(totals.left, signed: true),
                             color: leftPositive ? Theme.good : Theme.bad,
@@ -378,18 +497,82 @@ struct MonthsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    // MARK: - Where it went card
+    // MARK: - Where to cut summary card
 
-    private func whereItWentCard(screen: MonthsScreenModel) -> some View {
+    private func whereToCutSummaryCard(screen: MonthsScreenModel) -> some View {
+        let plan = screen.planSummary
+        return FinanceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 8) {
+                    SectionLabel("Where to cut")
+                    Spacer(minLength: 8)
+                    NavigationLink {
+                        WhereToCutView(plan: plan)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("All \(plan.active.count + plan.settled.count)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text("Already cut \(Money.yen(plan.alreadyCut))/mo · targets save another \(Money.yen(plan.potentialSavings))/mo (down to \(Money.yen(plan.projectedTotal))/mo).")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !plan.watchList.isEmpty {
+                    HairlineDivider()
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(plan.watchList.prefix(3)) { row in
+                            let target = row.entry.target ?? 0
+                            let ratio = row.selectedMonthProgress ?? 0
+                            let tint: Color = row.selectedMonthSpent > target
+                                ? Theme.bad
+                                : (ratio >= 0.8 ? Color("LayerDayToDay") : Theme.good)
+                            Button {
+                                session.openPayments(month: screen.selectedMonth, category: row.entry.category)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                        Text(row.entry.category)
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(Theme.ink)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 8)
+                                        Text("\(Money.yen(row.selectedMonthSpent)) / \(Money.yen(target))")
+                                            .font(.caption.weight(.medium))
+                                            .monospacedDigit()
+                                            .foregroundStyle(row.selectedMonthSpent > target ? Theme.bad : Theme.ink2)
+                                    }
+                                    ProgressMeter(ratio: ratio, tint: tint, height: 5)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Where it went (Categories | Merchants | Cards)
+
+    private func breakdownCard(screen: MonthsScreenModel) -> some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 4) {
                         SectionLabel("Where it went")
-                        Text("Tap to filter")
+                        Text("Tap to filter Payments")
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -401,20 +584,148 @@ struct MonthsView: View {
                     }
                 }
 
-                if screen.categoryBars.isEmpty {
-                    Text("No categorized spending in \(DayText.month(screen.selectedMonth)).")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.muted)
-                } else {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(screen.categoryBars.enumerated()), id: \.element.id) { index, bar in
-                            if index > 0 {
-                                HairlineDivider()
-                                    .padding(.vertical, 4)
-                            }
-                            categoryRow(bar: bar, month: screen.selectedMonth)
-                        }
+                Picker("Breakdown", selection: $breakdownTab) {
+                    ForEach(BreakdownTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
                     }
+                }
+                .pickerStyle(.segmented)
+
+                switch breakdownTab {
+                case .categories:
+                    categoriesList(screen: screen)
+                case .merchants:
+                    merchantsList(screen: screen)
+                case .cards:
+                    sourcesList(screen: screen)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func categoriesList(screen: MonthsScreenModel) -> some View {
+        if screen.categoryBars.isEmpty {
+            Text("No categorized spending in \(DayText.month(screen.selectedMonth)).")
+                .font(.subheadline)
+                .foregroundStyle(Theme.muted)
+        } else {
+            let visible = showAllCategories ? screen.categoryBars : Array(screen.categoryBars.prefix(12))
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(visible.enumerated()), id: \.element.id) { index, bar in
+                    if index > 0 {
+                        HairlineDivider()
+                            .padding(.vertical, 4)
+                    }
+                    categoryRow(bar: bar, month: screen.selectedMonth)
+                }
+            }
+            if screen.categoryBars.count > 12 {
+                HairlineDivider()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showAllCategories.toggle()
+                    }
+                } label: {
+                    Text(showAllCategories ? "Show top 12" : "Show all \(screen.categoryBars.count) categories")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.accent)
+                        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func merchantsList(screen: MonthsScreenModel) -> some View {
+        if screen.topMerchants.isEmpty {
+            Text("No merchants in \(DayText.month(screen.selectedMonth)).")
+                .font(.subheadline)
+                .foregroundStyle(Theme.muted)
+        } else {
+            let maxSum = max(1, screen.topMerchants.first?.total ?? 1)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(screen.topMerchants.prefix(15).enumerated()), id: \.element.id) { idx, shop in
+                    if idx > 0 {
+                        HairlineDivider()
+                            .padding(.vertical, 4)
+                    }
+                    Button {
+                        session.openPayments(month: screen.selectedMonth, category: nil, query: shop.merchant)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(shop.merchant)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Theme.ink)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text(Money.yen(shop.total))
+                                    .font(.subheadline.weight(.medium))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.ink)
+                            }
+                            Text("\(shop.count) \(shop.count == 1 ? "visit" : "visits") · avg \(Money.yen(shop.average)) · \(shop.category)")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                            ProgressMeter(ratio: Double(shop.total) / Double(maxSum), tint: Theme.accent, height: 5)
+                        }
+                        .padding(.vertical, 8)
+                        .frame(minHeight: Theme.minTouchTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sourcesList(screen: MonthsScreenModel) -> some View {
+        if screen.sourceSummaries.isEmpty {
+            Text("No card or account spending in \(DayText.month(screen.selectedMonth)).")
+                .font(.subheadline)
+                .foregroundStyle(Theme.muted)
+        } else {
+            let maxSum = max(1, screen.sourceSummaries.first?.total ?? 1)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(Array(screen.sourceSummaries.enumerated()), id: \.element.id) { idx, src in
+                    if idx > 0 {
+                        HairlineDivider()
+                            .padding(.vertical, 4)
+                    }
+                    let pct = Int((src.share * 100).rounded())
+                    Button {
+                        session.openPayments(month: screen.selectedMonth, category: nil, source: src.source)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(src.source)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Theme.ink)
+                                Text("\(src.count) \(src.count == 1 ? "payment" : "payments")")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.muted)
+                                Spacer(minLength: 8)
+                                Text(Money.yen(src.total))
+                                    .font(.subheadline.weight(.medium))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.ink)
+                                Text("\(pct)%")
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.muted)
+                                    .frame(minWidth: 32, alignment: .trailing)
+                            }
+                            ProgressMeter(ratio: Double(src.total) / Double(maxSum), tint: Theme.ink2, height: 6)
+                        }
+                        .padding(.vertical, 8)
+                        .frame(minHeight: Theme.minTouchTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -481,17 +792,7 @@ struct MonthsView: View {
                     }
                 }
 
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Theme.track)
-                        Capsule()
-                            .fill(bar.layer.color)
-                            .frame(width: max(6, geo.size.width * bar.barFraction))
-                    }
-                }
-                .frame(height: 6)
-                .accessibilityHidden(true)
+                ProgressMeter(ratio: bar.barFraction, tint: bar.layer.color, height: 6)
             }
             .padding(.vertical, 8)
             .frame(minHeight: Theme.minTouchTarget, alignment: .center)
@@ -505,10 +806,10 @@ struct MonthsView: View {
 
     private func selectMonth(_ month: String) {
         if reduceMotion {
-            selectedMonth = month
+            session.monthsSelectedMonth = month
         } else {
             withAnimation(.easeInOut(duration: 0.18)) {
-                selectedMonth = month
+                session.monthsSelectedMonth = month
             }
         }
     }

@@ -32,6 +32,8 @@ private enum WidgetPalette {
     static let ink2 = dynamic(light: 0x414752, dark: 0xB4BAC4)
     static let muted = dynamic(light: 0x6B7280, dark: 0x868D98)
     static let line = dynamic(light: 0xDDE0E6, dark: 0x272B32)
+    static let track = dynamic(light: 0xE7E9ED, dark: 0x262A31)
+    static let good = dynamic(light: 0x0F7140, dark: 0x45C985)
     static let bad = dynamic(light: 0xB8322A, dark: 0xF2766B)
 
     private static func dynamic(light: Int, dark: Int) -> Color {
@@ -53,8 +55,17 @@ struct FinanceWidgetView: View {
 
     var body: some View {
         switch family {
+        case .systemMedium:
+            systemMediumBody
+                .containerBackground(WidgetPalette.surface, for: .widget)
         case .accessoryRectangular:
             accessoryRectangularBody
+                .containerBackground(Color.clear, for: .widget)
+        case .accessoryCircular:
+            accessoryCircularBody
+                .containerBackground(Color.clear, for: .widget)
+        case .accessoryInline:
+            accessoryInlineBody
                 .containerBackground(Color.clear, for: .widget)
         default:
             systemSmallBody
@@ -62,8 +73,13 @@ struct FinanceWidgetView: View {
         }
     }
 
+    private var isNegative: Bool {
+        entry.snapshot.value.hasPrefix("−") || entry.snapshot.value.hasPrefix("-")
+    }
+
+    // MARK: - Small Home Screen
+
     private var systemSmallBody: some View {
-        let isNegative = entry.snapshot.value.hasPrefix("−") || entry.snapshot.value.hasPrefix("-")
         let detailText = entry.hasGroup ? entry.snapshot.detail : "No shared data (App Group missing)"
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -83,6 +99,10 @@ struct FinanceWidgetView: View {
                 .lineLimit(1)
                 .privacySensitive()
                 .accessibilityLabel(Self.yenSpeech(entry.snapshot.value))
+
+            if let bills = entry.snapshot.billsSum, let left = entry.snapshot.leftSum, bills + abs(left) > 0 {
+                miniSplitBar(bills: bills, left: left)
+            }
 
             Text(detailText)
                 .font(.caption)
@@ -106,9 +126,109 @@ struct FinanceWidgetView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    // MARK: - Medium Home Screen (Payday + Next Bills)
+
+    private var systemMediumBody: some View {
+        let bills = entry.snapshot.upcomingBills ?? []
+        return HStack(alignment: .top, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(entry.snapshot.title.uppercased())
+                    .font(.system(size: 10.5, weight: .semibold, design: .default))
+                    .tracking(0.5)
+                    .foregroundStyle(WidgetPalette.muted)
+                    .lineLimit(1)
+                    .privacySensitive()
+
+                Text(entry.snapshot.value)
+                    .font(.system(size: 27, weight: .semibold, design: .default))
+                    .tracking(-0.6)
+                    .monospacedDigit()
+                    .foregroundStyle(isNegative ? WidgetPalette.bad : WidgetPalette.ink)
+                    .minimumScaleFactor(0.55)
+                    .lineLimit(1)
+                    .privacySensitive()
+                    .accessibilityLabel(Self.yenSpeech(entry.snapshot.value))
+
+                if let bSum = entry.snapshot.billsSum, let lSum = entry.snapshot.leftSum, bSum + abs(lSum) > 0 {
+                    miniSplitBar(bills: bSum, left: lSum)
+                }
+
+                Text(entry.hasGroup ? entry.snapshot.detail : "App Group missing")
+                    .font(.caption)
+                    .foregroundStyle(WidgetPalette.ink2)
+                    .lineLimit(2)
+                    .privacySensitive()
+
+                Spacer(minLength: 2)
+
+                if entry.hasGroup, let updated = Self.updatedLabel(entry.snapshot.updatedAt) {
+                    Text(updated)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(WidgetPalette.muted)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            Rectangle()
+                .fill(WidgetPalette.line)
+                .frame(width: 0.5)
+                .padding(.vertical, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("NEXT BILLS")
+                    .font(.system(size: 10.5, weight: .semibold, design: .default))
+                    .tracking(0.5)
+                    .foregroundStyle(WidgetPalette.muted)
+                    .lineLimit(1)
+
+                if bills.isEmpty {
+                    Text("No unpaid bills before payday.")
+                        .font(.caption)
+                        .foregroundStyle(WidgetPalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                } else {
+                    ForEach(bills.prefix(3)) { bill in
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                                Text(bill.title)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(WidgetPalette.ink)
+                                    .lineLimit(1)
+                                Spacer(minLength: 4)
+                                Text("¥" + bill.amount.formatted())
+                                    .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(WidgetPalette.ink)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
+                            Text(bill.isEstimate ? "\(bill.dateLabel) · est." : bill.dateLabel)
+                                .font(.caption2)
+                                .foregroundStyle(WidgetPalette.muted)
+                                .lineLimit(1)
+                        }
+                        .privacySensitive()
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    // MARK: - Lock Screen Accessories
+
     private var accessoryRectangularBody: some View {
         let updated = entry.hasGroup ? Self.updatedLabel(entry.snapshot.updatedAt) : nil
-        let detail = entry.hasGroup ? entry.snapshot.detail : "App Group missing"
+        let nextBill = entry.snapshot.upcomingBills?.first
+        let footer: String
+        if let nextBill, entry.hasGroup {
+            footer = "Next: \(nextBill.title) ¥\(nextBill.amount.formatted())"
+        } else {
+            footer = updated ?? (entry.hasGroup ? entry.snapshot.detail : "App Group missing")
+        }
 
         return VStack(alignment: .leading, spacing: 2) {
             Text(entry.snapshot.title.uppercased())
@@ -127,7 +247,7 @@ struct FinanceWidgetView: View {
                 .privacySensitive()
                 .accessibilityLabel(Self.yenSpeech(entry.snapshot.value))
 
-            Text(updated ?? detail)
+            Text(footer)
                 .font(.caption2)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -135,6 +255,61 @@ struct FinanceWidgetView: View {
                 .privacySensitive()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var accessoryCircularBody: some View {
+        let progress = min(1.0, max(0.0, entry.snapshot.cycleProgress ?? 0))
+        let daysText = entry.snapshot.daysToPayday.map { "\($0)d" } ?? "–"
+        let valueText = entry.snapshot.compactValue ?? entry.snapshot.value
+
+        return Gauge(value: progress) {
+            Text("Payday")
+        } currentValueLabel: {
+            VStack(spacing: 0) {
+                Text(daysText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .monospacedDigit()
+                Text(valueText)
+                    .font(.system(size: 8.5, weight: .medium))
+                    .monospacedDigit()
+                    .minimumScaleFactor(0.6)
+                    .lineLimit(1)
+                    .privacySensitive()
+            }
+        }
+        .gaugeStyle(.accessoryCircularCapacity)
+    }
+
+    private var accessoryInlineBody: some View {
+        let compact = entry.snapshot.compactValue ?? entry.snapshot.value
+        let text = entry.snapshot.daysToPayday.map { "\(compact) left · \($0)d" } ?? "\(compact) · Finance"
+        return Text(text)
+            .privacySensitive()
+    }
+
+    // MARK: - Helpers
+
+    private func miniSplitBar(bills: Int, left: Int) -> some View {
+        let b = max(0, bills)
+        let l = abs(left)
+        let total = max(1, b + l)
+        return GeometryReader { geo in
+            let w = geo.size.width
+            HStack(spacing: 2) {
+                if b > 0 {
+                    Capsule()
+                        .fill(WidgetPalette.ink2)
+                        .frame(width: max(4, (w - 2) * CGFloat(b) / CGFloat(total)))
+                }
+                if l > 0 {
+                    Capsule()
+                        .fill(left < 0 ? WidgetPalette.bad : WidgetPalette.good)
+                        .frame(width: max(4, (w - 2) * CGFloat(l) / CGFloat(total)))
+                }
+            }
+        }
+        .frame(height: 5)
+        .accessibilityHidden(true)
     }
 
     private static func updatedLabel(_ date: Date) -> String? {
@@ -166,7 +341,13 @@ struct FinanceWidget: Widget {
             FinanceWidgetView(entry: entry)
         }
         .configurationDisplayName("Finance")
-        .description("Until payday balance shared by the Finance app.")
-        .supportedFamilies([.systemSmall, .accessoryRectangular])
+        .description("Until payday balance and upcoming bills shared by the Finance app.")
+        .supportedFamilies([
+            .systemSmall,
+            .systemMedium,
+            .accessoryRectangular,
+            .accessoryCircular,
+            .accessoryInline
+        ])
     }
 }

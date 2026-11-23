@@ -3,12 +3,29 @@ import Foundation
 import WidgetKit
 
 /// Everything the screens show: the imported data file, confirmed Money Forward bank
-/// transactions after each source's statement cutoff, and remaining pending Gmail notices.
+/// transactions after each source's statement cutoff, remaining pending Gmail notices,
+/// and phone-local additions/overrides.
 struct FinanceData: Sendable {
     let bundle: DataBundle
+    /// All recent notices kept for detail lookups (timestamps, foreign amounts, split parts) and decline alerts.
+    let notices: [Notice]
     /// Notices before effective coverage, kept outside the pending totals.
     let unmatched: [Notice]
+    /// Complete item list (bundle + Money Forward bank + pending notices + manual/imported local entries),
+    /// with local category overrides applied.
+    let allItems: [BudgetItem]
+    /// Reconciled timeline (Money Forward + local bill checkoffs).
+    let timeline: [TimelineEntry]
+    /// Keys of timeline entries marked paid on the phone rather than confirmed by a bank row.
+    let phoneCheckedBillKeys: Set<String>
+    /// Fingerprints of items created locally on the phone (manual or CSV import).
+    let localItemKeys: Set<String>
+    /// Fingerprint -> ManualEntry.ID for deleting local items.
+    let localEntryByFingerprint: [String: UUID]
+    /// Matched notice lookup by transaction fingerprint (`date|source|amount|foldedMerchant`) for PaymentDetailSheet.
+    let noticeByFingerprint: [String: Notice]
     let payday: PaydayView?
+    let paydayBreakdown: PaydayBreakdown?
     let comingUp: [ComingUpGroup]
     let lastPayday: String?
     let spentSincePayday: Int?
@@ -20,12 +37,27 @@ struct FinanceData: Sendable {
     /// Per-source coverage extended to the newest mapped Money Forward row.
     let effectiveCoverage: [String: CoverageRange]
     let months: [String]
+    /// Monthly totals computed once over `allItems` (fixes Money Forward omission in Months).
+    let totalsByMonth: [String: MonthTotals]
+    /// Payments (excluding Income) grouped by month.
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
+    /// All items (including Income) sorted newest first for all-time search and Income filtering.
+    let allRowsSorted: [NumberedRow<BudgetItem>]
+    let subscriptionSummary: SubscriptionSummary
+    let planSummary: PlanSummary
+    let alerts: [FinanceAlert]
+    /// Distinct (group, category) pairs available in this dataset for pickers.
+    let availableCategories: [(group: String, category: String)]
+    /// Most frequent known merchant display spellings for Quick Add autocomplete.
+    let knownMerchants: [String]
+    /// Distinct sources available for filters and Quick Add.
+    let availableSources: [String]
 
     static func load(
         notices: [Notice],
         bankTransactions: [BankTransaction]? = nil,
         accountMapping: [String: String]? = nil,
+        localModifications: LocalModifications? = nil,
         now: Date = Date()
     ) async -> FinanceData? {
         await Task.detached(priority: .utility) {
@@ -35,11 +67,13 @@ struct FinanceData: Sendable {
                 : nil
             let resolvedTxs = bankTransactions ?? mfState?.transactions ?? []
             let resolvedMapping = accountMapping ?? mfState?.accountMapping ?? [:]
+            let resolvedLocal = localModifications ?? LocalDataStore.loadModifications()
             return FinanceData(
                 bundle: bundle,
                 notices: notices,
                 bankTransactions: resolvedTxs,
                 accountMapping: resolvedMapping,
+                localModifications: resolvedLocal,
                 today: JST.day(now)
             )
         }.value
@@ -50,9 +84,11 @@ struct FinanceData: Sendable {
         notices: [Notice],
         bankTransactions: [BankTransaction] = [],
         accountMapping: [String: String] = [:],
+        localModifications: LocalModifications = LocalModifications(),
         today: String
     ) {
         self.bundle = bundle
+        self.notices = notices
         let config = bundle.layerConfig
         let layered = BankLayering.build(
             bundle: bundle,
@@ -66,47 +102,210 @@ struct FinanceData: Sendable {
         pendingCount = layered.pendingItems.count
         confirmedBankCount = layered.bankItems.count
         effectiveCoverage = layered.effectiveCoverage
-        let items = bundle.items + layered.bankItems + layered.pendingItems
 
-        let timeline = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
-        let upcoming = PaydayView.compute(timeline: timeline, today: today)
-        payday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
-        comingUp = ComingUp.groups(timeline: timeline, today: today)
-        let start = timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
-        lastPayday = start
-        spentSincePayday = start.map {
+        let baseItems = bundle.items + layered.bankItems + layered.pendingItems
+        let applied = LocalDataApplier.apply(
+            baseItems: baseItems,
+            modifications: localModifications,
+            config: config,
+            layers: bundle.layers
+        )
+        let items = applied.allItems
+        self.allItems = items
+        self.localItemKeys = applied.localItemKeys
+        self.localEntryByFingerprint = applied.localEntryByFingerprint
+
+        // Build fast notice lookup for PaymentDetailSheet metadata (exact time, foreign currency, Merpay split, ref).
+        var noticeMap: [String: Notice] = [:]
+        for notice in notices {
+            guard let amount = notice.amount else { continue }
+            let sourceLabel = bundle.sourceLabels[notice.source.rawValue] ?? notice.source.rawValue
+            let merchant = (notice.merchant?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
+                ?? PendingBuilder.missingMerchantPlaceholder
+            let fp = "\(notice.day)|\(sourceLabel)|\(amount)|\(TextFold.key(merchant))"
+            if noticeMap[fp] == nil {
+                noticeMap[fp] = notice
+            }
+        }
+        self.noticeByFingerprint = noticeMap
+
+        let bankReconciled = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
+        let checked = LocalDataApplier.applyBillCheckoffs(
+            timeline: bankReconciled,
+            checkoffs: localModifications.billCheckoffs
+        )
+        self.timeline = checked.timeline
+        self.phoneCheckedBillKeys = checked.phoneCheckedKeys
+
+        let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
+        let activePayday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
+        self.payday = activePayday
+        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
+        let start = checked.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
+        self.lastPayday = start
+        self.spentSincePayday = start.map {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
         }
-        pendingSincePayday = start.map { day in
+        self.paydayBreakdown = activePayday.map {
+            SpendingInsights.paydayBreakdown(
+                payday: $0,
+                lastPayday: start,
+                items: items,
+                config: config,
+                layers: bundle.layers
+            )
+        }
+        self.pendingSincePayday = start.map { day in
             layered.pendingItems.filter {
                 $0.date >= day && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
             }.count
         } ?? 0
 
+        let totals = MonthTotals.compute(items: items, config: config, layers: bundle.layers)
+        self.totalsByMonth = totals
+
         let incomeGroup = config.resolvedIncomeGroup ?? "Income"
-        let payments = items.filter { $0.group != incomeGroup }
-            .sorted { ($0.date, $0.amount) > ($1.date, $1.amount) }
-        paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
-        months = paymentsByMonth.keys.sorted()
+        let sortedAll = items.sorted { ($0.date, $0.amount, $0.merchant) > ($1.date, $1.amount, $1.merchant) }
+        self.allRowsSorted = NumberedRow.make(from: sortedAll)
+
+        let payments = sortedAll.filter { $0.group != incomeGroup }
+        self.paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
+        self.months = Set(paymentsByMonth.keys).union(totals.keys).sorted()
+
+        let currentMonth = months.last ?? String(today.prefix(7))
+        let asOfMonth = String(bundle.asOf.prefix(7))
+        let latestPartial = max(asOfMonth, String(today.prefix(7)))
+        let inProgressMonth: String? = (currentMonth >= latestPartial) ? currentMonth : nil
+
+        let subs = SubscriptionSummary.compute(from: bundle.subs)
+        self.subscriptionSummary = subs
+
+        let plan = PlanSummary.compute(
+            plan: bundle.plan,
+            planWindow: bundle.planWindow,
+            totalsByMonth: totals,
+            selectedMonth: currentMonth,
+            currentMonth: currentMonth,
+            inProgressMonth: inProgressMonth
+        )
+        self.planSummary = plan
+
+        let discreet = Set((bundle.discreetCategories ?? []).map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        })
+        let detectedAlerts = SpendingInsights.detectAlerts(
+            bundle: bundle,
+            allItems: items,
+            notices: notices,
+            timeline: checked.timeline,
+            planSummary: plan,
+            subscriptionSummary: subs,
+            today: today,
+            discreetCategories: discreet
+        )
+        self.alerts = detectedAlerts.filter { !localModifications.dismissedAlertIDs.contains($0.id) }
+
+        // Distinct categories from items + rules so pickers always offer every known category.
+        var catPairs: [String: String] = [:]
+        for item in items where !item.category.isEmpty {
+            catPairs[item.category] = item.group
+        }
+        for rule in bundle.rules.rules where !rule.category.isEmpty {
+            catPairs[rule.category] = catPairs[rule.category] ?? rule.group
+        }
+        self.availableCategories = catPairs
+            .map { (group: $0.value, category: $0.key) }
+            .sorted { $0.category.localizedCaseInsensitiveCompare($1.category) == .orderedAscending }
+
+        // Frequent merchant names for Quick Add autocomplete.
+        var merchantCounts: [String: Int] = [:]
+        for item in items where item.amount > 0 && item.group != incomeGroup {
+            merchantCounts[item.merchant, default: 0] += 1
+        }
+        self.knownMerchants = merchantCounts
+            .sorted {
+                if $0.value != $1.value { return $0.value > $1.value }
+                return $0.key.localizedCaseInsensitiveCompare($1.key) == .orderedAscending
+            }
+            .prefix(80)
+            .map(\.key)
+
+        var sourceSet = Set(items.map(\.source))
+        sourceSet.insert("Cash")
+        self.availableSources = sourceSet.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
     func layer(of item: BudgetItem) -> String? {
         bundle.layerConfig.resolvedLayer(for: item, layers: bundle.layers)
     }
 
+    func isLocalItem(_ item: BudgetItem) -> Bool {
+        localItemKeys.contains(CategoryOverride.transactionFingerprint(for: item))
+    }
+
+    func localEntryID(for item: BudgetItem) -> UUID? {
+        localEntryByFingerprint[CategoryOverride.transactionFingerprint(for: item)]
+    }
+
+    func matchedNotice(for item: BudgetItem) -> Notice? {
+        noticeByFingerprint[CategoryOverride.transactionFingerprint(for: item)]
+    }
+
     var widgetSnapshot: WidgetSnapshot {
         guard let p = payday else {
             return WidgetSnapshot(title: "Finance", value: "–", detail: "No upcoming payday in the data file", updatedAt: Date())
         }
-        let spent = spentSincePayday.map { " · spent " + Money.yen($0) } ?? ""
-        return WidgetSnapshot(title: "Until payday · \(p.daysToPayday) days", value: Money.yen(p.left),
-                              detail: "for everything else" + spent, updatedAt: Date())
+        let dayToDay = paydayBreakdown?.dayToDaySpentSincePayday ?? spentSincePayday
+        let spent = dayToDay.map { " · spent " + Money.yen($0) } ?? ""
+        let unpaidBills: [WidgetBill] = p.outs
+            .filter { $0.done != true && $0.amount > 0 }
+            .prefix(3)
+            .map { entry in
+                WidgetBill(
+                    title: entry.item,
+                    date: entry.date,
+                    dateLabel: DayText.short(entry.date),
+                    amount: entry.amount,
+                    isEstimate: entry.estimate == true
+                )
+            }
+
+        let cycleProgress: Double?
+        if let start = lastPayday,
+           let startNum = JST.dayNumber(start),
+           let endNum = JST.dayNumber(p.next.date),
+           endNum > startNum
+        {
+            let span = Double(endNum - startNum)
+            let elapsed = span - Double(max(0, p.daysToPayday))
+            cycleProgress = min(1.0, max(0.0, elapsed / span))
+        } else {
+            cycleProgress = nil
+        }
+
+        return WidgetSnapshot(
+            title: "Until payday · \(p.daysToPayday) days",
+            value: Money.yen(p.left),
+            detail: "for everything else" + spent,
+            updatedAt: Date(),
+            compactValue: FinanceFormat.compactYen(p.left),
+            daysToPayday: p.daysToPayday,
+            cycleProgress: cycleProgress,
+            billsSum: p.outSum,
+            leftSum: p.left,
+            borrowedSum: p.borrowedSum,
+            upcomingBills: unpaidBills
+        )
     }
 
     static func publishWidget(_ snapshot: WidgetSnapshot, force: Bool = false) {
         guard SharedStore.groupID != nil else { return }
         if !force, let current = SharedStore.read(),
-           current.title == snapshot.title, current.value == snapshot.value, current.detail == snapshot.detail {
+           current.title == snapshot.title,
+           current.value == snapshot.value,
+           current.detail == snapshot.detail,
+           current.upcomingBills == snapshot.upcomingBills
+        {
             return
         }
         SharedStore.write(snapshot)
@@ -119,11 +318,13 @@ struct FinanceData: Sendable {
         let amounts = notices.filter {
             $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
         }.compactMap(\.amount)
+        let sum = amounts.reduce(0, +)
         return WidgetSnapshot(
             title: "Card notices, 7 days",
-            value: "¥" + amounts.reduce(0, +).formatted(),
+            value: "¥" + sum.formatted(),
             detail: "\(amounts.count) notices",
-            updatedAt: now
+            updatedAt: now,
+            compactValue: FinanceFormat.compactYen(sum)
         )
     }
 }
@@ -186,7 +387,9 @@ enum DayText {
 
     static func long(_ day: String) -> String { format(day, template: "EEEEMMMMd") }
     static func short(_ day: String) -> String { format(day, template: "MMMdEEE") }
+    static func shortMonth(_ day: String) -> String { format(day, template: "MMM") }
     static func weekday(_ day: String) -> String { format(day, template: "EEE").uppercased() }
     static func dayOfMonth(_ day: String) -> String { String(Int(day.suffix(2)) ?? 0) }
     static func month(_ month: String) -> String { format(month + "-01", template: "MMMMyyyy") }
+    static func monthUpper(_ month: String) -> String { format(month + "-01", template: "MMMM").uppercased() }
 }

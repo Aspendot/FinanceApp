@@ -1,3 +1,4 @@
+import FinanceCore
 import SwiftUI
 
 /// White/elevated surface card with 14 pt continuous corners and a 1 px hairline border.
@@ -98,6 +99,29 @@ struct HairlineDivider: View {
     }
 }
 
+/// Slim capsule progress meter with guaranteed visibility for non-zero ratios.
+struct ProgressMeter: View {
+    let ratio: Double
+    var tint: Color = Theme.accent
+    var height: CGFloat = 6
+
+    var body: some View {
+        let clamped = min(1.0, max(0.0, ratio))
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.track)
+                if clamped > 0 {
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: max(height, geo.size.width * clamped))
+                }
+            }
+        }
+        .frame(height: height)
+        .accessibilityHidden(true)
+    }
+}
+
 /// Calm full-pill tag for Pending, Estimate, Payday, Borrowed, or Not spending states.
 struct QuietTag: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -107,6 +131,15 @@ struct QuietTag: View {
         case accent
         case good
         case bad
+
+        init(statusTone: StatusTone) {
+            switch statusTone {
+            case .good: self = .good
+            case .bad: self = .bad
+            case .accent: self = .accent
+            case .neutral: self = .neutral
+            }
+        }
     }
 
     let text: String

@@ -7,6 +7,7 @@ struct RootView: View {
     @StateObject private var model = AppModel()
     @StateObject private var session = AppSession()
     @Environment(\.scenePhase) private var phase
+    @State private var csvImportAlertMessage: String?
 
     var body: some View {
         Group {
@@ -22,6 +23,52 @@ struct RootView: View {
         .preferredColorScheme(session.demoColorScheme)
         .environmentObject(model)
         .environmentObject(session)
+        .sheet(item: $session.activeSheet) { sheet in
+            Group {
+                switch sheet {
+                case .quickAdd:
+                    QuickAddSheet()
+                case .ask:
+                    AskFinanceSheet()
+                case .debtPayoff:
+                    DebtPayoffSheet()
+                case .targets:
+                    if let data = session.resolvedData(from: model) {
+                        NavigationStack {
+                            WhereToCutView(plan: data.planSummary, isPresentedModally: true)
+                        }
+                    } else {
+                        NoDataView()
+                    }
+                }
+            }
+            .tint(Theme.accent)
+            .preferredColorScheme(session.demoColorScheme)
+            .environmentObject(model)
+            .environmentObject(session)
+        }
+        .onOpenURL { url in
+            guard !session.isDemo, url.pathExtension.lowercased() == "csv" else { return }
+            Task {
+                do {
+                    let result = try await model.importPayPayCSV(url: url)
+                    csvImportAlertMessage = "Imported \(result.entries.count) payments from \(url.lastPathComponent). Skipped \(result.skippedDuplicates) duplicates."
+                } catch {
+                    csvImportAlertMessage = error.localizedDescription
+                }
+            }
+        }
+        .alert(
+            "CSV Import",
+            isPresented: Binding(
+                get: { csvImportAlertMessage != nil },
+                set: { if !$0 { csvImportAlertMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { csvImportAlertMessage = nil }
+        } message: {
+            Text(csvImportAlertMessage ?? "")
+        }
         .onChange(of: phase, initial: true) { _, newPhase in
             guard !session.isDemo else { return }
             if newPhase == .background {

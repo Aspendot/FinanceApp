@@ -258,11 +258,11 @@ jobs:
             echo "Captured ${out} (${last_stats})"
           }
 
-          for screen in now payments months more money-forward drive; do
+          for screen in now payments months more targets ask notifications local-data; do
             capture "${screen}-light" "$screen" light large
           done
 
-          for screen in now payments months more money-forward drive; do
+          for screen in now payments months more targets ask; do
             capture "${screen}-dark" "$screen" dark large
           done
 
