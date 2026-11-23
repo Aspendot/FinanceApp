@@ -17,7 +17,6 @@ struct SpikeView: View {
     @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
     @State private var dataResult = BundleInbox.storedData() == nil ? "No data file yet" : "A data file is stored"
-    @Environment(\.scenePhase) private var scenePhase
 
     private func checkDataFile() {
         switch BundleInbox.check() {
@@ -153,10 +152,10 @@ struct SpikeView: View {
             .navigationTitle("Finance test")
             .onAppear { checkDataFile() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { checkDataFile() }
-            }
-            .onChange(of: scenePhase) { _, phase in
-                if phase == .active { notices = GmailSync.recentNotices() }
+                if phase == .active {
+                    checkDataFile()
+                    notices = GmailSync.recentNotices()
+                }
             }
         }
     }
