@@ -13,6 +13,7 @@ struct SpikeView: View {
     @State private var refreshResult = "Not scheduled yet"
     @State private var runs = SpikeLog.load().backgroundRuns
     @State private var clientID = GmailSync.clientID ?? ""
+    @State private var signInTask: Task<Void, Never>?
     @State private var gmailResult = (try? GmailSync.hasCredentials()) == true ? "Signed in" : "Not signed in"
     @State private var notices = GmailSync.recentNotices()
 
@@ -62,14 +63,21 @@ struct SpikeView: View {
                         .autocorrectionDisabled()
                         .font(.footnote)
                     Text(gmailResult).font(.footnote).foregroundStyle(.secondary)
-                    Button("Sign in with Google") {
-                        Task {
-                            do {
-                                try await GmailSync.signIn(clientID: clientID)
-                                notices = GmailSync.recentNotices()
-                                gmailResult = "Signed in with read-only Gmail access"
-                            } catch {
-                                gmailResult = "Sign-in failed: " + error.localizedDescription
+                    if let signInTask {
+                        Button("Cancel sign-in") { signInTask.cancel() }
+                    } else {
+                        Button("Sign in with Google") {
+                            signInTask = Task { @MainActor in
+                                defer { signInTask = nil }
+                                do {
+                                    try await GmailSync.signIn(clientID: clientID)
+                                    notices = GmailSync.recentNotices()
+                                    gmailResult = "Signed in with read-only Gmail access"
+                                } catch {
+                                    gmailResult = Task.isCancelled
+                                        ? "Sign-in cancelled"
+                                        : "Sign-in failed: " + error.localizedDescription
+                                }
                             }
                         }
                     }
