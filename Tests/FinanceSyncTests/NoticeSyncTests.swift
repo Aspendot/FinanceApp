@@ -406,6 +406,38 @@ struct NoticeSyncTests {
         #expect(batches[1].seenMessageIDs == ["m3"])
         #expect(batches[1].state.seenMessageIDs == ["m1", "m2", "m3"])
     }
+
+    @Test("A message deleted after listing does not block subsequent notices")
+    func missingMessageDoesNotStallSync() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: ["messages": [["id": "missing"], ["id": "msg-valid"]]]),
+            HTTPResponse(statusCode: 404),
+            try TestJSON.response(json: gmailJSON(
+                id: "msg-valid",
+                from: "post_master@netbk.co.jp",
+                authResults: docomoAuth,
+                subject: docomoSubject,
+                body: docomoBody
+            )),
+        ])
+
+        let run = try await NoticeSync.sync(client: makeClient(transport: transport), now: { self.fixedNow })
+        #expect(run.state.seenMessageIDs == ["msg-valid"])
+        #expect(run.items.first?.notice?.messageID == "msg-valid")
+        #expect(run.state.lastSyncAt == fixedNow)
+    }
+
+    @Test("A repeated page token does not mark the scan complete")
+    func repeatedPageTokenFails() async throws {
+        let transport = FakeHTTPTransport(responses: [
+            try TestJSON.response(json: ["nextPageToken": "same-page"]),
+            try TestJSON.response(json: ["nextPageToken": "same-page"]),
+        ])
+
+        await #expect(throws: GmailClientError.invalidResponse("message list repeated a page token.")) {
+            _ = try await NoticeSync.sync(client: makeClient(transport: transport), now: { self.fixedNow })
+        }
+    }
 }
 
 private final class StepClock: @unchecked Sendable {

@@ -90,6 +90,22 @@ private func makeBundle() throws -> DataBundle {
 
 @Suite("PendingBuilder")
 struct PendingBuilderTests {
+    @Test func historyLimitKeepsOlderNoticesStillNeededForPendingTotals() throws {
+        let notices = [
+            makeNotice("recent-diagnostic", kind: .decline),
+            makeNotice("pending-cancellation", kind: .cancellation, on: "2026-01-31", relatedRef: "SAMPLE-REF"),
+            makeNotice("covered-payment", on: "2026-01-30"),
+            makeNotice("linked-payment", on: "2026-01-30", ref: "SAMPLE-REF"),
+            makeNotice("no-coverage", source: .apple, on: "2026-01-30"),
+            makeNotice("old-diagnostic", kind: .decline),
+        ]
+
+        let retained = PendingBuilder.retainNotices(notices, bundle: try makeBundle(), historyLimit: 1)
+        #expect(retained.map(\.messageID) == ["recent-diagnostic", "pending-cancellation", "linked-payment", "no-coverage"])
+        let beforeImport = PendingBuilder.retainNotices(notices, bundle: nil, historyLimit: 1)
+        #expect(beforeImport.contains { $0.messageID == "covered-payment" })
+    }
+
     @Test func cancellationPairRemovesBothByReferenceAndRelatedReference() throws {
         let bundle = try makeBundle()
         let categorizer = Categorizer(rules: bundle.rules)

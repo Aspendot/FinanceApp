@@ -245,7 +245,7 @@ public enum NoticeSync {
 
             for id in pageUnseen {
                 if Task.isCancelled {
-                    try? await flushBatch()
+                    try await flushBatch()
                     throw CancellationError()
                 }
                 if let deadline, now() >= deadline {
@@ -257,10 +257,12 @@ public enum NoticeSync {
                 let gmail: GmailMessage
                 do {
                     gmail = try await client.message(id: id)
+                } catch GmailClientError.httpError(statusCode: 404, message: _) {
+                    // The message may have been deleted after listing. Retry it
+                    // if it reappears in a later run, and keep scanning this one.
+                    continue
                 } catch {
-                    if !batchSeenIDs.isEmpty {
-                        try? await flushBatch()
-                    }
+                    try await flushBatch()
                     throw error
                 }
 
@@ -286,13 +288,16 @@ public enum NoticeSync {
                 break
             }
 
-            guard let next = page.nextPageToken, !next.isEmpty, !seenPageTokens.contains(next) else {
+            guard let next = page.nextPageToken, !next.isEmpty else {
                 break
             }
-            seenPageTokens.insert(next)
+            guard seenPageTokens.insert(next).inserted else {
+                throw GmailClientError.invalidResponse("message list repeated a page token.")
+            }
             pageToken = next
         }
 
+        try Task.checkCancellation()
         if !reachedDeadline {
             updatedState.lastSyncAt = now()
         }

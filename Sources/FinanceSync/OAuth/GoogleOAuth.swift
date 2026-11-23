@@ -134,6 +134,8 @@ public struct OAuthTokens: Codable, Equatable, Sendable, CustomStringConvertible
     public var scope: String?
     /// Token type, normally `"Bearer"`.
     public var tokenType: String
+    /// Optional app-owned binding to the mailbox that authorized these credentials.
+    public var mailboxFingerprint: String? = nil
 
     public init(
         accessToken: String,
