@@ -73,9 +73,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: compnerd/gha-setup-swift@9ff1ee4c44888c5817fc14d1b257ac8cabb4935f # v0.5.1
-        with:
-          swift-version: swift-6.4.3-release
-          swift-build: 6.4.3-RELEASE
+      - name: Install Swift 6.4.3 (digest-checked)
+        shell: pwsh
+        run: |
+          $url = 'https://download.swift.org/swift-6.4.3-release/windows10/swift-6.4.3-RELEASE/swift-6.4.3-RELEASE-windows10.exe'
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\swift.exe"
+          $hash = (Get-FileHash "$env:RUNNER_TEMP\swift.exe" -Algorithm SHA256).Hash
+          if ($hash -ne 'A4F1369833F77DE28DBAC998C8DEBE1C1D6044410DC6380238AE61A0D7CE5F77') { throw "Swift installer digest mismatch: $hash" }
+          $p = Start-Process "$env:RUNNER_TEMP\swift.exe" -ArgumentList '/quiet', '/norestart', 'OptionsInstallAndroidPlatform=0' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Swift installer failed with exit code $($p.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA 'Programs\Swift'
+          Add-Content $env:GITHUB_PATH (Join-Path $root 'Toolchains\6.4.3+Asserts\usr\bin')
+          Add-Content $env:GITHUB_PATH (Join-Path $root 'Runtimes\6.4.3\usr\bin')
+          Add-Content $env:GITHUB_ENV ('SDKROOT=' + (Join-Path $root 'Platforms\6.4.3\Windows.platform\Developer\SDKs\Windows.sdk\'))
       - run: swift --version
       - run: swift test
