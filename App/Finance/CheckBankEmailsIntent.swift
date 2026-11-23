@@ -34,11 +34,11 @@ struct CheckBankEmailsIntent: AppIntent {
             message = "Already checking bank emails"
         case .timedOut:
             if report.newPayments == 1 {
-                message = "1 new payment"
+                message = "1 new payment so far"
             } else if report.newPayments > 1 {
-                message = "\(report.newPayments) new payments"
+                message = "\(report.newPayments) new payments so far"
             } else {
-                message = "Checked recent bank emails"
+                message = "Check timed out"
             }
         case .cancelled:
             message = "Check cancelled"

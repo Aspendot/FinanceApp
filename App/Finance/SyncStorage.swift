@@ -8,8 +8,12 @@ struct PendingPaymentAlert: Codable, Equatable, Sendable {
     var amount: Int
     var merchant: String
     var sourceLabel: String
-    var category: String
     var isDiscreet: Bool
+}
+
+struct PendingPaymentSummary: Codable, Equatable, Sendable {
+    var id = UUID()
+    var count: Int
 }
 
 /// Persisted atomically in one file so seen IDs, notices and the payment alert queue
@@ -18,6 +22,9 @@ struct SyncStoreState: Codable, Equatable, Sendable {
     var syncState: SyncState
     var notices: [Notice]
     var alertQueue: [PendingPaymentAlert]
+    var pendingSummary: PendingPaymentSummary? = nil
+    var overflowAlertCount: Int? = nil
+    var lastShortcutAttempt: Date? = nil
 
     init(
         syncState: SyncState = SyncState(),
@@ -163,21 +170,20 @@ enum SyncStorage {
     }
 
     /// Loads the persisted sync state, falling back to earlier `UserDefaults.standard` keys.
-    static func loadState() -> SyncStoreState {
+    static func loadState() throws -> SyncStoreState {
         let decoder = JSONDecoder()
-        if let data = try? Data(contentsOf: stateURL),
-           let state = try? decoder.decode(SyncStoreState.self, from: data)
-        {
-            return state
+        do {
+            return try decoder.decode(SyncStoreState.self, from: Data(contentsOf: stateURL))
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            // Try legacy storage only when there is no current file.
         }
         let defaults = UserDefaults.standard
-        if let data = defaults.data(forKey: legacyCacheKey),
-           let legacy = try? decoder.decode(LegacyCache.self, from: data)
-        {
+        if let data = defaults.data(forKey: legacyCacheKey) {
+            let legacy = try decoder.decode(LegacyCache.self, from: data)
             return SyncStoreState(syncState: legacy.state, notices: legacy.notices, alertQueue: [])
         }
-        let state = defaults.data(forKey: legacyStateKey).flatMap { try? decoder.decode(SyncState.self, from: $0) }
-        let notices = defaults.data(forKey: legacyNoticesKey).flatMap { try? decoder.decode([Notice].self, from: $0) }
+        let state = try defaults.data(forKey: legacyStateKey).map { try decoder.decode(SyncState.self, from: $0) }
+        let notices = try defaults.data(forKey: legacyNoticesKey).map { try decoder.decode([Notice].self, from: $0) }
         return SyncStoreState(syncState: state ?? SyncState(), notices: notices ?? [], alertQueue: [])
     }
 
@@ -188,8 +194,12 @@ enum SyncStorage {
         removeLegacyDefaults()
     }
 
-    static func clearState() {
-        try? FileManager.default.removeItem(at: stateURL)
+    static func clearState() throws {
+        do {
+            try FileManager.default.removeItem(at: stateURL)
+        } catch let error as CocoaError where error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile {
+            // The sync state has not been created.
+        }
         removeLegacyDefaults()
     }
 

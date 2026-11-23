@@ -62,7 +62,7 @@ struct SpikeView: View {
                 Section("Background refresh") {
                     Text(refreshResult).font(.footnote).foregroundStyle(.secondary)
                     Button("Schedule background refresh") {
-                        refreshResult = BackgroundRefresh.schedule()
+                        Task { refreshResult = await BackgroundRefresh.scheduleIfNeeded() }
                     }
                     Button("Reload run log") {
                         model.refreshRunLog()
@@ -129,12 +129,12 @@ struct SpikeView: View {
                         Task {
                             do {
                                 try await GmailSync.signOut()
-                                notices = []
                                 gmailResult = "Signed out"
-                                await model.reload()
                             } catch {
                                 gmailResult = "Sign-out failed: " + error.localizedDescription
                             }
+                            notices = GmailSync.recentNotices()
+                            await model.reload()
                         }
                     }
                     .disabled(model.syncing || signInTask != nil)

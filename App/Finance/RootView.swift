@@ -1,3 +1,4 @@
+import Combine
 import LocalAuthentication
 import SwiftUI
 import UIKit
@@ -15,18 +16,25 @@ struct RootView: View {
             }
         }
         .environmentObject(model)
-        .task(id: phase == .background) {
-            guard phase != .background else { return }
-            await model.checkInbox()
-            guard !Task.isCancelled else { return }
-            await model.syncGmail()
-        }
-        .onChange(of: phase) { _, newPhase in
+        .onChange(of: phase, initial: true) { _, newPhase in
             if newPhase == .background {
-                Task { await BackgroundRefresh.scheduleIfNeeded() }
+                Task {
+                    await BackgroundAssertion.run(name: "FinanceScheduleRefresh") {
+                        await BackgroundRefresh.scheduleIfNeeded()
+                    }
+                }
             } else if newPhase == .active {
                 model.refreshRunLog()
+                Task {
+                    await model.checkInbox()
+                    guard UIApplication.shared.applicationState == .active else { return }
+                    await model.syncGmail()
+                }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .backgroundGmailSyncUpdated).receive(on: DispatchQueue.main)) { _ in
+            guard phase == .active else { return }
+            Task { await model.reload() }
         }
     }
 }

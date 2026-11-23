@@ -6,8 +6,6 @@ import WidgetKit
 /// on the phone, which become pending payments with the PC's own rules.
 struct FinanceData: Sendable {
     let bundle: DataBundle
-    /// Full pending calculation result, including message IDs aligned with `items`.
-    let pendingResult: PendingResult
     /// Notices before the statement cutoff, kept outside the pending totals.
     let unmatched: [Notice]
     let payday: PaydayView?
@@ -32,7 +30,6 @@ struct FinanceData: Sendable {
         let config = bundle.layerConfig
         let result = PendingBuilder.build(notices: notices, bundle: bundle,
                                           categorizer: Categorizer(rules: bundle.rules), config: config)
-        pendingResult = result
         unmatched = result.unmatched
         pendingCount = result.items.count
         let items = bundle.items + result.items
@@ -91,7 +88,7 @@ struct FinanceData: Sendable {
         return WidgetSnapshot(
             title: "Card notices, 7 days",
             value: "¥" + amounts.reduce(0, +).formatted(),
-            detail: "\(amounts.count) notices · " + now.formatted(date: .abbreviated, time: .shortened),
+            detail: "\(amounts.count) notices",
             updatedAt: now
         )
     }

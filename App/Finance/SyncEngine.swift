@@ -3,19 +3,16 @@ import FinanceSync
 import Foundation
 import UserNotifications
 
+extension Notification.Name {
+    static let backgroundGmailSyncUpdated = Notification.Name("backgroundGmailSyncUpdated")
+}
+
 /// Local notifications for newly seen pending payments.
 enum PaymentNotifications {
     static let categoryIdentifier = "finance.payment"
     static let threadIdentifier = "payments"
     static let summaryThreshold = 4
 
-    struct DeliveryResult: Sendable {
-        var remaining: [PendingPaymentAlert]
-        var postedCount: Int
-        var errorMessage: String?
-    }
-
-    /// Registers the payment category with a privacy-safe lock screen placeholder.
     static func registerCategory() {
         let category = UNNotificationCategory(
             identifier: categoryIdentifier,
@@ -27,88 +24,55 @@ enum PaymentNotifications {
         UNUserNotificationCenter.current().setNotificationCategories([category])
     }
 
-    /// Delivers queued payment alerts when notifications are authorized.
-    /// An alert is removed from the returned `remaining` queue only after
-    /// `UNUserNotificationCenter.add` succeeds.
-    static func deliver(queue: [PendingPaymentAlert]) async -> DeliveryResult {
-        guard !queue.isEmpty else {
-            return DeliveryResult(remaining: [], postedCount: 0, errorMessage: nil)
+    static func isAuthorized() async -> Bool {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return true
+        default: return false
         }
+    }
+
+    static func request(for alert: PendingPaymentAlert) -> UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        let hasShop = !alert.merchant.isEmpty && alert.merchant != PendingBuilder.missingMerchantPlaceholder
+        let amount = Money.payment(alert.amount)
+        if alert.isDiscreet || !hasShop {
+            content.title = "\(amount) · \(alert.sourceLabel)"
+            content.body = "Pending"
+        } else {
+            content.title = "\(amount) · \(alert.merchant)"
+            content.body = "\(alert.sourceLabel) · pending"
+        }
+        return request(id: "payment-\(alert.messageID)", content: content)
+    }
+
+    static func request(for summary: PendingPaymentSummary) -> UNNotificationRequest {
+        let content = UNMutableNotificationContent()
+        content.title = summary.count == 1 ? "1 new payment" : "\(summary.count) new payments"
+        content.body = "Open Finance to review."
+        return request(id: "payment-summary-\(summary.id)", content: content)
+    }
+
+    private static func request(id: String, content: UNMutableNotificationContent) -> UNNotificationRequest {
+        content.sound = .default
+        content.threadIdentifier = threadIdentifier
+        content.categoryIdentifier = categoryIdentifier
+        return UNNotificationRequest(identifier: id, content: content, trigger: nil)
+    }
+
+    static func outstandingIDs() async -> Set<String> {
         let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        switch settings.authorizationStatus {
-        case .authorized, .provisional, .ephemeral:
-            break
-        default:
-            // Notifications are not authorized; drop stale queued alerts rather than
-            // holding them indefinitely.
-            return DeliveryResult(remaining: [], postedCount: 0, errorMessage: nil)
-        }
+        let pending = await center.pendingNotificationRequests()
+        let delivered = await center.deliveredNotifications()
+        return Set((pending + delivered.map(\.request))
+            .filter { $0.content.categoryIdentifier == categoryIdentifier }
+            .map(\.identifier))
+    }
 
-        registerCategory()
-
-        if queue.count > summaryThreshold {
-            let content = UNMutableNotificationContent()
-            content.title = "\(queue.count) new payments"
-            content.body = "Open Finance to review."
-            content.sound = .default
-            content.threadIdentifier = threadIdentifier
-            content.categoryIdentifier = categoryIdentifier
-
-            let anchor = queue.map(\.messageID).sorted().first ?? "batch"
-            let request = UNNotificationRequest(
-                identifier: "payment-summary-\(anchor)",
-                content: content,
-                trigger: nil
-            )
-            do {
-                try await center.add(request)
-                return DeliveryResult(remaining: [], postedCount: 1, errorMessage: nil)
-            } catch {
-                return DeliveryResult(
-                    remaining: queue,
-                    postedCount: 0,
-                    errorMessage: "Notification failed: " + error.localizedDescription
-                )
-            }
-        }
-
-        var remaining: [PendingPaymentAlert] = []
-        var posted = 0
-        var firstError: String?
-
-        for alert in queue {
-            let content = UNMutableNotificationContent()
-            let hasShop = !alert.merchant.isEmpty && alert.merchant != PendingBuilder.missingMerchantPlaceholder
-            let amountText = Money.payment(alert.amount)
-
-            if alert.isDiscreet || !hasShop {
-                content.title = "\(amountText) · \(alert.sourceLabel)"
-                content.body = "Pending"
-            } else {
-                content.title = "\(amountText) · \(alert.merchant)"
-                content.body = "\(alert.sourceLabel) · pending"
-            }
-            content.sound = .default
-            content.threadIdentifier = threadIdentifier
-            content.categoryIdentifier = categoryIdentifier
-
-            let request = UNNotificationRequest(
-                identifier: "payment-\(alert.messageID)",
-                content: content,
-                trigger: nil
-            )
-            do {
-                try await center.add(request)
-                posted += 1
-            } catch {
-                remaining.append(alert)
-                if firstError == nil {
-                    firstError = "Notification failed: " + error.localizedDescription
-                }
-            }
-        }
-        return DeliveryResult(remaining: remaining, postedCount: posted, errorMessage: firstError)
+    static func clear() async {
+        let ids = Array(await outstandingIDs())
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+        center.removeDeliveredNotifications(withIdentifiers: ids)
     }
 }
 
@@ -118,7 +82,8 @@ actor SyncEngine {
 
     private static let lookbackDays = 7
     private static let batchSize = 8
-    private static let maxCachedNotices = 300
+    private static let noticeHistoryLimit = 300
+    private static let maxDetailedAlerts = 300
 
     private var inFlight = false
 
@@ -136,6 +101,7 @@ actor SyncEngine {
         private(set) var newNoticesCount = 0
         private(set) var newPaymentsCount = 0
         private(set) var committedAnyBatch = false
+        private(set) var postedAlertCount = 0
 
         init(storeState: SyncStoreState, bundle: DataBundle?) {
             self.storeState = storeState
@@ -153,15 +119,18 @@ actor SyncEngine {
             var seen = Set<String>()
             let merged = (freshNotices + storeState.notices)
                 .filter { seen.insert($0.messageID).inserted }
-                .sorted { $0.receivedAt > $1.receivedAt }
-            let keptNotices = Array(merged.prefix(SyncEngine.maxCachedNotices))
+                .sorted { ($0.receivedAt, $0.messageID) > ($1.receivedAt, $1.messageID) }
+            let keptNotices = PendingBuilder.retainNotices(
+                merged, bundle: bundle, historyLimit: SyncEngine.noticeHistoryLimit
+            )
 
             var nextState = storeState
             nextState.syncState = batch.state
             nextState.notices = keptNotices
 
             var addedPayments = 0
-            if let bundle, let categorizer, !newlySeenIDs.isEmpty {
+            // An incomplete initial scan remains a silent baseline across runs.
+            if storeState.syncState.lastSyncAt != nil, let bundle, let categorizer, !newlySeenIDs.isEmpty {
                 let pending = PendingBuilder.build(
                     notices: keptNotices,
                     bundle: bundle,
@@ -177,17 +146,20 @@ actor SyncEngine {
                     nextState.alertQueue.append(PendingPaymentAlert(
                         messageID: messageID,
                         amount: item.amount,
-                        merchant: item.merchant,
+                        merchant: isDiscreet ? "" : item.merchant,
                         sourceLabel: item.source,
-                        category: item.category,
                         isDiscreet: isDiscreet
                     ))
                     addedPayments += 1
                 }
             }
 
-            try SyncStorage.saveState(nextState)
-            storeState = nextState
+            let overflow = nextState.alertQueue.count - SyncEngine.maxDetailedAlerts
+            if overflow > 0 {
+                nextState.alertQueue.removeFirst(overflow)
+                nextState.overflowAlertCount = (nextState.overflowAlertCount ?? 0) + overflow
+            }
+            try save(nextState)
             newNoticesCount += freshNotices.count
             newPaymentsCount += addedPayments
             committedAnyBatch = true
@@ -196,30 +168,137 @@ actor SyncEngine {
         func finalizeComplete(_ completedSyncState: SyncState) throws {
             var nextState = storeState
             nextState.syncState = completedSyncState
-            try SyncStorage.saveState(nextState)
-            storeState = nextState
+            try save(nextState)
         }
 
-        func updateAlertQueue(_ remaining: [PendingPaymentAlert]) {
-            guard storeState.alertQueue != remaining else { return }
-            var nextState = storeState
-            nextState.alertQueue = remaining
-            if (try? SyncStorage.saveState(nextState)) != nil {
-                storeState = nextState
+        private func save(_ state: SyncStoreState) throws {
+            try SyncStorage.saveState(state)
+            storeState = state
+        }
+
+        func deliverAlerts(until deadline: ContinuousClock.Instant?) async throws {
+            guard storeState.pendingSummary != nil || storeState.overflowAlertCount != nil
+                    || !storeState.alertQueue.isEmpty,
+                  Self.canDeliver(until: deadline),
+                  await PaymentNotifications.isAuthorized()
+            else { return }
+
+            PaymentNotifications.registerCategory()
+            let outstanding = await PaymentNotifications.outstandingIDs()
+            guard Self.canDeliver(until: deadline) else { return }
+            let center = UNUserNotificationCenter.current()
+            try reconcileQueue()
+            var failedAlerts = Set<String>()
+            var deliveryError: (any Error)?
+            while Self.canDeliver(until: deadline) {
+                var nextState = storeState
+                let overflow = nextState.overflowAlertCount ?? 0
+                let summaryCount = overflow + nextState.alertQueue.count
+                if nextState.pendingSummary == nil, overflow > 0 || summaryCount > PaymentNotifications.summaryThreshold {
+                    nextState.pendingSummary = PendingPaymentSummary(count: summaryCount)
+                    nextState.overflowAlertCount = nil
+                    nextState.alertQueue = []
+                    // Persist the request identifier before the system can accept it.
+                    try save(nextState)
+                }
+
+                let request: UNNotificationRequest
+                let alertID: String?
+                if let summary = nextState.pendingSummary {
+                    request = PaymentNotifications.request(for: summary)
+                    alertID = nil
+                    nextState.pendingSummary = nil
+                } else if let index = nextState.alertQueue.firstIndex(where: { !failedAlerts.contains($0.messageID) }) {
+                    let alert = nextState.alertQueue.remove(at: index)
+                    request = PaymentNotifications.request(for: alert)
+                    alertID = alert.messageID
+                } else {
+                    break
+                }
+
+                if !outstanding.contains(request.identifier) {
+                    do {
+                        try await center.add(request)
+                        postedAlertCount += 1
+                    } catch {
+                        guard let alertID else { throw error }
+                        failedAlerts.insert(alertID)
+                        deliveryError = error
+                        continue
+                    }
+                }
+                // Acknowledge each success, including an earlier system acceptance.
+                try save(nextState)
             }
+            if let deliveryError { throw deliveryError }
+        }
+
+        private static func canDeliver(until deadline: ContinuousClock.Instant?) -> Bool {
+            !Task.isCancelled && (deadline.map { ContinuousClock.now < $0 } ?? true)
+        }
+
+        private func reconcileQueue() throws {
+            guard !storeState.alertQueue.isEmpty,
+                  let bytes = try BundleInbox.readStoredData() else { return }
+            let latest = try DataBundle.decode(from: bytes)
+            let pending = PendingBuilder.build(
+                notices: storeState.notices,
+                bundle: latest,
+                categorizer: Categorizer(rules: latest.rules),
+                config: latest.layerConfig
+            )
+            let itemsByID = Dictionary(zip(pending.noticeIDs, pending.items), uniquingKeysWith: { first, _ in first })
+            let discreet = Set((latest.discreetCategories ?? []).map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            })
+            var nextState = storeState
+            let cachedIDs = Set(storeState.notices.map(\.messageID))
+            nextState.alertQueue = storeState.alertQueue.compactMap { alert -> PendingPaymentAlert? in
+                // An evicted notice can no longer be re-evaluated.
+                guard cachedIDs.contains(alert.messageID) else { return alert }
+                guard let item = itemsByID[alert.messageID] else { return nil }
+                var updated = alert
+                updated.amount = item.amount
+                updated.sourceLabel = item.source
+                updated.isDiscreet = alert.isDiscreet || discreet.contains(
+                    item.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                )
+                if updated.isDiscreet { updated.merchant = "" }
+                return updated
+            }
+            if nextState != storeState { try save(nextState) }
         }
     }
 
-    func isBusy() -> Bool {
-        inFlight
+    func withSignIn(_ operation: @MainActor @Sendable () async throws -> Void) async throws {
+        guard !inFlight else { throw GmailSync.SyncProblem.busy }
+        inFlight = true
+        defer { inFlight = false }
+        try await operation()
     }
 
     /// Clears Keychain tokens, stored sync state and widget data during sign-out.
-    func clearForSignOut() throws {
+    func clearForSignOut() async throws {
         guard !inFlight else { throw GmailSync.SyncProblem.busy }
+        inFlight = true
+        defer { inFlight = false }
         try KeychainTokenStore().clear()
-        SyncStorage.clearState()
         FinanceData.publishWidget(.placeholder, force: true)
+        await PaymentNotifications.clear()
+        try SyncStorage.clearState()
+    }
+
+    func publishCurrentWidget() throws {
+        let hasCredentials = try GmailSync.hasCredentials()
+        let notices = hasCredentials ? try SyncStorage.loadState().notices : []
+        let now = Date()
+        if let bytes = try BundleInbox.readStoredData() {
+            let bundle = try DataBundle.decode(from: bytes)
+            let finance = FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+            FinanceData.publishWidget(finance.widgetSnapshot)
+        } else if hasCredentials {
+            FinanceData.publishWidget(FinanceData.noticeOnlySnapshot(notices: notices, now: now))
+        }
     }
 
     func run(
@@ -227,6 +306,7 @@ actor SyncEngine {
         minimumInterval: TimeInterval,
         timeLimit: TimeInterval? = nil
     ) async -> SyncReport {
+        let start = ContinuousClock.now
         let startedAt = Date()
 
         func record(
@@ -247,53 +327,59 @@ actor SyncEngine {
                 errorMessage: errorMessage
             )
             SyncStorage.appendRunRecord(report.record)
+            if trigger != .app, outcome == .updated || newNotices > 0 {
+                NotificationCenter.default.post(name: .backgroundGmailSyncUpdated, object: nil)
+            }
             return report
         }
 
-        guard !inFlight else {
-            return record(outcome: .busy)
-        }
+        guard !inFlight else { return record(outcome: .busy) }
         inFlight = true
         defer { inFlight = false }
 
-        if Task.isCancelled {
-            return record(outcome: .cancelled)
-        }
-
-        guard let clientID = GmailSync.clientID else {
-            return record(outcome: .notSignedIn)
-        }
+        let deadline = timeLimit.map { start.advanced(by: .seconds($0)) }
+        if Task.isCancelled { return record(outcome: .cancelled) }
+        guard let clientID = GmailSync.clientID else { return record(outcome: .notSignedIn) }
 
         let tokenStore = KeychainTokenStore()
+        let tokens: OAuthTokens
+        var storeState: SyncStoreState
         do {
-            guard try tokenStore.load() != nil else {
-                return record(outcome: .notSignedIn)
+            guard let stored = try tokenStore.load() else { return record(outcome: .notSignedIn) }
+            tokens = stored
+            storeState = try SyncStorage.loadState()
+        } catch {
+            return record(outcome: .failed, errorMessage: Self.diagnostic(for: error))
+        }
+
+        let lastAttempt = trigger == .shortcut ? storeState.lastShortcutAttempt : nil
+        let lastCheck = [storeState.syncState.lastSyncAt, lastAttempt]
+            .compactMap { $0 }.filter { $0 <= startedAt }.max()
+        if minimumInterval > 0, let lastCheck,
+           (0..<minimumInterval).contains(startedAt.timeIntervalSince(lastCheck))
+        {
+            let committer = BatchCommitter(storeState: storeState, bundle: nil)
+            var alertError: String?
+            do {
+                try await committer.deliverAlerts(until: deadline)
+            } catch {
+                alertError = "Could not deliver or save payment alerts."
+            }
+            let outcome: SyncOutcome = Task.isCancelled ? .cancelled : .skipped
+            return record(outcome: outcome, notifiedCount: await committer.postedAlertCount, errorMessage: alertError)
+        }
+
+        let bundle: DataBundle?
+        do {
+            bundle = try BundleInbox.readStoredData().map { try DataBundle.decode(from: $0) }
+            if trigger == .shortcut {
+                // Throttle attempts, including timeouts and transient Gmail failures.
+                storeState.lastShortcutAttempt = startedAt
+                try SyncStorage.saveState(storeState)
             }
         } catch {
-            return record(outcome: .failed, errorMessage: error.localizedDescription)
+            return record(outcome: .failed, errorMessage: Self.diagnostic(for: error))
         }
-
-        var storeState = SyncStorage.loadState()
-        if minimumInterval > 0,
-           let lastSync = storeState.syncState.lastSyncAt,
-           startedAt.timeIntervalSince(lastSync) < minimumInterval
-        {
-            // Still retry any undelivered alerts from a previous run.
-            var notified = 0
-            var alertError: String?
-            if !storeState.alertQueue.isEmpty {
-                let delivery = await PaymentNotifications.deliver(queue: storeState.alertQueue)
-                notified = delivery.postedCount
-                alertError = delivery.errorMessage
-                if delivery.remaining != storeState.alertQueue {
-                    storeState.alertQueue = delivery.remaining
-                    try? SyncStorage.saveState(storeState)
-                }
-            }
-            return record(outcome: .skipped, notifiedCount: notified, errorMessage: alertError)
-        }
-
-        let bundle = BundleInbox.storedData().flatMap { try? DataBundle.decode(from: $0) }
         let committer = BatchCommitter(storeState: storeState, bundle: bundle)
 
         let config = URLSessionConfiguration.ephemeral
@@ -325,8 +411,16 @@ actor SyncEngine {
         var hitHardTimeout = false
 
         do {
-            let outcome = try await runWithTimeLimit(timeLimit) {
-                try await NoticeSync.sync(
+            let outcome = try await Self.runWithDeadline(deadline) {
+                if tokens.mailboxFingerprint == nil {
+                    let fingerprint = try await GmailSync.mailboxFingerprint(client: client)
+                    try Task.checkCancellation()
+                    if var latest = try tokenStore.load() {
+                        latest.mailboxFingerprint = fingerprint
+                        try tokenStore.save(latest)
+                    }
+                }
+                return try await NoticeSync.sync(
                     client: client,
                     state: initialSyncState,
                     lookbackDays: Self.lookbackDays,
@@ -346,7 +440,7 @@ actor SyncEngine {
             syncError = error
         }
 
-        if let syncResult, !syncResult.reachedDeadline {
+        if let syncResult, !syncResult.reachedDeadline, !Task.isCancelled {
             do {
                 try await committer.finalizeComplete(syncResult.state)
             } catch {
@@ -357,42 +451,30 @@ actor SyncEngine {
         let committedNotices = await committer.newNoticesCount
         let committedPayments = await committer.newPaymentsCount
         let committedAny = await committer.committedAnyBatch
-        let latestState = await committer.storeState
-
-        // Refresh the widget snapshot when a sync completed or committed batches.
-        let shouldPublishWidget = (syncResult != nil && syncError == nil) || committedAny
-        if shouldPublishWidget {
-            let now = Date()
-            if let bundle {
-                let finance = FinanceData(bundle: bundle, notices: latestState.notices, today: JST.day(now))
-                FinanceData.publishWidget(finance.widgetSnapshot, force: true)
-            } else {
-                FinanceData.publishWidget(
-                    FinanceData.noticeOnlySnapshot(notices: latestState.notices, now: now),
-                    force: true
-                )
+        var postProcessingError: String?
+        if !Task.isCancelled, (syncResult != nil || committedAny) {
+            do {
+                try publishCurrentWidget()
+            } catch {
+                postProcessingError = "Could not update the widget snapshot."
             }
         }
-
-        // Deliver queued alerts after commit (skipping only if externally cancelled).
-        var notifiedCount = 0
-        var notificationError: String?
-        if !(syncError is CancellationError) && !latestState.alertQueue.isEmpty {
-            let delivery = await PaymentNotifications.deliver(queue: latestState.alertQueue)
-            notifiedCount = delivery.postedCount
-            notificationError = delivery.errorMessage
-            await committer.updateAlertQueue(delivery.remaining)
+        do {
+            try await committer.deliverAlerts(until: deadline)
+        } catch {
+            postProcessingError = "Could not deliver or save payment alerts."
         }
+        let notifiedCount = await committer.postedAlertCount
 
+        if Task.isCancelled || syncError is CancellationError {
+            return record(
+                outcome: .cancelled,
+                newNotices: committedNotices,
+                newPayments: committedPayments,
+                notifiedCount: notifiedCount
+            )
+        }
         if let error = syncError {
-            if error is CancellationError {
-                return record(
-                    outcome: .cancelled,
-                    newNotices: committedNotices,
-                    newPayments: committedPayments,
-                    notifiedCount: notifiedCount
-                )
-            }
             if let clientError = error as? GmailClientError, clientError.requiresSignInAgain {
                 return record(
                     outcome: .signInRequired,
@@ -407,12 +489,12 @@ actor SyncEngine {
                 newNotices: committedNotices,
                 newPayments: committedPayments,
                 notifiedCount: notifiedCount,
-                errorMessage: error.localizedDescription
+                errorMessage: Self.diagnostic(for: error)
             )
         }
 
-        if hitHardTimeout || syncResult?.reachedDeadline == true {
-            let message = notificationError ?? "Time limit reached; progress saved"
+        if hitHardTimeout || syncResult?.reachedDeadline == true || deadline.map({ ContinuousClock.now >= $0 }) == true {
+            let message = postProcessingError ?? "Time limit reached; progress saved"
             return record(
                 outcome: .timedOut,
                 newNotices: committedNotices,
@@ -427,18 +509,29 @@ actor SyncEngine {
             newNotices: committedNotices,
             newPayments: committedPayments,
             notifiedCount: notifiedCount,
-            errorMessage: notificationError
+            errorMessage: postProcessingError
         )
     }
 
-    private static func runWithTimeLimit<T: Sendable>(
-        _ timeLimit: TimeInterval?,
+    // The run log stays local and never persists raw server text or request URLs.
+    private static func diagnostic(for error: any Error) -> String {
+        guard let error = error as? GmailClientError else {
+            return "Could not read or save Gmail sync data."
+        }
+        switch error {
+        case .httpError(let status, _): return "Gmail request failed (HTTP \(status))."
+        case .tokenRefreshFailed: return "Could not refresh the Google access token."
+        case .networkError: return "Could not reach Gmail."
+        default: return error.localizedDescription
+        }
+    }
+
+    private static func runWithDeadline<T: Sendable>(
+        _ deadline: ContinuousClock.Instant?,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T? {
-        guard let timeLimit, timeLimit > 0 else {
-            return try await operation()
-        }
-        return try await withTaskGroup(of: RaceOutcome<T>.self) { group in
+        guard let deadline else { return try await operation() }
+        let first = await withTaskGroup(of: RaceOutcome<T>.self) { group in
             group.addTask {
                 do {
                     return .finished(.success(try await operation()))
@@ -448,27 +541,24 @@ actor SyncEngine {
             }
             group.addTask {
                 do {
-                    try await Task.sleep(for: .seconds(timeLimit))
+                    try await Task.sleep(until: deadline, clock: .continuous)
                     return .timedOut
                 } catch {
                     return .finished(.failure(CancellationError()))
                 }
             }
 
-            guard let first = await group.next() else {
-                throw CancellationError()
-            }
+            let first = await group.next()
             group.cancelAll()
-            _ = await group.next()
-
-            switch first {
-            case .timedOut:
-                return nil
-            case .finished(.success(let value)):
-                return value
-            case .finished(.failure(let error)):
-                throw error
-            }
+            // The task group joins the cancelled child before returning. No
+            // subsequent run can race a late batch commit or token refresh.
+            return first
+        }
+        try Task.checkCancellation()
+        switch first {
+        case .timedOut: return nil
+        case .finished(let result): return try result.get()
+        case nil: throw CancellationError()
         }
     }
 }

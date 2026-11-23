@@ -3,7 +3,7 @@ import UserNotifications
 
 @main
 struct FinanceApp: App {
-    init() {
+    @MainActor init() {
         PaymentNotifications.registerCategory()
         UNUserNotificationCenter.current().delegate = ForegroundNotifications.shared
         BackgroundRefresh.register()

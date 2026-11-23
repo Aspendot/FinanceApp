@@ -21,7 +21,7 @@ final class AppModel: ObservableObject {
         guard generation == reloadGeneration else { return }
         data = latest
         runLog = SyncStorage.loadRunLog()
-        if let latest { FinanceData.publishWidget(latest.widgetSnapshot) }
+        try? await SyncEngine.shared.publishCurrentWidget()
     }
 
     func refreshRunLog() {

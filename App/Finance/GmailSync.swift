@@ -1,3 +1,4 @@
+import CryptoKit
 import FinanceCore
 import FinanceSync
 import Foundation
@@ -9,8 +10,7 @@ import Foundation
 /// Incremental syncs run through `SyncEngine`.
 @MainActor
 enum GmailSync {
-    private static let clientIDKey = "googleClientID"
-    private static var busy = false
+    private nonisolated static let clientIDKey = "googleClientID"
     private static let transport = URLSessionHTTPTransport(session: URLSession(configuration: .ephemeral))
 
     nonisolated static var clientID: String? {
@@ -24,17 +24,33 @@ enum GmailSync {
 
     /// Runs Google's sign-in sheet and stores the OAuth tokens.
     static func signIn(clientID input: String) async throws {
-        guard !busy, !(await SyncEngine.shared.isBusy()) else { throw SyncProblem.busy }
-        try Task.checkCancellation()
-        busy = true
-        defer { busy = false }
+        try await SyncEngine.shared.withSignIn {
+            try await authorize(clientID: input)
+        }
+    }
 
+    private static func authorize(clientID input: String) async throws {
+        try Task.checkCancellation()
         let requestedID = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedID.isEmpty else { throw SyncProblem.noClientID }
         let store = KeychainTokenStore()
         let currentID = clientID
-        if try store.load() != nil, let currentID, currentID != requestedID {
+        let currentTokens = try store.load()
+        if currentTokens != nil, let currentID, currentID != requestedID {
             throw SyncProblem.signOutBeforeChangingClientID
+        }
+        var currentMailbox = currentTokens?.mailboxFingerprint
+        if currentMailbox == nil, let currentTokens, let currentID {
+            let client = GmailClient(
+                clientID: currentID,
+                tokenStore: InMemoryTokenStore(tokens: currentTokens),
+                transport: transport
+            )
+            do {
+                currentMailbox = try await mailboxFingerprint(client: client)
+            } catch let error as GmailClientError where error.requiresSignInAgain {
+                // Older versions did not store a mailbox binding.
+            }
         }
         let pkce = try PKCE.generate()
         let state = GoogleOAuth.generateState()
@@ -44,44 +60,62 @@ enum GmailSync {
             callbackScheme: try GoogleOAuth.reversedClientID(for: requestedID)
         )
         let code = try GoogleOAuth.parseCallback(callback, expectedState: state)
-        let tokens = try await GoogleOAuth.exchangeAuthorizationCode(
+        let exchanged = try await GoogleOAuth.exchangeAuthorizationCode(
             clientID: requestedID,
             code: code,
             codeVerifier: pkce.verifier,
             redirectURI: try GoogleOAuth.redirectURI(for: requestedID),
             transport: transport
         )
-        try Task.checkCancellation()
-        // Re-signing in with the same client ID (for example after invalid_grant)
-        // preserves previously stored notices.
-        if currentID != requestedID {
-            SyncStorage.clearState()
+        let candidate = InMemoryTokenStore(tokens: exchanged)
+        let client = GmailClient(
+            clientID: requestedID,
+            tokenStore: candidate,
+            transport: transport
+        )
+        let mailbox = try await mailboxFingerprint(client: client)
+        if let currentMailbox, currentMailbox != mailbox {
+            throw SyncProblem.signOutBeforeChangingMailbox
         }
+        var tokens = try await candidate.load() ?? exchanged
+        try Task.checkCancellation()
+        if currentTokens == nil {
+            try SyncStorage.clearState()
+        }
+        if tokens.refreshToken == nil, currentMailbox == mailbox {
+            tokens.refreshToken = currentTokens?.refreshToken
+        }
+        tokens.mailboxFingerprint = mailbox
         UserDefaults.standard.set(requestedID, forKey: clientIDKey)
         try store.save(tokens)
     }
 
     static func signOut() async throws {
-        guard !busy else { throw SyncProblem.busy }
-        busy = true
-        defer { busy = false }
         try await SyncEngine.shared.clearForSignOut()
     }
 
+    nonisolated static func mailboxFingerprint(client: GmailClient) async throws -> String {
+        let address = try await client.profileEmail()
+        return Data(SHA256.hash(data: Data(address.lowercased().utf8))).base64EncodedString()
+    }
+
     nonisolated static func recentNotices() -> [Notice] {
-        SyncStorage.loadState().notices
+        guard (try? hasCredentials()) == true else { return [] }
+        return (try? SyncStorage.loadState().notices) ?? []
     }
 
     enum SyncProblem: LocalizedError, Sendable {
         case noClientID
         case busy
         case signOutBeforeChangingClientID
+        case signOutBeforeChangingMailbox
 
         var errorDescription: String? {
             switch self {
             case .noClientID: return "Paste the Google iOS client ID first."
             case .busy: return "Wait for the current Gmail operation to finish."
             case .signOutBeforeChangingClientID: return "Sign out before changing the Google client ID."
+            case .signOutBeforeChangingMailbox: return "Sign out before switching Gmail accounts."
             }
         }
     }
