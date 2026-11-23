@@ -397,6 +397,26 @@ public struct RuleSet: Codable, Sendable, Equatable {
     }
 }
 
+/// Data-driven rule for extracting an optional approval/reference number and/or merchant
+/// prefix from a bank statement description during notice matching.
+///
+/// Display text always keeps the statement description verbatim; these capture groups are
+/// used only for matching card/debit notices to bank rows.
+public struct StatementLineRule: Codable, Sendable, Equatable {
+    /// Regular expression matched against the bank transaction description.
+    public var pattern: String
+    /// 1-based capture group index for an approval or reference number, if present.
+    public var referenceGroup: Int?
+    /// 1-based capture group index for a merchant name or prefix, if present.
+    public var merchantGroup: Int?
+
+    public init(pattern: String, referenceGroup: Int? = nil, merchantGroup: Int? = nil) {
+        self.pattern = pattern
+        self.referenceGroup = referenceGroup
+        self.merchantGroup = merchantGroup
+    }
+}
+
 /// Private budget snapshot exported by the PC pipeline and imported on the phone.
 public struct DataBundle: Codable, Sendable, Equatable {
     public static let supportedFormat = "finance-bundle/1"
@@ -419,6 +439,12 @@ public struct DataBundle: Codable, Sendable, Equatable {
     public var rules: RuleSet
     /// Categories whose payment notifications omit the shop name.
     public var discreetCategories: [String]?
+    /// Maps a notice source key to additional confirmed statement/bank source keys
+    /// whose rows can settle its notices (e.g. a card notice source -> bank source).
+    public var noticeSourceMatches: [String: [String]]?
+    /// Optional per-source regex rules for extracting reference numbers and merchant
+    /// prefixes from bank statement descriptions when matching notices.
+    public var statementLineRules: [String: [StatementLineRule]]?
 
     public init(
         format: String = DataBundle.supportedFormat,
@@ -437,7 +463,9 @@ public struct DataBundle: Codable, Sendable, Equatable {
         layers: [LayerDefinition] = [],
         layerConfig: LayerConfig = LayerConfig(),
         rules: RuleSet = RuleSet(),
-        discreetCategories: [String]? = nil
+        discreetCategories: [String]? = nil,
+        noticeSourceMatches: [String: [String]]? = nil,
+        statementLineRules: [String: [StatementLineRule]]? = nil
     ) {
         self.format = format
         self.generatedAt = generatedAt
@@ -456,12 +484,14 @@ public struct DataBundle: Codable, Sendable, Equatable {
         self.layerConfig = layerConfig
         self.rules = rules
         self.discreetCategories = discreetCategories
+        self.noticeSourceMatches = noticeSourceMatches
+        self.statementLineRules = statementLineRules
     }
 
     private enum CodingKeys: String, CodingKey {
         case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
         case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
-        case discreetCategories
+        case discreetCategories, noticeSourceMatches, statementLineRules
     }
 
     public init(from decoder: Decoder) throws {
@@ -487,6 +517,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
         layerConfig = try c.decodeIfPresent(LayerConfig.self, forKey: .layerConfig) ?? LayerConfig()
         rules = try c.decodeIfPresent(RuleSet.self, forKey: .rules) ?? RuleSet()
         discreetCategories = try c.decodeIfPresent([String].self, forKey: .discreetCategories)
+        noticeSourceMatches = try c.decodeIfPresent([String: [String]].self, forKey: .noticeSourceMatches)
+        statementLineRules = try c.decodeIfPresent([String: [StatementLineRule]].self, forKey: .statementLineRules)
     }
 
     /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.
