@@ -31,7 +31,7 @@ struct SpikeView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        Group {
             List {
                 Section("Data file") {
                     Text(dataResult).font(.footnote).foregroundStyle(.secondary)

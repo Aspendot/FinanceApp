@@ -10,7 +10,7 @@ struct FinanceApp: App {
 
     var body: some Scene {
         WindowGroup {
-            SpikeView()
+            RootView()
         }
     }
 }

@@ -18,6 +18,29 @@ finance-feed: notice emails in, notice lines and a match report out.
       For writing parsers on a private machine; it prints email content.
 """
 
+/// Loads a data file and prints what the app would compute from it, to compare with
+/// the dashboard on a private machine. It prints amounts, so run it only there.
+func bundleCheck(_ path: String, _ today: String) throws {
+    let bundle = try DataBundle.decode(from: Data(contentsOf: URL(fileURLWithPath: path)))
+    let categorizer = Categorizer(rules: bundle.rules)
+    print("format \(bundle.format) · statements through \(bundle.asOf) · \(bundle.items.count) items · \(bundle.timeline.count) timeline entries")
+    print("rules: \(bundle.rules.rules.count), invalid \(categorizer.invalidRuleIndexes); amount rules invalid \(categorizer.invalidAmountRuleIndexes)")
+    let months = MonthTotals.compute(items: bundle.items, config: bundle.layerConfig, layers: bundle.layers)
+    for month in months.keys.sorted().suffix(4) {
+        guard let t = months[month] else { continue }
+        print("\(month): spending \(t.total) · income \(t.income) · people \(t.people) · debt \(t.debt) · left \(t.left)")
+    }
+    if let p = PaydayView.compute(timeline: bundle.timeline, today: today) {
+        print("payday in \(p.daysToPayday) days: money in \(p.inSum) · bills \(p.outSum) · left \(p.left) · borrowing \(p.borrowedSum) · left if borrowed \(p.leftIfBorrowed)")
+    }
+    var agree = 0, differ: [String: Int] = [:]
+    for item in bundle.items {
+        let (group, category) = categorizer.categorize(merchant: item.merchant, amount: item.amount, date: item.date)
+        if group == item.group && category == item.category { agree += 1 } else { differ[item.source, default: 0] += 1 }
+    }
+    print("categorizer vs the PC's categories: \(agree) agree; differ by source: \(differ.sorted { $0.key < $1.key })")
+}
+
 func show(_ path: String) throws {
     let gmail = try JSONDecoder().decode(GmailMessage.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
     let mail = MailMessage(gmail: gmail)
@@ -148,6 +171,7 @@ do {
     case ("parse", 4): try parse(args[1], args[2], args[3])
     case ("match", 5): try match(args[1], args[2], args[3], args[4])
     case ("show", 2): try show(args[1])
+    case ("bundle", 3): try bundleCheck(args[1], args[2])
     default: fail(usage)
     }
 } catch {

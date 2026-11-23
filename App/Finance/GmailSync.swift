@@ -88,17 +88,22 @@ enum GmailSync {
         loadCache().notices
     }
 
+    /// With a data file, the widget shows what's left until payday; without one, the
+    /// total of the last week's card notices.
     private static func updateWidget(with notices: [Notice]) {
+        if BundleInbox.storedData() != nil {
+            FinanceData.refreshWidget()
+            return
+        }
         let now = Date()
         let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
         let amounts = notices.filter {
             $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
         }.compactMap(\.amount)
-        let total = amounts.reduce(Decimal.zero) { $0 + Decimal($1) }
         SharedStore.write(WidgetSnapshot(
-            title: "7-day card notice total",
-            value: "?" + total.formatted(),
-            detail: "\(amounts.count) notices ? " + now.formatted(date: .abbreviated, time: .shortened),
+            title: "Card notices, 7 days",
+            value: "¥" + amounts.reduce(0, +).formatted(),
+            detail: "\(amounts.count) notices · " + now.formatted(date: .abbreviated, time: .shortened),
             updatedAt: now))
         WidgetCenter.shared.reloadAllTimelines()
     }
