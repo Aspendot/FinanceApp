@@ -55,6 +55,15 @@ jobs:
           "$RUNNER_TEMP/ldid" -S"App/Finance/Finance.entitlements" "$APP/Finance"
           "$RUNNER_TEMP/ldid" -e "$APP/Finance"
           "$RUNNER_TEMP/ldid" -e "$APP/PlugIns/FinanceWidget.appex/FinanceWidget"
+          # SideStore refuses an update whose versions differ from the source, so check them here.
+          for plist in "$APP/Info.plist" "$APP/PlugIns/FinanceWidget.appex/Info.plist"; do
+            short=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+            build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
+            echo "$plist: $short ($build)"
+            if [[ "$GITHUB_REF" == refs/tags/ios-v* ]]; then
+              test "$short" = "${GITHUB_REF_NAME#ios-v}" && test "$build" = "$GITHUB_RUN_NUMBER"
+            fi
+          done
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Finance.ipa" Payload)
