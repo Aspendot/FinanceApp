@@ -1,0 +1,146 @@
+name: iOS screenshots
+
+on:
+  push:
+    branches: ["neon/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  screenshots:
+    name: Capture demo screenshots (iOS Simulator)
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Use Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
+      - name: Install XcodeGen 2.48.0 (checksum-pinned)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.48.0/xcodegen.zip
+          echo "620c9f0dc10849f94728ab5df52d225ebab8187439dd6fee1925e59e80dff892  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+
+      - name: Generate the Xcode project
+        working-directory: App
+        run: xcodegen generate
+
+      - name: Select and boot an iPhone Simulator
+        run: |
+          set -euo pipefail
+          UDID=$(python3 - <<'EOF'
+          import json, subprocess, sys
+
+          data = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"], text=True
+          ))
+          ios_runtimes = sorted(
+              (r for r in data["devices"] if "iOS" in r),
+              reverse=True,
+          )
+          preferred = [
+              "iPhone 17",
+              "iPhone 17 Pro",
+              "iPhone 17e",
+              "iPhone 16",
+              "iPhone 16 Pro",
+          ]
+          candidates = []
+          for runtime in ios_runtimes:
+              for dev in data["devices"][runtime]:
+                  if dev.get("isAvailable") and "iPhone" in dev.get("name", ""):
+                      candidates.append((runtime, dev["name"], dev["udid"]))
+
+          for want in preferred:
+              for _, name, udid in candidates:
+                  if name == want:
+                      print(udid)
+                      sys.exit(0)
+          if candidates:
+              print(candidates[0][2])
+              sys.exit(0)
+          sys.stderr.write("No available iPhone Simulator found.\n")
+          sys.exit(1)
+          EOF
+          )
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$UDID" || true
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl status_bar "$UDID" override \
+            --time "9:41" \
+            --dataNetwork wifi \
+            --wifiMode active \
+            --wifiBars 3 \
+            --cellularMode active \
+            --cellularBars 4 \
+            --batteryState charged \
+            --batteryLevel 100 || true
+
+      - name: Build for iOS Simulator
+        working-directory: App
+        run: |
+          set -euo pipefail
+          xcodebuild -quiet -project FinanceiOS.xcodeproj -scheme Finance -configuration Debug \
+            -sdk iphonesimulator -destination "id=$SIM_UDID" -derivedDataPath "$RUNNER_TEMP/dd-sim" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+          test -d "$RUNNER_TEMP/dd-sim/Build/Products/Debug-iphonesimulator/Finance.app"
+
+      - name: Install app and capture screenshots
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/dd-sim/Build/Products/Debug-iphonesimulator/Finance.app"
+          BUNDLE_ID="io.github.aspendot.financeapp"
+          mkdir -p screenshots
+
+          xcrun simctl install "$SIM_UDID" "$APP"
+
+          capture() {
+            local name="$1"
+            local screen="$2"
+            local appearance="$3"
+            local content_size="$4"
+
+            xcrun simctl terminate "$SIM_UDID" "$BUNDLE_ID" 2>/dev/null || true
+            xcrun simctl ui "$SIM_UDID" appearance "$appearance"
+            xcrun simctl ui "$SIM_UDID" content_size "$content_size"
+            sleep 1
+            xcrun simctl launch "$SIM_UDID" "$BUNDLE_ID" -demo -screen "$screen"
+            sleep 3
+            xcrun simctl io "$SIM_UDID" screenshot "screenshots/${name}.png"
+            test -s "screenshots/${name}.png"
+            echo "Captured screenshots/${name}.png"
+          }
+
+          for screen in now payments months more; do
+            capture "${screen}-light" "$screen" light large
+            capture "${screen}-dark" "$screen" dark large
+          done
+
+          capture "now-light-ax5" now light accessibility-extra-extra-extra-large
+          capture "payments-light-ax5" payments light accessibility-extra-extra-extra-large
+
+          ls -lh screenshots
+
+      - name: Shut down simulator
+        if: always() && env.SIM_UDID != ''
+        run: xcrun simctl shutdown "$SIM_UDID" || true
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-screenshots
+          path: screenshots/*.png
+          retention-days: 14
+          if-no-files-found: error
