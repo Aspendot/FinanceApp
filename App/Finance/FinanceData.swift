@@ -13,6 +13,8 @@ struct FinanceData: Sendable {
     let lastPayday: String?
     let spentSincePayday: Int?
     let pendingSincePayday: Int
+    /// All pending payments built from bank emails.
+    let pendingCount: Int
     let months: [String]
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
 
@@ -29,6 +31,7 @@ struct FinanceData: Sendable {
         let result = PendingBuilder.build(notices: notices, bundle: bundle,
                                           categorizer: Categorizer(rules: bundle.rules), config: config)
         unmatched = result.unmatched
+        pendingCount = result.items.count
         let items = bundle.items + result.items
 
         let upcoming = PaydayView.compute(timeline: bundle.timeline, today: today)

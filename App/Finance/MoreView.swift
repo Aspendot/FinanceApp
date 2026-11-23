@@ -12,7 +12,7 @@ struct MoreView: View {
                         LabeledContent("Statements through", value: DayText.long(data.bundle.asOf))
                         LabeledContent("File made", value: String(data.bundle.generatedAt.prefix(16)).replacingOccurrences(of: "T", with: " "))
                         LabeledContent("Payments from statements", value: data.bundle.items.count.formatted())
-                        LabeledContent("Pending from bank emails", value: data.pending.count.formatted())
+                        LabeledContent("Pending from bank emails", value: data.pendingCount.formatted())
                     } else {
                         Text("No data file yet").foregroundStyle(.secondary)
                     }
