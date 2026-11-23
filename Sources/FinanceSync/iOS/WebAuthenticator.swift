@@ -35,8 +35,14 @@ public enum WebAuthenticatorError: Error, LocalizedError, Equatable, Sendable {
 @MainActor
 public final class WebAuthenticator {
     private let anchorProvider: @MainActor () -> ASPresentationAnchor
-    private var activeSession: ASWebAuthenticationSession?
-    private var activeContextProvider: PresentationContextProvider?
+    private struct Attempt {
+        let id: UUID
+        let session: ASWebAuthenticationSession
+        let contextProvider: PresentationContextProvider
+        let continuation: CheckedContinuation<URL, any Error>
+    }
+
+    private var activeAttempt: Attempt?
 
     /// Creates a web authenticator with an optional presentation anchor provider.
     public init(anchorProvider: (@MainActor () -> ASPresentationAnchor)? = nil) {
@@ -49,63 +55,69 @@ public final class WebAuthenticator {
         authURL: URL,
         callbackScheme: String
     ) async throws -> URL {
-        if Task.isCancelled {
-            throw WebAuthenticatorError.cancelled
-        }
+        guard activeAttempt == nil else { throw WebAuthenticatorError.failedToStart }
+        let id = UUID()
         let contextProvider = PresentationContextProvider(anchorProvider: anchorProvider)
 
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: WebAuthenticatorError.cancelled)
+                    return
+                }
+
                 let session = ASWebAuthenticationSession(
                     url: authURL,
                     callbackURLScheme: callbackScheme
-                ) { [weak self] callbackURL, error in
-                    Task { @MainActor [weak self] in
-                        self?.activeSession = nil
-                        self?.activeContextProvider = nil
-
+                ) { @Sendable [weak self] callbackURL, error in
+                    Task { @MainActor in
                         if let error {
-                            if let authError = error as? ASWebAuthenticationSessionError,
-                               authError.code == .canceledLogin
-                            {
-                                continuation.resume(throwing: WebAuthenticatorError.cancelled)
+                            let problem: WebAuthenticatorError
+                            if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
+                                problem = .cancelled
                             } else {
-                                continuation.resume(
-                                    throwing: WebAuthenticatorError.sessionFailed(error.localizedDescription)
-                                )
+                                problem = .sessionFailed(error.localizedDescription)
                             }
-                            return
+                            self?.finish(id, with: .failure(problem))
+                        } else if let callbackURL {
+                            self?.finish(id, with: .success(callbackURL))
+                        } else {
+                            self?.finish(id, with: .failure(WebAuthenticatorError.missingCallbackURL))
                         }
-
-                        guard let callbackURL else {
-                            continuation.resume(throwing: WebAuthenticatorError.missingCallbackURL)
-                            return
-                        }
-                        continuation.resume(returning: callbackURL)
                     }
                 }
 
                 session.prefersEphemeralWebBrowserSession = false
                 session.presentationContextProvider = contextProvider
-
-                self.activeSession = session
-                self.activeContextProvider = contextProvider
+                activeAttempt = Attempt(id: id, session: session, contextProvider: contextProvider, continuation: continuation)
 
                 if !session.start() {
-                    self.activeSession = nil
-                    self.activeContextProvider = nil
-                    continuation.resume(throwing: WebAuthenticatorError.failedToStart)
+                    finish(id, with: .failure(WebAuthenticatorError.failedToStart))
                 }
             }
         } onCancel: {
             Task { @MainActor [weak self] in
-                self?.activeSession?.cancel()
+                self?.cancel(id)
             }
         }
     }
 
+    private func finish(_ id: UUID, with result: Result<URL, any Error>) {
+        guard let attempt = activeAttempt, attempt.id == id else { return }
+        activeAttempt = nil
+        attempt.continuation.resume(with: result)
+    }
+
+    private func cancel(_ id: UUID) {
+        guard let attempt = activeAttempt, attempt.id == id else { return }
+        attempt.session.cancel()
+        finish(id, with: .failure(WebAuthenticatorError.cancelled))
+    }
+
     private static func defaultPresentationAnchor() -> ASPresentationAnchor {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scenes = UIApplication.shared.connectedScenes
+            .filter { $0.activationState == .foregroundActive }
+            .compactMap { $0 as? UIWindowScene }
         if let keyWindow = scenes.flatMap(\.windows).first(where: \.isKeyWindow) {
             return keyWindow
         }
