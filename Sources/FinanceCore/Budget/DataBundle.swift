@@ -1,0 +1,495 @@
+import Foundation
+
+/// Errors thrown while decoding or validating a `DataBundle`.
+public enum DataBundleError: Error, LocalizedError, Equatable, Sendable {
+    /// The bundle declared a format version other than `DataBundle.supportedFormat`.
+    case unsupportedFormat(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedFormat(let format):
+            return "Unsupported bundle format \"\(format)\"; expected \"\(DataBundle.supportedFormat)\"."
+        }
+    }
+}
+
+/// Inclusive "YYYY-MM-DD" coverage window for one statement source.
+public struct CoverageRange: Codable, Sendable, Equatable {
+    public var start: String
+    public var end: String
+
+    public init(start: String, end: String) {
+        self.start = start
+        self.end = end
+    }
+}
+
+/// One spending, income or transfer line item in the budget.
+///
+/// Amounts are whole yen; positive is money out and negative is money in.
+public struct BudgetItem: Codable, Sendable, Equatable {
+    public var date: String
+    public var source: String
+    public var merchant: String
+    public var amount: Int
+    public var group: String
+    public var category: String
+    public var layer: String?
+    /// True when built from a live notice rather than a statement bundle.
+    public var isPending: Bool
+
+    public init(
+        date: String,
+        source: String,
+        merchant: String,
+        amount: Int,
+        group: String,
+        category: String,
+        layer: String? = nil,
+        isPending: Bool = false
+    ) {
+        self.date = date
+        self.source = source
+        self.merchant = merchant
+        self.amount = amount
+        self.group = group
+        self.category = category
+        self.layer = layer
+        self.isPending = isPending
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case date, source, merchant, amount, group, category, layer, isPending
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(String.self, forKey: .date)
+        source = try c.decode(String.self, forKey: .source)
+        merchant = try c.decode(String.self, forKey: .merchant)
+        amount = try c.decode(Int.self, forKey: .amount)
+        group = try c.decode(String.self, forKey: .group)
+        category = try c.decode(String.self, forKey: .category)
+        layer = try c.decodeIfPresent(String.self, forKey: .layer)
+        isPending = try c.decodeIfPresent(Bool.self, forKey: .isPending) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(date, forKey: .date)
+        try c.encode(source, forKey: .source)
+        try c.encode(merchant, forKey: .merchant)
+        try c.encode(amount, forKey: .amount)
+        try c.encode(group, forKey: .group)
+        try c.encode(category, forKey: .category)
+        try c.encodeIfPresent(layer, forKey: .layer)
+        if isPending {
+            try c.encode(true, forKey: .isPending)
+        }
+    }
+}
+
+/// One scheduled or past event on the cashflow timeline.
+///
+/// Negative amounts are money in; positive amounts are money out.
+public struct TimelineEntry: Codable, Sendable, Equatable {
+    public var date: String
+    public var item: String
+    public var amount: Int
+    public var note: String?
+    public var payday: Bool?
+    public var done: Bool?
+    public var next: Bool?
+    public var borrowed: Bool?
+    public var estimate: Bool?
+    public var event: Bool?
+    public var label: String?
+
+    public init(
+        date: String,
+        item: String,
+        amount: Int,
+        note: String? = nil,
+        payday: Bool? = nil,
+        done: Bool? = nil,
+        next: Bool? = nil,
+        borrowed: Bool? = nil,
+        estimate: Bool? = nil,
+        event: Bool? = nil,
+        label: String? = nil
+    ) {
+        self.date = date
+        self.item = item
+        self.amount = amount
+        self.note = note
+        self.payday = payday
+        self.done = done
+        self.next = next
+        self.borrowed = borrowed
+        self.estimate = estimate
+        self.event = event
+        self.label = label
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        date = try c.decode(String.self, forKey: .date)
+        item = try c.decode(String.self, forKey: .item)
+        amount = try c.decodeIfPresent(Int.self, forKey: .amount) ?? 0
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+        payday = try c.decodeIfPresent(Bool.self, forKey: .payday)
+        done = try c.decodeIfPresent(Bool.self, forKey: .done)
+        next = try c.decodeIfPresent(Bool.self, forKey: .next)
+        borrowed = try c.decodeIfPresent(Bool.self, forKey: .borrowed)
+        estimate = try c.decodeIfPresent(Bool.self, forKey: .estimate)
+        event = try c.decodeIfPresent(Bool.self, forKey: .event)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+    }
+}
+
+/// One debt balance tracked in the bundle.
+public struct DebtEntry: Codable, Sendable, Equatable {
+    public var name: String
+    public var balance: Int
+    public var limit: Int?
+    public var lines: [String]?
+
+    public init(name: String, balance: Int, limit: Int? = nil, lines: [String]? = nil) {
+        self.name = name
+        self.balance = balance
+        self.limit = limit
+        self.lines = lines
+    }
+}
+
+/// One recurring subscription entry in the bundle.
+public struct SubscriptionEntry: Codable, Sendable, Equatable {
+    public var name: String
+    public var monthly: Int
+    public var via: String?
+    public var status: String?
+
+    public init(name: String, monthly: Int, via: String? = nil, status: String? = nil) {
+        self.name = name
+        self.monthly = monthly
+        self.via = via
+        self.status = status
+    }
+}
+
+/// One category target in the monthly spending plan.
+public struct PlanEntry: Codable, Sendable, Equatable {
+    public var category: String
+    public var now: Int
+    public var target: Int?
+    public var status: String
+    public var note: String?
+
+    public init(category: String, now: Int, target: Int? = nil, status: String, note: String? = nil) {
+        self.category = category
+        self.now = now
+        self.target = target
+        self.status = status
+        self.note = note
+    }
+}
+
+/// Display key and color for one spending layer.
+public struct LayerDefinition: Codable, Sendable, Equatable {
+    public var key: String
+    public var color: String
+
+    public init(key: String, color: String) {
+        self.key = key
+        self.color = color
+    }
+}
+
+/// Rules that map an item's group and category to a spending layer or a non-spending bucket.
+///
+/// The four spending layer keys correspond in order to `layers` from the bundle:
+/// rent, bills, subscriptions and day-to-day. When fewer than four layer definitions
+/// are supplied, `defaultLayerKeys` ("Rent", "Bills & taxes", "Subscriptions", "Day-to-day")
+/// is used.
+public struct LayerConfig: Codable, Sendable, Equatable {
+    public static let defaultLayerKeys = ["Rent", "Bills & taxes", "Subscriptions", "Day-to-day"]
+
+    public var notSpendingGroups: [String]
+    public var rentCategories: [String]
+    public var billGroups: [String]
+    public var subscriptionGroups: [String]
+    public var subscriptionCategories: [String]
+    /// Group name used for income in `MonthTotals`. Falls back to the first of `notSpendingGroups`.
+    public var incomeGroup: String?
+    /// Group name used for people transfers in `MonthTotals`.
+    public var peopleGroup: String?
+    /// Group name used for debt payments in `MonthTotals`.
+    public var debtGroup: String?
+
+    public init(
+        notSpendingGroups: [String] = [],
+        rentCategories: [String] = [],
+        billGroups: [String] = [],
+        subscriptionGroups: [String] = [],
+        subscriptionCategories: [String] = [],
+        incomeGroup: String? = nil,
+        peopleGroup: String? = nil,
+        debtGroup: String? = nil
+    ) {
+        self.notSpendingGroups = notSpendingGroups
+        self.rentCategories = rentCategories
+        self.billGroups = billGroups
+        self.subscriptionGroups = subscriptionGroups
+        self.subscriptionCategories = subscriptionCategories
+        self.incomeGroup = incomeGroup
+        self.peopleGroup = peopleGroup
+        self.debtGroup = debtGroup
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case notSpendingGroups, rentCategories, billGroups, subscriptionGroups, subscriptionCategories
+        case incomeGroup, peopleGroup, debtGroup
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        notSpendingGroups = try c.decodeIfPresent([String].self, forKey: .notSpendingGroups) ?? []
+        rentCategories = try c.decodeIfPresent([String].self, forKey: .rentCategories) ?? []
+        billGroups = try c.decodeIfPresent([String].self, forKey: .billGroups) ?? []
+        subscriptionGroups = try c.decodeIfPresent([String].self, forKey: .subscriptionGroups) ?? []
+        subscriptionCategories = try c.decodeIfPresent([String].self, forKey: .subscriptionCategories) ?? []
+        incomeGroup = try c.decodeIfPresent(String.self, forKey: .incomeGroup)
+        peopleGroup = try c.decodeIfPresent(String.self, forKey: .peopleGroup)
+        debtGroup = try c.decodeIfPresent(String.self, forKey: .debtGroup)
+    }
+
+    /// Returns the spending layer key for an item, or nil when it is not spending.
+    ///
+    /// Pass `layers` from `DataBundle.layers` to read the four layer keys in order
+    /// (rent, bills, subscriptions, day-to-day) instead of using `defaultLayerKeys`.
+    public func layer(for item: BudgetItem, layers: [LayerDefinition] = []) -> String? {
+        layer(group: item.group, category: item.category, layers: layers)
+    }
+
+    /// Returns the spending layer key for a group and category, or nil when not spending.
+    public func layer(group: String, category: String, layers: [LayerDefinition] = []) -> String? {
+        if isNotSpending(group: group) {
+            return nil
+        }
+        let keys = layers.count >= 4 ? layers.prefix(4).map(\.key) : Self.defaultLayerKeys
+        if rentCategories.contains(category) {
+            return keys[0]
+        }
+        if billGroups.contains(group) {
+            return keys[1]
+        }
+        if subscriptionGroups.contains(group) || subscriptionCategories.contains(category) {
+            return keys[2]
+        }
+        return keys[3]
+    }
+
+    func isNotSpending(group: String) -> Bool {
+        notSpendingGroups.contains(group)
+            || group == incomeGroup
+            || group == peopleGroup
+            || group == debtGroup
+    }
+
+    var resolvedIncomeGroup: String? {
+        incomeGroup ?? notSpendingGroups.first
+    }
+
+    func resolvedLayer(for item: BudgetItem, layers: [LayerDefinition] = []) -> String? {
+        if isNotSpending(group: item.group) {
+            return nil
+        }
+        if let explicit = item.layer, !explicit.isEmpty {
+            return explicit
+        }
+        return layer(group: item.group, category: item.category, layers: layers)
+    }
+}
+
+/// A regex rule that maps a merchant name to a group and category.
+public struct CategoryRule: Codable, Sendable, Equatable {
+    public var pattern: String
+    public var group: String
+    public var category: String
+
+    public init(pattern: String, group: String, category: String) {
+        self.pattern = pattern
+        self.group = group
+        self.category = category
+    }
+}
+
+/// An override rule that refines a base category by amount, merchant pattern or date.
+public struct AmountRule: Codable, Sendable, Equatable {
+    public var whenCategory: String?
+    public var merchantPattern: String?
+    public var minAmount: Int?
+    public var maxAmount: Int?
+    public var fromDate: String?
+    public var group: String
+    public var category: String
+
+    public init(
+        whenCategory: String? = nil,
+        merchantPattern: String? = nil,
+        minAmount: Int? = nil,
+        maxAmount: Int? = nil,
+        fromDate: String? = nil,
+        group: String,
+        category: String
+    ) {
+        self.whenCategory = whenCategory
+        self.merchantPattern = merchantPattern
+        self.minAmount = minAmount
+        self.maxAmount = maxAmount
+        self.fromDate = fromDate
+        self.group = group
+        self.category = category
+    }
+}
+
+/// A group and category pair assigned to a merchant.
+public struct CategoryPair: Codable, Sendable, Equatable {
+    public var group: String
+    public var category: String
+
+    public init(group: String, category: String) {
+        self.group = group
+        self.category = category
+    }
+}
+
+/// Categorization rules carried inside a `DataBundle`.
+public struct RuleSet: Codable, Sendable, Equatable {
+    public var rules: [CategoryRule]
+    public var amountRules: [AmountRule]
+    /// Keyed by `TextFold.key(merchant)`.
+    public var learned: [String: CategoryPair]
+
+    public init(
+        rules: [CategoryRule] = [],
+        amountRules: [AmountRule] = [],
+        learned: [String: CategoryPair] = [:]
+    ) {
+        self.rules = rules
+        self.amountRules = amountRules
+        self.learned = learned
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rules, amountRules, learned
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rules = try c.decodeIfPresent([CategoryRule].self, forKey: .rules) ?? []
+        amountRules = try c.decodeIfPresent([AmountRule].self, forKey: .amountRules) ?? []
+        learned = try c.decodeIfPresent([String: CategoryPair].self, forKey: .learned) ?? [:]
+    }
+}
+
+/// Private budget snapshot exported by the PC pipeline and imported on the phone.
+public struct DataBundle: Codable, Sendable, Equatable {
+    public static let supportedFormat = "finance-bundle/1"
+
+    public var format: String
+    public var generatedAt: String
+    public var asOf: String
+    public var coverage: [String: CoverageRange]
+    public var sourceLabels: [String: String]
+    public var items: [BudgetItem]
+    public var timeline: [TimelineEntry]
+    public var debts: [DebtEntry]
+    public var subs: [SubscriptionEntry]
+    public var plan: [PlanEntry]
+    public var notes: [String]?
+    public var afterNote: String?
+    public var planWindow: [String]?
+    public var layers: [LayerDefinition]
+    public var layerConfig: LayerConfig
+    public var rules: RuleSet
+
+    public init(
+        format: String = DataBundle.supportedFormat,
+        generatedAt: String,
+        asOf: String,
+        coverage: [String: CoverageRange] = [:],
+        sourceLabels: [String: String] = [:],
+        items: [BudgetItem] = [],
+        timeline: [TimelineEntry] = [],
+        debts: [DebtEntry] = [],
+        subs: [SubscriptionEntry] = [],
+        plan: [PlanEntry] = [],
+        notes: [String]? = nil,
+        afterNote: String? = nil,
+        planWindow: [String]? = nil,
+        layers: [LayerDefinition] = [],
+        layerConfig: LayerConfig = LayerConfig(),
+        rules: RuleSet = RuleSet()
+    ) {
+        self.format = format
+        self.generatedAt = generatedAt
+        self.asOf = asOf
+        self.coverage = coverage
+        self.sourceLabels = sourceLabels
+        self.items = items
+        self.timeline = timeline
+        self.debts = debts
+        self.subs = subs
+        self.plan = plan
+        self.notes = notes
+        self.afterNote = afterNote
+        self.planWindow = planWindow
+        self.layers = layers
+        self.layerConfig = layerConfig
+        self.rules = rules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
+        case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let format = try c.decode(String.self, forKey: .format)
+        guard format == Self.supportedFormat else {
+            throw DataBundleError.unsupportedFormat(format)
+        }
+        self.format = format
+        generatedAt = try c.decode(String.self, forKey: .generatedAt)
+        asOf = try c.decode(String.self, forKey: .asOf)
+        coverage = try c.decodeIfPresent([String: CoverageRange].self, forKey: .coverage) ?? [:]
+        sourceLabels = try c.decodeIfPresent([String: String].self, forKey: .sourceLabels) ?? [:]
+        items = try c.decodeIfPresent([BudgetItem].self, forKey: .items) ?? []
+        timeline = try c.decodeIfPresent([TimelineEntry].self, forKey: .timeline) ?? []
+        debts = try c.decodeIfPresent([DebtEntry].self, forKey: .debts) ?? []
+        subs = try c.decodeIfPresent([SubscriptionEntry].self, forKey: .subs) ?? []
+        plan = try c.decodeIfPresent([PlanEntry].self, forKey: .plan) ?? []
+        notes = try c.decodeIfPresent([String].self, forKey: .notes)
+        afterNote = try c.decodeIfPresent(String.self, forKey: .afterNote)
+        planWindow = try c.decodeIfPresent([String].self, forKey: .planWindow)
+        layers = try c.decodeIfPresent([LayerDefinition].self, forKey: .layers) ?? []
+        layerConfig = try c.decodeIfPresent(LayerConfig.self, forKey: .layerConfig) ?? LayerConfig()
+        rules = try c.decodeIfPresent(RuleSet.self, forKey: .rules) ?? RuleSet()
+    }
+
+    /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.
+    public static func decode(from data: Data) throws -> DataBundle {
+        try JSONDecoder().decode(DataBundle.self, from: data)
+    }
+
+    /// Computes the spending layer for an item using this bundle's `layerConfig` and `layers`.
+    public func layer(for item: BudgetItem) -> String? {
+        layerConfig.layer(for: item, layers: layers)
+    }
+}
