@@ -12,8 +12,8 @@ keywords = ["@"]
 [[rules.allowlists]]
 regexTarget = "match"
 regexes = [
-  '''@(?:[A-Za-z0-9-]+\.)*example\.(?:com|org|net|jp)$''',
-  '''@(?:[A-Za-z0-9-]+\.)*(?:example|invalid|test)$''',
+  '''(?i)@(?:[A-Za-z0-9-]+\.)*example\.(?:com|org|net|jp)$''',
+  '''(?i)@(?:[A-Za-z0-9-]+\.)*(?:example|invalid|test)$''',
   '''@users\.noreply\.github\.com$''',
   '''^noreply@anthropic\.com$''',
   '''^(?:mail@debit\.bk\.mufg\.jp|mail@direct-11\.bk\.mufg\.jp|post_master@netbk\.co\.jp|no-reply@mercari\.jp|no_reply@email\.apple\.com)$''',
