@@ -2,37 +2,71 @@ import FinanceCore
 import Foundation
 import WidgetKit
 
-/// Everything the screens show: the imported data file plus the Gmail notices kept
-/// on the phone, which become pending payments with the PC's own rules.
+/// Everything the screens show: the imported data file, confirmed Money Forward bank
+/// transactions after each source's statement cutoff, and remaining pending Gmail notices.
 struct FinanceData: Sendable {
     let bundle: DataBundle
-    /// Notices before the statement cutoff, kept outside the pending totals.
+    /// Notices before effective coverage, kept outside the pending totals.
     let unmatched: [Notice]
     let payday: PaydayView?
     let comingUp: [ComingUpGroup]
     let lastPayday: String?
     let spentSincePayday: Int?
     let pendingSincePayday: Int
-    /// All pending payments built from bank emails.
+    /// All pending payments built from bank emails not yet matched by Money Forward.
     let pendingCount: Int
+    /// Confirmed items added from Money Forward after bundle coverage end.
+    let confirmedBankCount: Int
+    /// Per-source coverage extended to the newest mapped Money Forward row.
+    let effectiveCoverage: [String: CoverageRange]
     let months: [String]
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
 
-    static func load(notices: [Notice], now: Date = Date()) async -> FinanceData? {
+    static func load(
+        notices: [Notice],
+        bankTransactions: [BankTransaction]? = nil,
+        accountMapping: [String: String]? = nil,
+        now: Date = Date()
+    ) async -> FinanceData? {
         await Task.detached(priority: .utility) {
             guard let raw = BundleInbox.storedData(), let bundle = try? DataBundle.decode(from: raw) else { return nil }
-            return FinanceData(bundle: bundle, notices: notices, today: JST.day(now))
+            let mfState = (bankTransactions == nil || accountMapping == nil)
+                ? (try? MoneyForwardStore.loadState())
+                : nil
+            let resolvedTxs = bankTransactions ?? mfState?.transactions ?? []
+            let resolvedMapping = accountMapping ?? mfState?.accountMapping ?? [:]
+            return FinanceData(
+                bundle: bundle,
+                notices: notices,
+                bankTransactions: resolvedTxs,
+                accountMapping: resolvedMapping,
+                today: JST.day(now)
+            )
         }.value
     }
 
-    init(bundle: DataBundle, notices: [Notice], today: String) {
+    init(
+        bundle: DataBundle,
+        notices: [Notice],
+        bankTransactions: [BankTransaction] = [],
+        accountMapping: [String: String] = [:],
+        today: String
+    ) {
         self.bundle = bundle
         let config = bundle.layerConfig
-        let result = PendingBuilder.build(notices: notices, bundle: bundle,
-                                          categorizer: Categorizer(rules: bundle.rules), config: config)
-        unmatched = result.unmatched
-        pendingCount = result.items.count
-        let items = bundle.items + result.items
+        let layered = BankLayering.build(
+            bundle: bundle,
+            bankTransactions: bankTransactions,
+            accountMapping: accountMapping,
+            notices: notices,
+            categorizer: Categorizer(rules: bundle.rules),
+            config: config
+        )
+        unmatched = layered.unmatched
+        pendingCount = layered.pendingItems.count
+        confirmedBankCount = layered.bankItems.count
+        effectiveCoverage = layered.effectiveCoverage
+        let items = bundle.items + layered.bankItems + layered.pendingItems
 
         let upcoming = PaydayView.compute(timeline: bundle.timeline, today: today)
         payday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
@@ -43,7 +77,7 @@ struct FinanceData: Sendable {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
         }
         pendingSincePayday = start.map { day in
-            result.items.filter {
+            layered.pendingItems.filter {
                 $0.date >= day && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
             }.count
         } ?? 0
@@ -58,7 +92,6 @@ struct FinanceData: Sendable {
     func layer(of item: BudgetItem) -> String? {
         bundle.layerConfig.resolvedLayer(for: item, layers: bundle.layers)
     }
-
 
     var widgetSnapshot: WidgetSnapshot {
         guard let p = payday else {

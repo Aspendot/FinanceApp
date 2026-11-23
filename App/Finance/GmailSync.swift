@@ -22,14 +22,31 @@ enum GmailSync {
         try KeychainTokenStore().load() != nil
     }
 
+    nonisolated static func hasDriveScope() -> Bool {
+        guard let tokens = try? KeychainTokenStore().load() else { return false }
+        return tokens.hasScope(GoogleOAuth.driveAppDataScope)
+    }
+
     /// Runs Google's sign-in sheet and stores the OAuth tokens.
-    static func signIn(clientID input: String) async throws {
+    static func signIn(
+        clientID input: String,
+        scopes: [String] = [GoogleOAuth.gmailReadOnlyScope],
+        includeGrantedScopes: Bool = false
+    ) async throws {
         try await SyncEngine.shared.withSignIn {
-            try await authorize(clientID: input)
+            try await authorize(
+                clientID: input,
+                scopes: scopes,
+                includeGrantedScopes: includeGrantedScopes
+            )
         }
     }
 
-    private static func authorize(clientID input: String) async throws {
+    private static func authorize(
+        clientID input: String,
+        scopes: [String],
+        includeGrantedScopes: Bool
+    ) async throws {
         try Task.checkCancellation()
         let requestedID = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requestedID.isEmpty else { throw SyncProblem.noClientID }
@@ -54,7 +71,13 @@ enum GmailSync {
         }
         let pkce = try PKCE.generate()
         let state = GoogleOAuth.generateState()
-        let url = try GoogleOAuth.authorizationURL(clientID: requestedID, pkce: pkce, state: state)
+        let url = try GoogleOAuth.authorizationURL(
+            clientID: requestedID,
+            pkce: pkce,
+            state: state,
+            scopes: scopes,
+            includeGrantedScopes: includeGrantedScopes
+        )
         let callback = try await WebAuthenticator().authenticate(
             authURL: url,
             callbackScheme: try GoogleOAuth.reversedClientID(for: requestedID)
@@ -84,6 +107,9 @@ enum GmailSync {
         }
         if tokens.refreshToken == nil, currentMailbox == mailbox {
             tokens.refreshToken = currentTokens?.refreshToken
+        }
+        if tokens.scope == nil, currentMailbox == mailbox {
+            tokens.scope = currentTokens?.scope
         }
         tokens.mailboxFingerprint = mailbox
         UserDefaults.standard.set(requestedID, forKey: clientIDKey)
