@@ -1,0 +1,73 @@
+# XcodeGen spec for the iPhone app. CI turns it into FinanceiOS.xcodeproj; nobody edits the
+# generated project by hand. Generated files (the .xcodeproj, Info.plist and .entitlements files)
+# are not committed.
+name: FinanceiOS
+options:
+  bundleIdPrefix: io.github.aspendot
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "1"
+packages:
+  FinanceKit:
+    path: ..
+targets:
+  Finance:
+    type: application
+    platform: iOS
+    scheme: {}
+    sources:
+      - path: Finance
+      - path: Shared
+    dependencies:
+      - package: FinanceKit
+        product: FinanceCore
+      - target: FinanceWidget
+    info:
+      path: Finance/Info.plist
+      properties:
+        CFBundleDisplayName: Finance
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        NSFaceIDUsageDescription: Face ID keeps your finances private.
+        UIBackgroundModes: [fetch, processing]
+        BGTaskSchedulerPermittedIdentifiers: [io.github.aspendot.financeapp.refresh]
+        FinanceAppGroup: group.io.github.aspendot.financeapp
+    entitlements:
+      path: Finance/Finance.entitlements
+      properties:
+        com.apple.security.application-groups: [group.io.github.aspendot.financeapp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.aspendot.financeapp
+        PRODUCT_NAME: Finance
+  FinanceWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FinanceWidget
+      - path: Shared
+    info:
+      path: FinanceWidget/Info.plist
+      properties:
+        CFBundleDisplayName: Finance
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        FinanceAppGroup: group.io.github.aspendot.financeapp
+    entitlements:
+      path: FinanceWidget/FinanceWidget.entitlements
+      properties:
+        com.apple.security.application-groups: [group.io.github.aspendot.financeapp]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.aspendot.financeapp.widget
+        PRODUCT_NAME: FinanceWidget

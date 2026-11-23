@@ -1,0 +1,82 @@
+name: iOS app
+
+on:
+  push:
+    branches: [main]
+    tags: ["ios-v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build the unsigned .ipa
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Use Xcode 26.6
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - name: Install XcodeGen 2.48.0 and ldid 2.1.5 (checksum-pinned)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/xcodegen.zip" https://github.com/yonaskolb/XcodeGen/releases/download/2.48.0/xcodegen.zip
+          echo "620c9f0dc10849f94728ab5df52d225ebab8187439dd6fee1925e59e80dff892  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/xcodegen/bin" >> "$GITHUB_PATH"
+          curl -sSfL -o "$RUNNER_TEMP/ldid" https://github.com/ProcursusTeam/ldid/releases/download/v2.1.5-procursus8/ldid_macosx_arm64
+          echo "99b8c3052c188184e259b9c512f8ceb7c40ca89e44c99bb96b38c4bd635ff4df  $RUNNER_TEMP/ldid" | shasum -a 256 -c -
+          chmod +x "$RUNNER_TEMP/ldid"
+      - name: Generate the Xcode project
+        working-directory: App
+        run: xcodegen generate
+      - name: Build for iPhone without signing
+        working-directory: App
+        run: |
+          set -o pipefail
+          xcodebuild -project FinanceiOS.xcodeproj -scheme Finance -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
+            | grep -E "error|warning: .*(Sendable|deprecated)|BUILD (SUCCEEDED|FAILED)|\*\*" || true
+          test -d "$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/Finance.app"
+      - name: Embed entitlements and pack the .ipa
+        run: |
+          APP="$RUNNER_TEMP/dd/Build/Products/Release-iphoneos/Finance.app"
+          "$RUNNER_TEMP/ldid" -S"App/FinanceWidget/FinanceWidget.entitlements" "$APP/PlugIns/FinanceWidget.appex/FinanceWidget"
+          "$RUNNER_TEMP/ldid" -S"App/Finance/Finance.entitlements" "$APP/Finance"
+          "$RUNNER_TEMP/ldid" -e "$APP/Finance"
+          "$RUNNER_TEMP/ldid" -e "$APP/PlugIns/FinanceWidget.appex/FinanceWidget"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Finance.ipa" Payload)
+          ls -l Finance.ipa
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Finance-ipa
+          path: Finance.ipa
+          retention-days: 14
+
+  release:
+    name: Attach the .ipa to a release
+    if: startsWith(github.ref, 'refs/tags/ios-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Finance-ipa
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" Finance.ipa --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."
