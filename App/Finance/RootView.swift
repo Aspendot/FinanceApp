@@ -98,13 +98,13 @@ struct RootView: View {
             Tab("Now", systemImage: "calendar", value: AppTab.now) {
                 NowView()
             }
-            Tab("Payments", systemImage: "list.bullet", value: AppTab.payments) {
+            Tab("Payments", systemImage: "list.bullet.rectangle", value: AppTab.payments) {
                 PaymentsView()
             }
-            Tab("Months", systemImage: "chart.bar", value: AppTab.months) {
+            Tab("Months", systemImage: "chart.bar.fill", value: AppTab.months) {
                 MonthsView()
             }
-            Tab("More", systemImage: "ellipsis.circle", value: AppTab.more) {
+            Tab("More", systemImage: "slider.horizontal.3", value: AppTab.more) {
                 MoreView()
             }
         }
@@ -138,25 +138,45 @@ struct LockGate<Content: View>: View {
                 Theme.page.ignoresSafeArea()
             }
             if phase == .active && enabled && !unlocked {
-                VStack(spacing: 14) {
-                    Image(systemName: "lock.fill")
-                        .font(.system(size: 32, weight: .medium))
-                        .foregroundStyle(Theme.muted)
-                        .accessibilityHidden(true)
-                    Text("Finance is locked")
-                        .font(.headline)
-                        .foregroundStyle(Theme.ink)
-                    if !message.isEmpty {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundStyle(Theme.muted)
-                            .multilineTextAlignment(.center)
+                VStack(spacing: 18) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Theme.heroTop, Theme.heroBottom],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 72, height: 72)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                    .strokeBorder(Theme.heroAccent.opacity(0.30), lineWidth: 1)
+                            )
+                            .shadow(color: Theme.accent.opacity(0.22), radius: 16, y: 8)
+                        Image(systemName: "lock.shield.fill")
+                            .font(.system(size: 30, weight: .semibold))
+                            .foregroundStyle(Theme.heroAccent)
                     }
-                    Button("Unlock") { Task { await unlock() } }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                        .frame(minHeight: Theme.minTouchTarget)
-                        .disabled(context != nil)
+                    .accessibilityHidden(true)
+
+                    VStack(spacing: 6) {
+                        Text("Finance is locked")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Theme.ink)
+                        if !message.isEmpty {
+                            Text(message)
+                                .font(.footnote)
+                                .foregroundStyle(Theme.muted)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
+
+                    PrimaryActionButton(title: "Unlock with Face ID") {
+                        Task { await unlock() }
+                    }
+                    .frame(maxWidth: 220)
+                    .disabled(context != nil)
                 }
                 .padding(32)
             }

@@ -44,6 +44,7 @@ struct DebtPayoffSheet: View {
                                         }
                                     }
                                 }
+                                .padding(.vertical, 2)
                             }
                         }
 
@@ -86,17 +87,17 @@ struct DebtPayoffSheet: View {
     }
 
     private func summaryCard(debt: DebtEntry, comparison: DebtPayoffComparison) -> some View {
-        FinanceCard {
+        HeroVaultCard(accentTint: Theme.heroCoral) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    SectionLabel(debt.name)
+                    SectionLabel(debt.name, symbol: "percent", color: Theme.heroInkMuted)
                     Spacer()
-                    QuietTag("Estimate", tone: .neutral)
+                    QuietTag("Estimate", tone: .hero)
                 }
-                HeroMoneyText(amount: debt.balance, color: Theme.bad)
+                HeroMoneyText(amount: debt.balance, color: Theme.heroInk)
                 Text("Monthly interest at \(String(format: "%.1f", annualRate))% is about \(Money.yen(comparison.baseline.firstMonthInterest)) right now.")
                     .font(.footnote)
-                    .foregroundStyle(Theme.muted)
+                    .foregroundStyle(Theme.heroInkMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -106,7 +107,7 @@ struct DebtPayoffSheet: View {
         let maxBase = max(50_000.0, Double(debt.balance) / 2.0)
         return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
-                SectionLabel("Assumptions")
+                SectionLabel("Assumptions", symbol: "slider.horizontal.3")
 
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -159,7 +160,7 @@ struct DebtPayoffSheet: View {
     private func comparisonCard(comparison: DebtPayoffComparison) -> some View {
         FinanceCard {
             VStack(alignment: .leading, spacing: 12) {
-                SectionLabel("Projected payoff")
+                SectionLabel("Projected payoff", symbol: "calendar.badge.checkmark")
 
                 if let baseMonths = comparison.baseline.monthsToPayoff,
                    let baseInterest = comparison.baseline.totalInterest
@@ -193,28 +194,27 @@ struct DebtPayoffSheet: View {
                         )
 
                         if let monthsSaved = comparison.monthsSaved, let interestSaved = comparison.interestSaved {
-                            HairlineDivider()
-                            HStack(spacing: 12) {
-                                VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 10) {
+                                MetricWell(tint: Theme.good) {
                                     Text("Time saved")
-                                        .font(.caption)
+                                        .font(.caption2.weight(.medium))
                                         .foregroundStyle(Theme.muted)
                                     Text("\(monthsSaved) \(monthsSaved == 1 ? "month" : "months")")
-                                        .font(.headline.weight(.semibold))
+                                        .font(.headline.weight(.bold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.good)
                                 }
-                                Spacer()
-                                VStack(alignment: .trailing, spacing: 2) {
+                                MetricWell(tint: Theme.good) {
                                     Text("Interest saved")
-                                        .font(.caption)
+                                        .font(.caption2.weight(.medium))
                                         .foregroundStyle(Theme.muted)
                                     Text(Money.yen(interestSaved))
-                                        .font(.headline.weight(.semibold))
+                                        .font(.headline.weight(.bold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.good)
                                 }
                             }
+                            .padding(.top, 2)
                         }
                     }
                 }

@@ -68,14 +68,22 @@ struct PaymentDetailSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                // Hero amount & verbatim merchant name
+                // Hero amount & verbatim merchant name with category medallion
                 Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(item.merchant)
-                            .font(.headline)
-                            .foregroundStyle(Theme.ink)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 14) {
+                            CategoryBadge(category: item.amount < 0 ? "Salary" : item.category, size: 48)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.merchant)
+                                    .font(.headline.weight(.semibold))
+                                    .foregroundStyle(Theme.ink)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text("\(item.category) · \(item.source)")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                        }
 
                         HeroMoneyText(
                             amount: item.amount < 0 ? -item.amount : item.amount,
@@ -98,7 +106,7 @@ struct PaymentDetailSheet: View {
                             }
                         }
                     }
-                    .padding(.vertical, 4)
+                    .padding(.vertical, 6)
                 }
                 .listRowBackground(Theme.surface)
 
@@ -157,7 +165,7 @@ struct PaymentDetailSheet: View {
                         .disabled(selectedCategory == item.category && selectedGroup == item.group)
                         .padding(.vertical, 4)
                     }
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.accent)
 
                     if let feedback {
@@ -186,7 +194,7 @@ struct PaymentDetailSheet: View {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(DayText.short(row.date))
-                                        .font(.subheadline)
+                                        .font(.subheadline.weight(.medium))
                                         .foregroundStyle(Theme.ink)
                                     Text(row.source)
                                         .font(.caption)
@@ -194,7 +202,7 @@ struct PaymentDetailSheet: View {
                                 }
                                 Spacer()
                                 Text(Money.payment(row.amount))
-                                    .font(.subheadline.weight(.medium))
+                                    .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
                                     .foregroundStyle(row.amount < 0 ? Theme.good : Theme.ink)
                             }
@@ -205,7 +213,7 @@ struct PaymentDetailSheet: View {
                             session.openPayments(month: nil, category: nil, query: shop)
                         } label: {
                             Text("See all \(merchantHistory.count) payments at this shop")
-                                .font(.subheadline.weight(.medium))
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.accent)
                         }
                     } header: {
@@ -221,7 +229,7 @@ struct PaymentDetailSheet: View {
                             confirmDelete = true
                         } label: {
                             Text("Delete local entry")
-                                .font(.subheadline.weight(.medium))
+                                .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.bad)
                         }
                         .confirmationDialog(

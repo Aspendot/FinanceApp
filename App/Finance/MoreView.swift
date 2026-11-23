@@ -4,6 +4,7 @@ import SwiftUI
 struct MoreView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("faceIDLock") private var faceIDLock = true
 
     private var activeData: FinanceData? {
@@ -51,13 +52,28 @@ struct MoreView: View {
 
                 Section {
                     NavigationLink(value: MoreDestination.notifications) {
-                        moreRow(title: "Notifications & bill reminders", subtitle: notificationsSummary)
+                        moreRow(
+                            symbol: "bell.badge.fill",
+                            tint: Theme.warn,
+                            title: "Notifications & bill reminders",
+                            subtitle: notificationsSummary
+                        )
                     }
                     NavigationLink(value: MoreDestination.localData) {
-                        moreRow(title: "Imports, rules & backup", subtitle: localDataSummary)
+                        moreRow(
+                            symbol: "tray.and.arrow.down.fill",
+                            tint: Theme.accent,
+                            title: "Imports, rules & backup",
+                            subtitle: localDataSummary
+                        )
                     }
                     NavigationLink(value: MoreDestination.syncHealth) {
-                        moreRow(title: "Sync health & coverage", subtitle: "Statement cutoffs and recent sync log")
+                        moreRow(
+                            symbol: "waveform.path.ecg",
+                            tint: Color("LayerRent"),
+                            title: "Sync health & coverage",
+                            subtitle: "Statement cutoffs and recent sync log"
+                        )
                     }
                 } header: {
                     SectionLabel("App & Data")
@@ -65,10 +81,15 @@ struct MoreView: View {
                 .listRowBackground(Theme.surface)
 
                 Section {
-                    Toggle("Lock with Face ID", isOn: $faceIDLock)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink)
-                        .tint(Theme.accent)
+                    HStack(spacing: 12) {
+                        if !dynamicTypeSize.isAccessibilitySize {
+                            IconMedallion(symbol: "faceid", tint: Theme.accent, size: 32)
+                        }
+                        Toggle("Lock with Face ID", isOn: $faceIDLock)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Theme.ink)
+                            .tint(Theme.accent)
+                    }
                 } header: {
                     SectionLabel("Privacy")
                 }
@@ -76,9 +97,15 @@ struct MoreView: View {
 
                 Section {
                     NavigationLink(value: MoreDestination.diagnostics) {
-                        Text("Setup and tests")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.ink)
+                        HStack(spacing: 12) {
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                IconMedallion(symbol: "wrench.and.screwdriver.fill", tint: Theme.muted, size: 32)
+                            }
+                            Text("Setup and tests")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(Theme.ink)
+                        }
+                        .padding(.vertical, 2)
                     }
                 } header: {
                     SectionLabel("Diagnostics")
@@ -129,14 +156,19 @@ struct MoreView: View {
         }
     }
 
-    private func moreRow(title: String, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(Theme.ink)
-            Text(subtitle)
-                .font(.footnote)
-                .foregroundStyle(Theme.muted)
+    private func moreRow(symbol: String, tint: Color, title: String, subtitle: String) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            if !dynamicTypeSize.isAccessibilitySize {
+                IconMedallion(symbol: symbol, tint: tint, size: 32)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.ink)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
         }
         .padding(.vertical, 2)
     }

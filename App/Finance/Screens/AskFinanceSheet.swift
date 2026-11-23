@@ -16,6 +16,7 @@ struct AskFinanceSheet: View {
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
@@ -81,24 +82,29 @@ struct AskFinanceSheet: View {
                         .foregroundStyle(Theme.ink)
                         .submitLabel(.send)
                         .onSubmit { submit(input) }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 11)
+                        .background(Theme.surface, in: Capsule())
                         .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Theme.line, lineWidth: 0.5)
+                            Capsule().strokeBorder(Theme.line, lineWidth: 0.75)
                         )
 
                     Button {
                         submit(input)
                     } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(
-                                input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || thinking
-                                    ? Theme.muted
-                                    : Theme.accent
-                            )
+                        let isEmpty = input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || thinking
+                        ZStack {
+                            Circle()
+                                .fill(isEmpty ? Theme.track : Theme.accent)
+                                .frame(width: 38, height: 38)
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(
+                                    isEmpty
+                                        ? Theme.muted
+                                        : (colorScheme == .dark ? Theme.page : Color.white)
+                                )
+                        }
                     }
                     .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || thinking)
                     .accessibilityLabel("Send question")
@@ -129,45 +135,50 @@ struct AskFinanceSheet: View {
     }
 
     private func introCard(context: FinanceQueryEngine.Context) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            FinanceCard {
-                VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 16) {
+            HeroVaultCard {
+                VStack(alignment: .leading, spacing: 10) {
                     HStack(spacing: 8) {
-                        SectionLabel("On-device answers")
+                        SectionLabel("On-device ledger Q&A", symbol: "text.magnifyingglass", color: Theme.heroInkMuted)
                         Spacer()
-                        QuietTag("Private · offline", tone: .good)
+                        QuietTag("Offline", tone: .hero)
                     }
-                    Text("Ask in plain English about any category, shop, month, bill, subscription, debt or cut target. Every yen comes directly from your local ledger.")
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink2)
+                    Text("Ask about any category, shop, month, bill, subscription, debt or cut target.")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(Theme.heroInk)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Every yen comes straight from your local ledger with zero network calls.")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.heroInkMuted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 SectionLabel("Try asking")
-                    .padding(.horizontal, 2)
+                    .padding(.horizontal, 4)
                 ForEach(FinanceQueryEngine.suggestedPrompts(for: context), id: \.self) { prompt in
                     Button {
                         submit(prompt)
                     } label: {
-                        HStack {
+                        HStack(spacing: 12) {
+                            IconMedallion(symbol: "text.bubble.fill", tint: Theme.accent, size: 30)
                             Text(prompt)
-                                .font(.subheadline)
+                                .font(.subheadline.weight(.medium))
                                 .foregroundStyle(Theme.ink)
                                 .multilineTextAlignment(.leading)
                             Spacer(minLength: 8)
-                            Image(systemName: "chevron.right")
+                            Image(systemName: "arrow.up.right")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(Theme.muted)
                         }
-                        .padding(.horizontal, Theme.cardPadding)
-                        .padding(.vertical, 12)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
                         .frame(minHeight: Theme.minTouchTarget)
-                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .strokeBorder(Theme.line, lineWidth: 0.5)
+                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                .strokeBorder(Theme.line.opacity(0.8), lineWidth: 0.6)
                         )
                     }
                     .buttonStyle(.plain)
@@ -185,44 +196,65 @@ struct AskFinanceSheet: View {
                     }
                 }
             }
+            .padding(.vertical, 2)
         }
     }
 
     private func turnView(_ turn: ConversationTurn) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(turn.question)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Theme.accent)
-                .padding(.horizontal, 2)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Spacer(minLength: 36)
+                Text(turn.question)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(colorScheme == .dark ? Theme.page : Color.white)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 10)
+                    .background(
+                        Theme.accent,
+                        in: UnevenRoundedRectangle(
+                            topLeadingRadius: 18,
+                            bottomLeadingRadius: 18,
+                            bottomTrailingRadius: 6,
+                            topTrailingRadius: 18,
+                            style: .continuous
+                        )
+                    )
+                    .shadow(color: Theme.accent.opacity(0.20), radius: 8, y: 3)
+            }
 
             FinanceCard {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(turn.answer.headline)
-                        .font(.title2.weight(.semibold))
-                        .monospacedDigit()
-                        .foregroundStyle(Theme.ink)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(turn.answer.headline)
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
 
-                    Text(turn.answer.subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
+                        Text(turn.answer.subtitle)
+                            .font(.footnote)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
 
                     if let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
                         Text(summaryNote)
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if !turn.answer.rows.isEmpty {
                         HairlineDivider()
-                        VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 10) {
                             ForEach(turn.answer.rows) { row in
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(row.label)
-                                            .font(.subheadline)
+                                            .font(.subheadline.weight(.medium))
                                             .foregroundStyle(Theme.ink)
                                             .fixedSize(horizontal: false, vertical: true)
                                         if let detail = row.detail, !detail.isEmpty {
@@ -233,7 +265,7 @@ struct AskFinanceSheet: View {
                                     }
                                     Spacer(minLength: 8)
                                     Text(row.value)
-                                        .font(.subheadline.weight(.medium))
+                                        .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.ink)
                                         .fixedSize(horizontal: true, vertical: false)
@@ -250,7 +282,6 @@ struct AskFinanceSheet: View {
                     }
 
                     if let actionTitle = turn.answer.actionTitle, let action = turn.answer.action {
-                        HairlineDivider()
                         Button {
                             perform(action)
                         } label: {
@@ -258,11 +289,15 @@ struct AskFinanceSheet: View {
                                 Text(actionTitle)
                                     .font(.subheadline.weight(.semibold))
                                     .foregroundStyle(Theme.accent)
-                                Image(systemName: "chevron.right")
+                                Spacer()
+                                Image(systemName: "arrow.right")
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(Theme.accent)
                             }
-                            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous))
+                            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
                         }
                         .buttonStyle(.plain)
                     }

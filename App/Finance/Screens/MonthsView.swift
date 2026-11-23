@@ -95,51 +95,49 @@ struct MonthsView: View {
         }
     }
 
-    // MARK: - Stacked bar chart card with Income overlay & MoM delta
+    // MARK: - Editorial Stacked Bar Chart Card
 
     private func stackedChartCard(screen: MonthsScreenModel, asOf: String) -> some View {
         let comp = screen.comparison
         return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
                 if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 6) {
-                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending")
+                    VStack(alignment: .leading, spacing: 8) {
+                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending", symbol: "chart.bar.fill")
                         monthMenuButton(screen: screen)
                     }
                 } else {
                     HStack(alignment: .center, spacing: 8) {
-                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending")
+                        SectionLabel(comp.isInProgress ? "Spent so far" : "Monthly spending", symbol: "chart.bar.fill")
                         Spacer(minLength: 8)
                         monthMenuButton(screen: screen)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     HeroMoneyText(amount: screen.selectedTotals.total, color: Theme.ink)
 
                     FlowLayout(horizontalSpacing: 8, verticalSpacing: 6) {
                         if let delta = comp.deltaFromPrevious, let prev = comp.previousMonth {
                             let isUp = delta > 0
                             let arrow = isUp ? "▲" : "▼"
-                            let verb = isUp ? "more than" : "less than"
+                            let verb = isUp ? "vs" : "under"
                             QuietTag(
                                 "\(arrow) \(Money.yen(abs(delta))) \(verb) \(DayText.shortMonth(prev + "-01"))",
                                 tone: isUp ? .bad : .good
                             )
                         } else if comp.isInProgress {
-                            QuietTag("Month in progress · through \(DayText.short(asOf))", tone: .accent)
+                            QuietTag("So far · \(DayText.short(asOf))", tone: .accent)
                         }
                         if let avg = comp.baselineAverage {
-                            Text("Avg \(Money.yen(avg))/mo")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.muted)
+                            QuietTag("Avg \(Money.yen(avg))/mo", tone: .neutral)
                         }
                     }
                 }
 
                 stackedChart(screen: screen)
-                    .frame(height: dynamicTypeSize.isAccessibilitySize ? 240 : 210)
+                    .frame(height: dynamicTypeSize.isAccessibilitySize ? 245 : 220)
+                    .padding(.top, 2)
                     .accessibilityLabel(chartAccessibilitySummary(screen: screen))
                     .accessibilityAdjustableAction { direction in
                         stepMonth(screen: screen, forward: direction == .increment)
@@ -167,18 +165,24 @@ struct MonthsView: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 Text(DayText.month(screen.selectedMonth))
-                    .font(.subheadline.weight(.medium))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.accent)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
                     .allowsTightening(true)
                 Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2.weight(.semibold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(Theme.accent)
                     .accessibilityHidden(true)
             }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(Theme.accentWash, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(Theme.accent.opacity(0.22), lineWidth: 0.6)
+            )
             .frame(minHeight: 32)
             .contentShape(Rectangle())
         }
@@ -188,11 +192,28 @@ struct MonthsView: View {
 
     private func stackedChart(screen: MonthsScreenModel) -> some View {
         let axisSize = min(chartAxisFontSize, 15)
+        let topLayerByMonth: [String: SpendingLayer] = Dictionary(
+            grouping: screen.segments,
+            by: \.month
+        ).compactMapValues { segs in
+            segs.max(by: { $0.yEnd < $1.yEnd })?.layer
+        }
+
         let baseChart = Chart {
+            // Subtle vertical spotlight behind the selected month
+            RectangleMark(
+                x: .value("Month", screen.selectedMonth),
+                yStart: .value("Start", 0),
+                yEnd: .value("End", screen.maxChartTotal),
+                width: .ratio(0.84)
+            )
+            .foregroundStyle(Theme.accent.opacity(0.07))
+
             ForEach(screen.segments) { segment in
                 let isSelected = segment.month == screen.selectedMonth
+                let isTop = topLayerByMonth[segment.month] == segment.layer
                 let opacity: Double = {
-                    if segment.isInProgress { return isSelected ? 0.72 : 0.32 }
+                    if segment.isInProgress { return isSelected ? 0.86 : 0.36 }
                     return isSelected ? 1.0 : 0.42
                 }()
                 BarMark(
@@ -203,6 +224,7 @@ struct MonthsView: View {
                 )
                 .foregroundStyle(segment.layer.color)
                 .opacity(opacity)
+                .cornerRadius(isTop ? 5 : 0)
             }
 
             if screen.incomePoints.count >= 2 {
@@ -211,15 +233,24 @@ struct MonthsView: View {
                         x: .value("Month", pt.month),
                         y: .value("Income", pt.income)
                     )
-                    .foregroundStyle(Theme.ink)
-                    .lineStyle(StrokeStyle(lineWidth: 1.75))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(Theme.good)
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
 
                     PointMark(
                         x: .value("Month", pt.month),
                         y: .value("Income", pt.income)
                     )
-                    .foregroundStyle(Theme.ink)
-                    .symbolSize(28)
+                    .foregroundStyle(Theme.surface)
+                    .symbolSize(46)
+
+                    PointMark(
+                        x: .value("Month", pt.month),
+                        y: .value("Income", pt.income)
+                    )
+                    .foregroundStyle(Theme.good)
+                    .symbol(.circle)
+                    .symbolSize(24)
                 }
             }
         }
@@ -227,7 +258,7 @@ struct MonthsView: View {
         .chartYScale(domain: 0...screen.maxChartTotal)
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5))
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 3]))
                     .foregroundStyle(Theme.grid)
                 AxisValueLabel {
                     if let amount = value.as(Int.self) {
@@ -246,7 +277,7 @@ struct MonthsView: View {
                         let isSelected = month == screen.selectedMonth
                         let label = FinanceFormat.chartMonth(month) + (month == screen.inProgressMonth ? "*" : "")
                         Text(label)
-                            .font(.system(size: axisSize, weight: isSelected ? .semibold : .regular))
+                            .font(.system(size: axisSize, weight: isSelected ? .bold : .medium))
                             .foregroundStyle(isSelected ? Theme.accent : Theme.muted)
                     }
                 }
@@ -289,16 +320,16 @@ struct MonthsView: View {
     }
 
     private func layerLegend(screen: MonthsScreenModel) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 9) {
             ForEach(screen.selectedLayerAmounts) { item in
                 let pct = Int((item.share * 100).rounded())
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(alignment: .center, spacing: 8) {
-                                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                Capsule()
                                     .fill(item.layer.color)
-                                    .frame(width: 12, height: 12)
+                                    .frame(width: 12, height: 6)
                                     .accessibilityHidden(true)
                                 Text(item.title)
                                     .font(.subheadline)
@@ -306,7 +337,7 @@ struct MonthsView: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Text("\(Money.yen(item.amount)) · \(pct)%")
-                                .font(.subheadline.weight(.medium))
+                                .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
                                 .lineLimit(1)
@@ -316,25 +347,25 @@ struct MonthsView: View {
                                 .accessibilityLabel("\(FinanceFormat.yenAccessibility(item.amount)), \(pct) percent")
                         }
                     } else {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        HStack(alignment: .center, spacing: 10) {
+                            Capsule()
                                 .fill(item.layer.color)
-                                .frame(width: 10, height: 10)
+                                .frame(width: 14, height: 6)
                                 .accessibilityHidden(true)
                             Text(item.title)
-                                .font(.subheadline)
+                                .font(.subheadline.weight(.medium))
                                 .foregroundStyle(Theme.ink2)
                             Spacer(minLength: 8)
                             Text(Money.yen(item.amount))
-                                .font(.subheadline.weight(.medium))
+                                .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
                                 .accessibilityLabel(FinanceFormat.yenAccessibility(item.amount))
                             Text("\(pct)%")
-                                .font(.caption)
+                                .font(.caption.weight(.medium))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.muted)
-                                .frame(minWidth: 32, alignment: .trailing)
+                                .frame(minWidth: 34, alignment: .trailing)
                         }
                     }
                 }
@@ -342,11 +373,13 @@ struct MonthsView: View {
             }
             if screen.incomePoints.count >= 2 {
                 HStack(spacing: 8) {
-                    Rectangle()
-                        .fill(Theme.ink)
-                        .frame(width: 12, height: 2)
-                        .accessibilityHidden(true)
-                    Text("Line shows completed months' income")
+                    HStack(spacing: 0) {
+                        Capsule()
+                            .fill(Theme.good)
+                            .frame(width: 14, height: 2.5)
+                    }
+                    .accessibilityHidden(true)
+                    Text("Green line shows completed months' income")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }
@@ -367,7 +400,7 @@ struct MonthsView: View {
         return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    SectionLabel("Spent vs income")
+                    SectionLabel("Spent vs income", symbol: "scale.3d")
                     Spacer()
                     if let rate = comp.savingsRate, !comp.isInProgress {
                         let pct = Int((rate * 100).rounded())
@@ -379,16 +412,22 @@ struct MonthsView: View {
                 }
 
                 if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 12) {
-                        summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
-                        summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
+                    VStack(alignment: .leading, spacing: 10) {
+                        MetricWell {
+                            summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
+                        }
+                        MetricWell(tint: hasIncome ? Theme.good : nil) {
+                            summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
+                        }
                     }
                 } else {
-                    HStack(alignment: .top, spacing: 16) {
-                        summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(alignment: .top, spacing: 10) {
+                        MetricWell {
+                            summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
+                        }
+                        MetricWell(tint: hasIncome ? Theme.good : nil) {
+                            summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
+                        }
                     }
                 }
 
@@ -396,9 +435,7 @@ struct MonthsView: View {
                     ProgressMeter(ratio: ratio, tint: overspent ? Theme.bad : Theme.accent, height: 8)
                 }
 
-                HairlineDivider()
-
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 9) {
                     summaryDetailRow(
                         title: "Fixed (rent, bills, subs)",
                         value: Money.yen(comp.fixedCosts),
@@ -428,15 +465,17 @@ struct MonthsView: View {
                         )
                     }
                     if hasIncome {
-                        HairlineDivider()
                         let leftPositive = totals.left >= 0
-                        summaryDetailRow(
-                            title: leftPositive ? "Left after spending" : "Short by",
-                            value: Money.signed(totals.left),
-                            accessibilityValue: FinanceFormat.yenAccessibility(totals.left, signed: true),
-                            color: leftPositive ? Theme.good : Theme.bad,
-                            emphasized: true
-                        )
+                        MetricWell(tint: leftPositive ? Theme.good : Theme.bad) {
+                            summaryDetailRow(
+                                title: leftPositive ? "Left after spending" : "Short by",
+                                value: Money.signed(totals.left),
+                                accessibilityValue: FinanceFormat.yenAccessibility(totals.left, signed: true),
+                                color: leftPositive ? Theme.good : Theme.bad,
+                                emphasized: true
+                            )
+                        }
+                        .padding(.top, 2)
                     } else {
                         Text("No income recorded in \(DayText.month(screen.selectedMonth)) yet.")
                             .font(.footnote)
@@ -448,9 +487,9 @@ struct MonthsView: View {
     }
 
     private func summaryMetric(title: String, amount: Int, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(.footnote)
+                .font(.caption.weight(.medium))
                 .foregroundStyle(Theme.muted)
             MetricMoneyText(amount: amount, color: color)
         }
@@ -487,7 +526,7 @@ struct MonthsView: View {
                         .foregroundStyle(emphasized ? Theme.ink : Theme.ink2)
                     Spacer(minLength: 8)
                     Text(value)
-                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline)
+                        .font(emphasized ? .subheadline.weight(.semibold) : .subheadline.weight(.medium))
                         .monospacedDigit()
                         .foregroundStyle(color)
                         .accessibilityLabel(accessibilityValue)
@@ -502,9 +541,9 @@ struct MonthsView: View {
     private func whereToCutSummaryCard(screen: MonthsScreenModel) -> some View {
         let plan = screen.planSummary
         return FinanceCard {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 8) {
-                    SectionLabel("Where to cut")
+                    SectionLabel("Where to cut", symbol: "scissors")
                     Spacer(minLength: 8)
                     NavigationLink {
                         WhereToCutView(plan: plan)
@@ -512,45 +551,90 @@ struct MonthsView: View {
                         HStack(spacing: 4) {
                             Text("All \(plan.active.count + plan.settled.count)")
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(Theme.accent)
                             Image(systemName: "chevron.right")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Theme.accent)
                         }
+                        .foregroundStyle(Theme.accent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Theme.accentWash, in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
 
-                Text("Already cut \(Money.yen(plan.alreadyCut))/mo · targets save another \(Money.yen(plan.potentialSavings))/mo (down to \(Money.yen(plan.projectedTotal))/mo).")
-                    .font(.footnote)
-                    .foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(spacing: 8) {
+                        MetricWell(tint: Theme.good) {
+                            Text("Already cut")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                            Text("\(Money.yen(plan.alreadyCut))/mo")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.good)
+                        }
+                        MetricWell(tint: Theme.accent) {
+                            Text("Targets save more")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                            Text("\(Money.yen(plan.potentialSavings))/mo")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        MetricWell(tint: Theme.good) {
+                            Text("Already cut")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.muted)
+                            Text("\(Money.yen(plan.alreadyCut))/mo")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.good)
+                        }
+                        MetricWell(tint: Theme.accent) {
+                            Text("Targets save more")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(Theme.muted)
+                            Text("\(Money.yen(plan.potentialSavings))/mo")
+                                .font(.subheadline.weight(.bold))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                }
 
                 if !plan.watchList.isEmpty {
-                    HairlineDivider()
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 11) {
                         ForEach(plan.watchList.prefix(3)) { row in
                             let target = row.entry.target ?? 0
                             let ratio = row.selectedMonthProgress ?? 0
                             let tint: Color = row.selectedMonthSpent > target
                                 ? Theme.bad
-                                : (ratio >= 0.8 ? Color("LayerDayToDay") : Theme.good)
+                                : (ratio >= 0.8 ? Theme.warn : Theme.good)
                             Button {
                                 session.openPayments(month: screen.selectedMonth, category: row.entry.category)
                             } label: {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                        Text(row.entry.category)
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(Theme.ink)
-                                            .lineLimit(1)
-                                        Spacer(minLength: 8)
-                                        Text("\(Money.yen(row.selectedMonthSpent)) / \(Money.yen(target))")
-                                            .font(.caption.weight(.medium))
-                                            .monospacedDigit()
-                                            .foregroundStyle(row.selectedMonthSpent > target ? Theme.bad : Theme.ink2)
+                                HStack(alignment: .center, spacing: 11) {
+                                    if !dynamicTypeSize.isAccessibilitySize {
+                                        CategoryBadge(category: row.entry.category, size: 32)
                                     }
-                                    ProgressMeter(ratio: ratio, tint: tint, height: 5)
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                            Text(row.entry.category)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(Theme.ink)
+                                                .lineLimit(1)
+                                            Spacer(minLength: 8)
+                                            Text("\(Money.yen(row.selectedMonthSpent)) / \(Money.yen(target))")
+                                                .font(.caption.weight(.semibold))
+                                                .monospacedDigit()
+                                                .foregroundStyle(row.selectedMonthSpent > target ? Theme.bad : Theme.ink2)
+                                        }
+                                        ProgressMeter(ratio: ratio, tint: tint, height: 5.5)
+                                    }
                                 }
                                 .contentShape(Rectangle())
                             }
@@ -569,14 +653,14 @@ struct MonthsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 4) {
-                        SectionLabel("Where it went")
+                        SectionLabel("Where it went", symbol: "square.grid.2x2")
                         Text("Tap to filter Payments")
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
                     }
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        SectionLabel("Where it went")
+                        SectionLabel("Where it went", symbol: "square.grid.2x2")
                         Spacer(minLength: 8)
                         Text("Tap to filter")
                             .font(.caption)
@@ -628,7 +712,7 @@ struct MonthsView: View {
                     }
                 } label: {
                     Text(showAllCategories ? "Show top 12" : "Show all \(screen.categoryBars.count) categories")
-                        .font(.subheadline.weight(.medium))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.accent)
                         .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
                 }
@@ -654,23 +738,28 @@ struct MonthsView: View {
                     Button {
                         session.openPayments(month: screen.selectedMonth, category: nil, query: shop.merchant)
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(shop.merchant)
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(Theme.ink)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text(Money.yen(shop.total))
-                                    .font(.subheadline.weight(.medium))
-                                    .monospacedDigit()
-                                    .foregroundStyle(Theme.ink)
+                        HStack(alignment: .center, spacing: 11) {
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                CategoryBadge(category: shop.category, size: 34)
                             }
-                            Text("\(shop.count) \(shop.count == 1 ? "visit" : "visits") · avg \(Money.yen(shop.average)) · \(shop.category)")
-                                .font(.caption)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
-                            ProgressMeter(ratio: Double(shop.total) / Double(maxSum), tint: Theme.accent, height: 5)
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(shop.merchant)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Theme.ink)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text(Money.yen(shop.total))
+                                        .font(.subheadline.weight(.semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Theme.ink)
+                                }
+                                Text("\(shop.count) \(shop.count == 1 ? "visit" : "visits") · avg \(Money.yen(shop.average)) · \(shop.category)")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.muted)
+                                    .lineLimit(1)
+                                ProgressMeter(ratio: Double(shop.total) / Double(maxSum), tint: Theme.accent, height: 5.5)
+                            }
                         }
                         .padding(.vertical, 8)
                         .frame(minHeight: Theme.minTouchTarget)
@@ -697,29 +786,35 @@ struct MonthsView: View {
                             .padding(.vertical, 4)
                     }
                     let pct = Int((src.share * 100).rounded())
+                    let spec = CategoryStyle.forSource(src.source)
                     Button {
                         session.openPayments(month: screen.selectedMonth, category: nil, source: src.source)
                     } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(src.source)
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(Theme.ink)
-                                Text("\(src.count) \(src.count == 1 ? "payment" : "payments")")
-                                    .font(.caption)
-                                    .foregroundStyle(Theme.muted)
-                                Spacer(minLength: 8)
-                                Text(Money.yen(src.total))
-                                    .font(.subheadline.weight(.medium))
-                                    .monospacedDigit()
-                                    .foregroundStyle(Theme.ink)
-                                Text("\(pct)%")
-                                    .font(.caption)
-                                    .monospacedDigit()
-                                    .foregroundStyle(Theme.muted)
-                                    .frame(minWidth: 32, alignment: .trailing)
+                        HStack(alignment: .center, spacing: 11) {
+                            if !dynamicTypeSize.isAccessibilitySize {
+                                IconMedallion(symbol: spec.symbol, tint: spec.tint, size: 34)
                             }
-                            ProgressMeter(ratio: Double(src.total) / Double(maxSum), tint: Theme.ink2, height: 6)
+                            VStack(alignment: .leading, spacing: 5) {
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(src.source)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(Theme.ink)
+                                    Text("\(src.count)")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.muted)
+                                    Spacer(minLength: 8)
+                                    Text(Money.yen(src.total))
+                                        .font(.subheadline.weight(.semibold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Theme.ink)
+                                    Text("\(pct)%")
+                                        .font(.caption.weight(.medium))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Theme.muted)
+                                        .frame(minWidth: 32, alignment: .trailing)
+                                }
+                                ProgressMeter(ratio: Double(src.total) / Double(maxSum), tint: spec.tint, height: 6)
+                            }
                         }
                         .padding(.vertical, 8)
                         .frame(minHeight: Theme.minTouchTarget)
@@ -738,61 +833,67 @@ struct MonthsView: View {
         return Button {
             session.openPayments(month: month, category: bar.name)
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(bar.name)
-                                .font(.body.weight(.medium))
+            HStack(alignment: .center, spacing: 11) {
+                if !dynamicTypeSize.isAccessibilitySize {
+                    CategoryBadge(category: bar.name, size: 34)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(bar.name)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(Theme.ink)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: 8)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Theme.muted)
+                                    .accessibilityHidden(true)
+                            }
+                            Text(Money.yen(bar.sum))
+                                .font(.body.weight(.semibold))
+                                .monospacedDigit()
                                 .foregroundStyle(Theme.ink)
-                                .multilineTextAlignment(.leading)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.5)
+                                .allowsTightening(true)
+                            Text("\(bar.count) \(paymentWord) · \(percent)%")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
                                 .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(bar.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                            Text("\(bar.count)")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
                             Spacer(minLength: 8)
+                            Text(Money.yen(bar.sum))
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.ink)
+                            Text("\(percent)%")
+                                .font(.caption.weight(.medium))
+                                .monospacedDigit()
+                                .foregroundStyle(Theme.muted)
+                                .frame(minWidth: 32, alignment: .trailing)
                             Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
+                                .font(.caption2.weight(.semibold))
                                 .foregroundStyle(Theme.muted)
                                 .accessibilityHidden(true)
                         }
-                        Text(Money.yen(bar.sum))
-                            .font(.body.weight(.semibold))
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.5)
-                            .allowsTightening(true)
-                        Text("\(bar.count) \(paymentWord) · \(percent)%")
-                            .font(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
-                } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(bar.name)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                        Text("\(bar.count) \(paymentWord)")
-                            .font(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(Money.yen(bar.sum))
-                            .font(.subheadline.weight(.medium))
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.ink)
-                        Text("\(percent)%")
-                            .font(.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(Theme.muted)
-                            .frame(minWidth: 32, alignment: .trailing)
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Theme.muted)
-                            .accessibilityHidden(true)
-                    }
-                }
 
-                ProgressMeter(ratio: bar.barFraction, tint: bar.layer.color, height: 6)
+                    ProgressMeter(ratio: bar.barFraction, tint: bar.layer.color, height: 6)
+                }
             }
             .padding(.vertical, 8)
             .frame(minHeight: Theme.minTouchTarget, alignment: .center)

@@ -39,53 +39,51 @@ struct WhereToCutView: View {
     }
 
     private var summaryCard: some View {
-        FinanceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                SectionLabel("Monthly target")
+        HeroVaultCard {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionLabel("Monthly target", symbol: "scissors", color: Theme.heroInkMuted)
 
-                HeroMoneyText(amount: plan.projectedTotal, color: Theme.ink)
+                HeroMoneyText(amount: plan.projectedTotal, color: Theme.heroInk)
 
-                Text("Down from \(Money.yen(plan.baselineTotal))/month baseline. Already cut about \(Money.yen(plan.alreadyCut))/month; active targets save another \(Money.yen(plan.potentialSavings))/month.")
+                Text("Down from \(Money.yen(plan.baselineTotal))/month baseline across active and completed cuts.")
                     .font(.footnote)
-                    .foregroundStyle(Theme.muted)
+                    .foregroundStyle(Theme.heroInkMuted)
                     .fixedSize(horizontal: false, vertical: true)
 
-                HairlineDivider()
-
                 if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 8) {
-                        statBlock(label: "Already cut", value: Money.yen(plan.alreadyCut), color: Theme.good)
-                        statBlock(label: "Would save more", value: Money.yen(plan.potentialSavings), color: Theme.accent)
+                    VStack(spacing: 8) {
+                        heroStatTile(label: "Already cut", value: "\(Money.yen(plan.alreadyCut))/mo", color: Theme.heroAccent)
+                        heroStatTile(label: "Would save more", value: "\(Money.yen(plan.potentialSavings))/mo", color: Theme.heroInk)
                     }
                 } else {
-                    HStack(alignment: .top, spacing: 16) {
-                        statBlock(label: "Already cut", value: Money.yen(plan.alreadyCut), color: Theme.good)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        statBlock(label: "Would save more", value: Money.yen(plan.potentialSavings), color: Theme.accent)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 10) {
+                        heroStatTile(label: "Already cut", value: "\(Money.yen(plan.alreadyCut))/mo", color: Theme.heroAccent)
+                        heroStatTile(label: "Would save more", value: "\(Money.yen(plan.potentialSavings))/mo", color: Theme.heroInk)
                     }
                 }
             }
         }
     }
 
-    private func statBlock(label: String, value: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func heroStatTile(label: String, value: String, color: Color) -> some View {
+        FrostedMetricTile {
             Text(label)
-                .font(.caption)
-                .foregroundStyle(Theme.muted)
-            Text(value + "/mo")
-                .font(.headline.weight(.semibold))
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(Theme.heroInkMuted)
+            Text(value)
+                .font(.headline.weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
     }
 
     private var activeTargetsCard: some View {
         FinanceCard {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    SectionLabel("Active targets")
+                    SectionLabel("Active targets", symbol: "target")
                     Spacer()
                     Text("Tap to open Payments")
                         .font(.caption)
@@ -96,7 +94,7 @@ struct WhereToCutView: View {
                     ForEach(Array(plan.active.enumerated()), id: \.element.id) { idx, row in
                         if idx > 0 {
                             HairlineDivider()
-                                .padding(.vertical, 12)
+                                .padding(.vertical, 14)
                         }
                         planRowView(row)
                     }
@@ -114,7 +112,7 @@ struct WhereToCutView: View {
                     }
                 } label: {
                     HStack {
-                        SectionLabel("Done or keeping (\(plan.settled.count))")
+                        SectionLabel("Done or keeping (\(plan.settled.count))", symbol: "checkmark.circle")
                         Spacer()
                         Image(systemName: showSettled ? "chevron.up" : "chevron.down")
                             .font(.caption.weight(.semibold))
@@ -130,7 +128,7 @@ struct WhereToCutView: View {
                         ForEach(Array(plan.settled.enumerated()), id: \.element.id) { idx, row in
                             if idx > 0 {
                                 HairlineDivider()
-                                    .padding(.vertical, 12)
+                                    .padding(.vertical, 14)
                             }
                             planRowView(row)
                         }
@@ -145,7 +143,7 @@ struct WhereToCutView: View {
             if isPresentedModally { dismiss() }
             session.openPayments(month: plan.selectedMonth, category: row.entry.category)
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(row.entry.category)
@@ -156,18 +154,30 @@ struct WhereToCutView: View {
                         savingText(row)
                     }
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(row.entry.category)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Theme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                        QuietTag(row.displayStatus, tone: QuietTag.Tone(statusTone: row.tone))
-                        Spacer(minLength: 8)
+                    HStack(alignment: .center, spacing: 11) {
+                        CategoryBadge(category: row.entry.category, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(row.entry.category)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Theme.ink)
+                                    .lineLimit(1)
+                                QuietTag(row.displayStatus, tone: QuietTag.Tone(statusTone: row.tone))
+                            }
+                            if let note = row.entry.note, !note.isEmpty {
+                                Text(note)
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.muted)
+                                    .lineLimit(2)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        Spacer(minLength: 6)
                         savingText(row)
                     }
                 }
 
-                if let note = row.entry.note, !note.isEmpty {
+                if dynamicTypeSize.isAccessibilitySize, let note = row.entry.note, !note.isEmpty {
                     Text(note)
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
@@ -176,18 +186,21 @@ struct WhereToCutView: View {
 
                 if !row.history.isEmpty {
                     PlanSparkline(points: Array(row.history.suffix(12)), target: row.entry.target)
-                        .frame(height: 36)
+                        .frame(height: 40)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 6)
+                        .background(Theme.well.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 }
 
                 if let target = row.entry.target {
                     let ratio = row.selectedMonthProgress ?? 0
                     let barColor: Color = row.selectedMonthSpent > target
                         ? Theme.bad
-                        : (ratio >= 0.8 ? Color("LayerDayToDay") : Theme.good)
-                    ProgressMeter(ratio: ratio, tint: barColor, height: 5)
+                        : (ratio >= 0.8 ? Theme.warn : Theme.good)
+                    ProgressMeter(ratio: ratio, tint: barColor, height: 6)
                 }
 
-                FlowLayout(horizontalSpacing: 14, verticalSpacing: 4) {
+                FlowLayout(horizontalSpacing: 16, verticalSpacing: 4) {
                     metricPair(label: DayText.shortMonth(plan.selectedMonth + "-01"), value: Money.yen(row.selectedMonthSpent))
                     metricPair(label: "Avg", value: Money.yen(row.entry.now))
                     metricPair(label: "Target", value: row.entry.target.map { Money.yen($0) } ?? "—")
@@ -202,10 +215,7 @@ struct WhereToCutView: View {
     private func savingText(_ row: PlanRow) -> some View {
         if let saving = row.monthlySaving {
             if saving > 0 {
-                Text("Saves \(Money.yen(saving))")
-                    .font(.caption.weight(.semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.good)
+                QuietTag("Saves \(Money.yen(saving))", tone: .good)
             } else if saving < 0 {
                 Text("+\(Money.yen(-saving))")
                     .font(.caption)
@@ -223,17 +233,17 @@ struct WhereToCutView: View {
     private func metricPair(label: String, value: String) -> some View {
         HStack(spacing: 4) {
             Text(label)
-                .font(.caption2)
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.muted)
             Text(value)
-                .font(.caption.weight(.medium))
+                .font(.caption.weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(Theme.ink2)
         }
     }
 }
 
-/// Compact multi-month bar sparkline with a dashed target line.
+/// Compact multi-month bar sparkline with rounded bar caps and a dashed emerald target line.
 struct PlanSparkline: View {
     let points: [PlanMonthPoint]
     let target: Int?
@@ -244,13 +254,13 @@ struct PlanSparkline: View {
 
         GeometryReader { geo in
             ZStack(alignment: .bottomLeading) {
-                HStack(alignment: .bottom, spacing: 3) {
+                HStack(alignment: .bottom, spacing: 4) {
                     ForEach(points) { pt in
                         let frac = CGFloat(max(0, pt.spent)) / CGFloat(ceiling)
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: 3.5, style: .continuous)
                             .fill(barColor(pt))
-                            .opacity(pt.isInProgress ? 0.5 : (pt.isSelected ? 1.0 : 0.45))
-                            .frame(height: max(pt.spent > 0 ? 3 : 1, geo.size.height * frac))
+                            .opacity(pt.isInProgress ? 0.65 : (pt.isSelected ? 1.0 : 0.48))
+                            .frame(height: max(pt.spent > 0 ? 4 : 1.5, geo.size.height * frac))
                             .frame(maxWidth: .infinity)
                     }
                 }
@@ -261,7 +271,7 @@ struct PlanSparkline: View {
                         path.move(to: CGPoint(x: 0, y: y))
                         path.addLine(to: CGPoint(x: geo.size.width, y: y))
                     }
-                    .stroke(Theme.accent.opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .stroke(Theme.accent.opacity(0.85), style: StrokeStyle(lineWidth: 1.25, dash: [4, 3]))
                 }
             }
         }
@@ -269,9 +279,9 @@ struct PlanSparkline: View {
     }
 
     private func barColor(_ pt: PlanMonthPoint) -> Color {
-        if let target, pt.spent > target, pt.isSelected {
-            return Theme.bad
+        if let target, pt.spent > target {
+            return pt.isSelected ? Theme.bad : Theme.bad.opacity(0.65)
         }
-        return pt.isSelected ? Theme.ink : Theme.muted
+        return pt.isSelected ? Theme.accent : Theme.muted
     }
 }

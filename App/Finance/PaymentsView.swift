@@ -49,7 +49,7 @@ struct PaymentsView: View {
                             if hasExtraFilters || session.paymentsOnlyUncategorized {
                                 activeFiltersBanner(effectiveStatus: effectiveStatus)
                             }
-                            summaryCard(screen: screen)
+                            summaryCard(screen: screen, data: data)
                             if screen.sections.isEmpty {
                                 emptyFilterCard
                             } else {
@@ -242,6 +242,7 @@ struct PaymentsView: View {
                         .id(month)
                     }
                 }
+                .padding(.vertical, 2)
             }
             .onAppear {
                 proxy.scrollTo(screen.allMonths ? "ALL_MONTHS" : screen.selectedMonth, anchor: .trailing)
@@ -289,6 +290,7 @@ struct PaymentsView: View {
                         .id(option.name)
                     }
                 }
+                .padding(.vertical, 2)
             }
             .onAppear {
                 if let activeCategory {
@@ -325,9 +327,9 @@ struct PaymentsView: View {
         }
     }
 
-    // MARK: - Month summary card
+    // MARK: - Month summary card with 4-layer proportion ribbon
 
-    private func summaryCard(screen: PaymentsScreenModel) -> some View {
+    private func summaryCard(screen: PaymentsScreenModel, data: FinanceData) -> some View {
         let headerLabel = screen.allMonths
             ? "All \(screen.months.count) months"
             : DayText.month(screen.selectedMonth)
@@ -353,18 +355,36 @@ struct PaymentsView: View {
             return parts.joined(separator: " · ")
         }()
 
+        // Compute the 4-layer spending mix for the sleek ribbon bar
+        let layerSlices: [(layer: SpendingLayer, sum: Int)] = {
+            guard typeFilter != .income else { return [] }
+            var totals: [SpendingLayer: Int] = [:]
+            for sec in screen.sections {
+                for row in sec.rows {
+                    let item = row.value
+                    guard item.amount > 0, let layerKey = data.layer(of: item) else { continue }
+                    let layer = SpendingLayer.resolve(key: layerKey, bundleLayers: data.bundle.layers)
+                    totals[layer, default: 0] += item.amount
+                }
+            }
+            return SpendingLayer.allCases.compactMap { layer in
+                let val = totals[layer, default: 0]
+                return val > 0 ? (layer, val) : nil
+            }
+        }()
+
         return FinanceCard {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 8) {
-                        SectionLabel(headerLabel)
+                        SectionLabel(headerLabel, symbol: "creditcard")
                         if let activeCategory = session.paymentsCategory {
                             QuietTag(activeCategory, tone: .accent)
                         }
                     }
                 } else {
                     HStack(alignment: .center, spacing: 8) {
-                        SectionLabel(headerLabel)
+                        SectionLabel(headerLabel, symbol: "creditcard")
                         Spacer(minLength: 8)
                         if let activeCategory = session.paymentsCategory {
                             QuietTag(activeCategory, tone: .accent)
@@ -372,7 +392,7 @@ struct PaymentsView: View {
                     }
                 }
 
-                MetricMoneyText(amount: displayAmount, color: amountColor)
+                HeroMoneyText(amount: displayAmount, color: amountColor)
 
                 FlowLayout(horizontalSpacing: 8, verticalSpacing: 6) {
                     Text(countLine)
@@ -387,6 +407,24 @@ struct PaymentsView: View {
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
+
+                if !layerSlices.isEmpty {
+                    let total = max(1, layerSlices.reduce(0) { $0 + $1.sum })
+                    GeometryReader { geo in
+                        let gap: CGFloat = layerSlices.count > 1 ? 2.5 : 0
+                        let usable = max(0, geo.size.width - gap * CGFloat(max(0, layerSlices.count - 1)))
+                        HStack(spacing: gap) {
+                            ForEach(layerSlices, id: \.layer) { slice in
+                                Capsule()
+                                    .fill(slice.layer.color)
+                                    .frame(width: max(6, usable * CGFloat(slice.sum) / CGFloat(total)))
+                            }
+                        }
+                    }
+                    .frame(height: 5.5)
+                    .padding(.top, 2)
+                    .accessibilityHidden(true)
+                }
             }
         }
     }
@@ -402,9 +440,9 @@ struct PaymentsView: View {
                         SectionLabel(headerTitle)
                         if section.countedSubtotal != 0 && section.date != "LARGEST" {
                             Text(Money.payment(section.countedSubtotal))
-                                .font(.caption.weight(.medium))
+                                .font(.caption.weight(.semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(Theme.muted)
+                                .foregroundStyle(Theme.ink2)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.5)
                                 .allowsTightening(true)
@@ -412,27 +450,30 @@ struct PaymentsView: View {
                         }
                     }
                 } else {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .center, spacing: 8) {
                         SectionLabel(headerTitle)
                         Spacer(minLength: 8)
                         if section.countedSubtotal != 0 && section.date != "LARGEST" {
                             Text(Money.payment(section.countedSubtotal))
-                                .font(.caption.weight(.medium))
+                                .font(.caption.weight(.semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(Theme.muted)
+                                .foregroundStyle(Theme.ink2)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Theme.well.opacity(0.8), in: Capsule())
                                 .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
                         }
                     }
                 }
             }
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 4)
 
             FinanceCard(padding: 0) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
                         if index > 0 {
                             HairlineDivider()
-                                .padding(.leading, Theme.cardPadding)
+                                .padding(.leading, dynamicTypeSize.isAccessibilitySize ? Theme.cardPadding : 64)
                         }
                         Button {
                             inspectedPayment = InspectedPayment(item: row.value)
@@ -443,7 +484,7 @@ struct PaymentsView: View {
                                 isLocal: data.isLocalItem(row.value),
                                 showDateInSubtitle: section.date == "LARGEST"
                             )
-                            .padding(.horizontal, Theme.cardPadding)
+                            .padding(.horizontal, 16)
                             .padding(.vertical, 12)
                             .contentShape(Rectangle())
                         }
@@ -536,7 +577,7 @@ struct PaymentRow: View {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.merchant)
-                        .font(.body.weight(.medium))
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(amountText)
@@ -567,33 +608,37 @@ struct PaymentRow: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(item.merchant)
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Theme.ink)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
-                        Text(amountText)
-                            .font(.subheadline.weight(.medium))
-                            .monospacedDigit()
-                            .foregroundStyle(amountColor)
-                            .fixedSize(horizontal: true, vertical: false)
-                    }
-                    HStack(alignment: .center, spacing: 6) {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .lineLimit(1)
-                        Spacer(minLength: 6)
-                        if item.isPending {
-                            QuietTag("Pending", tone: .accent)
+                HStack(alignment: .center, spacing: 12) {
+                    CategoryBadge(category: item.amount < 0 ? "Salary" : item.category, size: 36)
+
+                    VStack(alignment: .leading, spacing: 3.5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(item.merchant)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(amountText)
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(amountColor)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
-                        if isLocal {
-                            QuietTag("Local", tone: .accent)
-                        }
-                        if !counted {
-                            QuietTag("Not spending", tone: .neutral)
+                        HStack(alignment: .center, spacing: 6) {
+                            Text(subtitle)
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            if item.isPending {
+                                QuietTag("Pending", tone: .accent)
+                            }
+                            if isLocal {
+                                QuietTag("Local", tone: .accent)
+                            }
+                            if !counted {
+                                QuietTag("Not spending", tone: .neutral)
+                            }
                         }
                     }
                 }

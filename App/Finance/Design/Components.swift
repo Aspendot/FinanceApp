@@ -1,10 +1,11 @@
 import FinanceCore
 import SwiftUI
 
-/// White/elevated surface card with 14 pt continuous corners and a 1 px hairline border.
-/// No gradients and no shadows.
+/// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature,
+/// fine hairline border, specular dark-mode rim, and whisper-soft ambient depth.
 struct FinanceCard<Content: View>: View {
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
     private let padding: CGFloat
     private let content: Content
 
@@ -15,6 +16,8 @@ struct FinanceCard<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
+        let hairline = 1.0 / max(displayScale, 1)
+
         VStack(alignment: .leading, spacing: 0) {
             content
         }
@@ -22,68 +25,329 @@ struct FinanceCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface, in: shape)
         .overlay(
-            shape.strokeBorder(Theme.line, lineWidth: 1.0 / max(displayScale, 1))
+            Group {
+                if colorScheme == .dark {
+                    shape.strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(0.11),
+                                Color.white.opacity(0.035),
+                                Color.white.opacity(0.02)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.75
+                    )
+                } else {
+                    shape.strokeBorder(Theme.line.opacity(0.75), lineWidth: hairline)
+                }
+            }
+        )
+        .shadow(
+            color: colorScheme == .dark
+                ? Color.black.opacity(0.32)
+                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.055),
+            radius: colorScheme == .dark ? 12 : 16,
+            x: 0,
+            y: colorScheme == .dark ? 6 : 6
+        )
+        .shadow(
+            color: colorScheme == .dark
+                ? Color.clear
+                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.03),
+            radius: 2,
+            x: 0,
+            y: 1
         )
     }
 }
 
-/// 12 pt semibold uppercase section label with 0.08 em tracking in muted ink.
-struct SectionLabel: View {
-    let text: String
-    @ScaledMetric(relativeTo: .caption2) private var size: CGFloat = 12
+/// Signature Midnight Forest Obsidian centerpiece card with subtle ambient jade sheen
+/// and fine luminous rim — anchored at the top of Now and Where to Cut.
+struct HeroVaultCard<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let padding: CGFloat
+    private let accentTint: Color
+    private let content: Content
 
-    init(_ text: String) {
-        self.text = text
+    init(
+        padding: CGFloat = 20,
+        accentTint: Color = Theme.heroGlow,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.padding = padding
+        self.accentTint = accentTint
+        self.content = content()
     }
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: min(size, 22), weight: .semibold, design: .default))
-            .tracking(min(size, 22) * 0.08)
-            .foregroundStyle(Theme.muted)
-            .accessibilityAddTraits(.isHeader)
+        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
+
+        VStack(alignment: .leading, spacing: 0) {
+            content
+        }
+        .padding(padding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            ZStack {
+                LinearGradient(
+                    colors: [Theme.heroTop, Theme.heroMid, Theme.heroBottom],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [accentTint.opacity(0.22), Color.clear],
+                    center: .topTrailing,
+                    startRadius: 8,
+                    endRadius: 240
+                )
+                RadialGradient(
+                    colors: [Color.white.opacity(0.05), Color.clear],
+                    center: .topLeading,
+                    startRadius: 2,
+                    endRadius: 160
+                )
+            }
+            .clipShape(shape)
+        )
+        .overlay(
+            shape.strokeBorder(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(0.20),
+                        accentTint.opacity(0.16),
+                        Color.white.opacity(0.05)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 0.9
+            )
+        )
+        .shadow(
+            color: colorScheme == .dark
+                ? Color.black.opacity(0.50)
+                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.24),
+            radius: 22,
+            x: 0,
+            y: 12
+        )
+        .shadow(
+            color: colorScheme == .dark
+                ? Color.clear
+                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.08),
+            radius: 4,
+            x: 0,
+            y: 2
+        )
     }
 }
 
-/// 44 pt semibold SF Pro hero yen value with tight tracking and monospaced digits.
+/// Frosted translucent inset well designed for key figures inside `HeroVaultCard`.
+struct FrostedMetricTile<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous)
+        VStack(alignment: .leading, spacing: 4) {
+            content
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.075), in: shape)
+        .overlay(
+            shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)
+        )
+    }
+}
+
+/// Soft recessed well for side-by-side summary stats inside standard `FinanceCard`s.
+struct MetricWell<Content: View>: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private let tint: Color?
+    private let content: Content
+
+    init(tint: Color? = nil, @ViewBuilder content: () -> Content) {
+        self.tint = tint
+        self.content = content()
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous)
+        let fill: Color = {
+            if let tint {
+                return tint.opacity(colorScheme == .dark ? 0.14 : 0.08)
+            }
+            return Theme.well.opacity(colorScheme == .dark ? 0.85 : 0.65)
+        }()
+        VStack(alignment: .leading, spacing: 4) {
+            content
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(fill, in: shape)
+        .overlay(
+            shape.strokeBorder(
+                (tint ?? Theme.line).opacity(colorScheme == .dark ? 0.22 : 0.25),
+                lineWidth: 0.5
+            )
+        )
+    }
+}
+
+/// Sculpted circular progress ring for payday countdown and savings rate gauges.
+struct CycleRingView: View {
+    let progress: Double
+    let valueText: String
+    let unitText: String
+    var trackColor: Color = Color.white.opacity(0.14)
+    var fillColor: Color = Theme.heroAccent
+    var textColor: Color = Theme.heroInk
+    var unitColor: Color = Theme.heroInkMuted
+    var size: CGFloat = 58
+    var lineWidth: CGFloat = 4.5
+
+    var body: some View {
+        let clamped = min(1.0, max(0.04, progress))
+        ZStack {
+            Circle()
+                .stroke(trackColor, lineWidth: lineWidth)
+            Circle()
+                .trim(from: 0, to: clamped)
+                .stroke(
+                    AngularGradient(
+                        colors: [fillColor.opacity(0.55), fillColor],
+                        center: .center,
+                        startAngle: .degrees(-90),
+                        endAngle: .degrees(270)
+                    ),
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: -1) {
+                Text(valueText)
+                    .font(.system(size: size * 0.31, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(textColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                Text(unitText.uppercased())
+                    .font(.system(size: max(8, size * 0.14), weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(unitColor)
+                    .lineLimit(1)
+            }
+            .padding(6)
+        }
+        .frame(width: size, height: size)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(valueText) \(unitText)")
+    }
+}
+
+/// 11.5 pt semibold uppercase section eyebrow with deliberate tracking and optional tiny symbol.
+struct SectionLabel: View {
+    let text: String
+    var symbol: String? = nil
+    var color: Color = Theme.muted
+    @ScaledMetric(relativeTo: .caption2) private var size: CGFloat = 11.5
+
+    init(_ text: String, symbol: String? = nil, color: Color = Theme.muted) {
+        self.text = text
+        self.symbol = symbol
+        self.color = color
+    }
+
+    var body: some View {
+        let clamped = min(size, 21)
+        HStack(spacing: 5) {
+            if let symbol {
+                Image(systemName: symbol)
+                    .font(.system(size: clamped, weight: .semibold))
+                    .foregroundStyle(color)
+                    .accessibilityHidden(true)
+            }
+            Text(text.uppercased())
+                .font(.system(size: clamped, weight: .semibold, design: .default))
+                .tracking(clamped * 0.09)
+                .foregroundStyle(color)
+        }
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Editorial hero yen value with subtly lighter, refined ¥ currency prefix and crisp bold monospaced digits.
 struct HeroMoneyText: View {
     let amount: Int
     var color: Color = Theme.ink
     var signed: Bool = false
-    @ScaledMetric(relativeTo: .largeTitle) private var size: CGFloat = 44
+    @ScaledMetric(relativeTo: .largeTitle) private var size: CGFloat = 42
 
     var body: some View {
-        let scaled = min(size, 64)
-        Text(signed ? Money.signed(amount) : Money.yen(amount))
-            .font(.system(size: scaled, weight: .semibold, design: .default))
-            .tracking(-scaled * 0.028)
-            .monospacedDigit()
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.45)
-            .allowsTightening(true)
-            .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
+        let scaled = min(size, 60)
+        let prefix: String = {
+            if amount < 0 { return "−¥" }
+            if signed && amount > 0 { return "+¥" }
+            return "¥"
+        }()
+        let digits = amount.magnitude.formatted()
+
+        HStack(alignment: .firstTextBaseline, spacing: 2) {
+            Text(prefix)
+                .font(.system(size: scaled * 0.62, weight: .medium, design: .rounded))
+                .foregroundStyle(color.opacity(0.72))
+            Text(digits)
+                .font(.system(size: scaled, weight: .bold, design: .rounded))
+                .tracking(-scaled * 0.024)
+                .monospacedDigit()
+                .foregroundStyle(color)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.45)
+        .allowsTightening(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
     }
 }
 
-/// 25 pt semibold SF Pro metric yen value with tight tracking and monospaced digits.
+/// Editorial 24 pt bold metric yen value with refined ¥ prefix and monospaced digits.
 struct MetricMoneyText: View {
     let amount: Int
     var color: Color = Theme.ink
     var signed: Bool = false
-    @ScaledMetric(relativeTo: .title2) private var size: CGFloat = 25
+    @ScaledMetric(relativeTo: .title2) private var size: CGFloat = 24
 
     var body: some View {
-        let scaled = min(size, 40)
-        Text(signed ? Money.signed(amount) : Money.yen(amount))
-            .font(.system(size: scaled, weight: .semibold, design: .default))
-            .tracking(-scaled * 0.018)
-            .monospacedDigit()
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .minimumScaleFactor(0.5)
-            .allowsTightening(true)
-            .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
+        let scaled = min(size, 38)
+        let prefix: String = {
+            if amount < 0 { return "−¥" }
+            if signed && amount > 0 { return "+¥" }
+            return "¥"
+        }()
+        let digits = amount.magnitude.formatted()
+
+        HStack(alignment: .firstTextBaseline, spacing: 1.5) {
+            Text(prefix)
+                .font(.system(size: scaled * 0.68, weight: .medium, design: .rounded))
+                .foregroundStyle(color.opacity(0.72))
+            Text(digits)
+                .font(.system(size: scaled, weight: .bold, design: .rounded))
+                .tracking(-scaled * 0.018)
+                .monospacedDigit()
+                .foregroundStyle(color)
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.5)
+        .allowsTightening(true)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
     }
 }
 
@@ -99,20 +363,27 @@ struct HairlineDivider: View {
     }
 }
 
-/// Slim capsule progress meter with guaranteed visibility for non-zero ratios.
+/// Sculpted capsule progress meter with subtle tonal sheen and guaranteed visibility for non-zero ratios.
 struct ProgressMeter: View {
     let ratio: Double
     var tint: Color = Theme.accent
-    var height: CGFloat = 6
+    var track: Color = Theme.track
+    var height: CGFloat = 6.5
 
     var body: some View {
         let clamped = min(1.0, max(0.0, ratio))
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Theme.track)
+                Capsule().fill(track)
                 if clamped > 0 {
                     Capsule()
-                        .fill(tint)
+                        .fill(
+                            LinearGradient(
+                                colors: [tint.opacity(0.84), tint],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                         .frame(width: max(height, geo.size.width * clamped))
                 }
             }
@@ -122,15 +393,18 @@ struct ProgressMeter: View {
     }
 }
 
-/// Calm full-pill tag for Pending, Estimate, Payday, Borrowed, or Not spending states.
+/// Refined full-pill tag with subtle tonal border for Pending, Estimate, Payday, Borrowed, or status states.
 struct QuietTag: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.colorScheme) private var colorScheme
 
     enum Tone {
         case neutral
         case accent
         case good
         case bad
+        case warn
+        case hero
 
         init(statusTone: StatusTone) {
             switch statusTone {
@@ -153,14 +427,17 @@ struct QuietTag: View {
     var body: some View {
         let isAccessibility = dynamicTypeSize.isAccessibilitySize
         Text(text)
-            .font(.caption2.weight(.medium))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(foreground)
             .lineLimit(1)
             .minimumScaleFactor(isAccessibility ? 0.5 : 1.0)
             .allowsTightening(isAccessibility)
-            .padding(.horizontal, isAccessibility ? 12 : 8)
-            .padding(.vertical, isAccessibility ? 4 : 3)
+            .padding(.horizontal, isAccessibility ? 12 : 9)
+            .padding(.vertical, isAccessibility ? 4 : 3.5)
             .background(background, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(borderColor, lineWidth: 0.6)
+            )
             .fixedSize(horizontal: !isAccessibility, vertical: false)
     }
 
@@ -170,20 +447,35 @@ struct QuietTag: View {
         case .accent: return Theme.accent
         case .good: return Theme.good
         case .bad: return Theme.bad
+        case .warn: return Theme.warn
+        case .hero: return Theme.heroAccent
         }
     }
 
     private var background: Color {
         switch tone {
-        case .neutral: return Theme.track
+        case .neutral: return Theme.track.opacity(colorScheme == .dark ? 0.9 : 0.8)
         case .accent: return Theme.accentWash
         case .good: return Theme.goodWash
         case .bad: return Theme.badWash
+        case .warn: return Theme.warn.opacity(colorScheme == .dark ? 0.16 : 0.12)
+        case .hero: return Theme.heroAccent.opacity(0.16)
+        }
+    }
+
+    private var borderColor: Color {
+        switch tone {
+        case .neutral: return Theme.line.opacity(0.6)
+        case .accent: return Theme.accent.opacity(colorScheme == .dark ? 0.28 : 0.18)
+        case .good: return Theme.good.opacity(colorScheme == .dark ? 0.28 : 0.18)
+        case .bad: return Theme.bad.opacity(colorScheme == .dark ? 0.28 : 0.18)
+        case .warn: return Theme.warn.opacity(colorScheme == .dark ? 0.30 : 0.22)
+        case .hero: return Theme.heroAccent.opacity(0.32)
         }
     }
 }
 
-/// Full-pill interactive filter or month chip with a guaranteed 44 pt touch target.
+/// Tactile pill filter or month chip with emerald glow when selected and crisp elevation when unselected.
 struct FilterChip: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
@@ -196,14 +488,32 @@ struct FilterChip: View {
             Text(title)
                 .font(.subheadline.weight(isSelected ? .semibold : .medium))
                 .foregroundStyle(selectedForeground)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(isSelected ? Theme.accent : Theme.surface, in: Capsule())
+                .padding(.horizontal, 15)
+                .padding(.vertical, 8.5)
+                .background(
+                    Group {
+                        if isSelected {
+                            Capsule().fill(Theme.accent)
+                        } else {
+                            Capsule().fill(Theme.surface)
+                        }
+                    }
+                )
                 .overlay(
                     Capsule().strokeBorder(
-                        isSelected ? Color.clear : Theme.line,
-                        lineWidth: 1.0 / max(displayScale, 1)
+                        isSelected
+                            ? Color.white.opacity(colorScheme == .dark ? 0.16 : 0.20)
+                            : Theme.line.opacity(colorScheme == .dark ? 0.9 : 0.8),
+                        lineWidth: isSelected ? 0.6 : (1.0 / max(displayScale, 1))
                     )
+                )
+                .shadow(
+                    color: isSelected
+                        ? Theme.accent.opacity(colorScheme == .dark ? 0.28 : 0.24)
+                        : Color.black.opacity(colorScheme == .dark ? 0.16 : 0.03),
+                    radius: isSelected ? 7 : 4,
+                    x: 0,
+                    y: isSelected ? 3 : 1
                 )
                 .frame(minHeight: Theme.minTouchTarget)
                 .contentShape(Rectangle())
@@ -307,7 +617,7 @@ struct FlowLayout: Layout {
     }
 }
 
-/// Calm primary action button with guaranteed contrast in both light and dark modes.
+/// Tactile emerald primary action button with guaranteed contrast in both light and dark modes.
 struct PrimaryActionButton: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
@@ -316,15 +626,28 @@ struct PrimaryActionButton: View {
     let action: () -> Void
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
         Button(action: action) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(foreground)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, minHeight: Theme.minTouchTarget)
-                .background(background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .background(background, in: shape)
+                .overlay(
+                    shape.strokeBorder(
+                        isEnabled ? Color.white.opacity(0.16) : Color.clear,
+                        lineWidth: 0.6
+                    )
+                )
+                .shadow(
+                    color: isEnabled ? Theme.accent.opacity(colorScheme == .dark ? 0.24 : 0.22) : .clear,
+                    radius: 8,
+                    x: 0,
+                    y: 4
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -397,10 +720,9 @@ struct StateCard: View {
                         ProgressView()
                             .tint(Theme.accent)
                     } else if kind == .error {
-                        Circle()
-                            .fill(Theme.bad)
-                            .frame(width: 8, height: 8)
-                            .accessibilityHidden(true)
+                        IconMedallion(symbol: "exclamationmark.triangle.fill", tint: Theme.bad, size: 30)
+                    } else {
+                        IconMedallion(symbol: "tray", tint: Theme.accent, size: 30)
                     }
                     Text(title)
                         .font(.headline)
@@ -412,11 +734,19 @@ struct StateCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 if let actionTitle, let action {
                     Button(action: action) {
-                        Text(actionTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Theme.accent)
-                            .frame(minHeight: Theme.minTouchTarget)
-                            .contentShape(Rectangle())
+                        HStack(spacing: 4) {
+                            Text(actionTitle)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                            Image(systemName: "arrow.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(Theme.accentWash, in: Capsule())
+                        .frame(minHeight: Theme.minTouchTarget, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 2)

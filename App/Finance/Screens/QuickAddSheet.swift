@@ -78,14 +78,15 @@ struct QuickAddSheet: View {
                 Section {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text(isMoneyIn ? "+¥" : "¥")
-                            .font(.title.weight(.semibold))
-                            .foregroundStyle(isMoneyIn ? Theme.good : Theme.ink)
+                            .font(.system(size: 26, weight: .semibold, design: .rounded))
+                            .foregroundStyle((isMoneyIn ? Theme.good : Theme.ink).opacity(0.72))
                         TextField("0", text: $amountText)
                             .keyboardType(.numberPad)
-                            .font(.system(size: 32, weight: .semibold))
+                            .font(.system(size: 38, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(isMoneyIn ? Theme.good : Theme.ink)
                     }
+                    .padding(.vertical, 4)
 
                     Picker("Direction", selection: $isMoneyIn) {
                         Text("Money out").tag(false)
@@ -100,12 +101,15 @@ struct QuickAddSheet: View {
                                     let current = abs(parsedAmount ?? 0)
                                     amountText = String(current + step)
                                 }
-                                .font(.caption.weight(.medium))
+                                .font(.caption.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.accent)
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, 11)
                                 .padding(.vertical, 6)
                                 .background(Theme.accentWash, in: Capsule())
+                                .overlay(
+                                    Capsule().strokeBorder(Theme.accent.opacity(0.22), lineWidth: 0.6)
+                                )
                                 .buttonStyle(.plain)
                             }
                         }
@@ -117,12 +121,15 @@ struct QuickAddSheet: View {
                 .listRowBackground(Theme.surface)
 
                 Section {
-                    TextField("Shop or description", text: $merchant)
-                        .font(.subheadline)
-                        .foregroundStyle(Theme.ink)
-                        .onChange(of: merchant) { _, newValue in
-                            autoCategorize(merchant: newValue)
-                        }
+                    HStack(spacing: 10) {
+                        CategoryBadge(category: isMoneyIn ? "Salary" : selectedCategory, size: 32)
+                        TextField("Shop or description", text: $merchant)
+                            .font(.subheadline)
+                            .foregroundStyle(Theme.ink)
+                            .onChange(of: merchant) { _, newValue in
+                                autoCategorize(merchant: newValue)
+                            }
+                    }
 
                     if !merchantSuggestions.isEmpty {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -132,11 +139,11 @@ struct QuickAddSheet: View {
                                         merchant = suggestion
                                         autoCategorize(merchant: suggestion)
                                     }
-                                    .font(.caption)
+                                    .font(.caption.weight(.medium))
                                     .foregroundStyle(Theme.ink2)
-                                    .padding(.horizontal, 10)
+                                    .padding(.horizontal, 11)
                                     .padding(.vertical, 6)
-                                    .background(Theme.track, in: Capsule())
+                                    .background(Theme.well, in: Capsule())
                                     .buttonStyle(.plain)
                                 }
                             }
