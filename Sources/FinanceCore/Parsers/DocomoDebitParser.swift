@@ -16,15 +16,68 @@ enum DocomoDebitParser {
     static let purchaseSubject = TextFold.key("【デビットカード】ご利用のお知らせ(ドコモSMTBネット銀行)")
     static let settlementSubject = TextFold.key("【デビットカード】引落しまたは入金処理のお知らせ(ドコモSMTBネット銀行)")
 
+    static let declineSubject = TextFold.key("【デビットカード】ご利用不可のお知らせ(ドコモSMTBネット銀行)")
+    /// Account notices. 出金 often has no amount, only the service name.
+    static let accountSubjects: [String: NoticeKind] = [
+        TextFold.key("入金のお知らせ"): .deposit,
+        TextFold.key("振込入金のお知らせ"): .deposit,
+        TextFold.key("出金のお知らせ"): .withdrawal,
+    ]
+
     static func parse(_ email: NoticeEmail) -> ParseOutcome {
-        switch TextFold.key(email.subject) {
+        let subject = TextFold.key(email.subject)
+        switch subject {
         case purchaseSubject:
             return purchase(email)
         case settlementSubject:
             return settlement(email)
+        case declineSubject:
+            return decline(email)
         default:
+            if let kind = accountSubjects[subject] {
+                return account(email, kind)
+            }
             return NoticeParsers.unknown(email, "Docomo")
         }
+    }
+
+    private static func decline(_ email: NoticeEmail) -> ParseOutcome {
+        let f = Fields(email.text)
+        guard let whenText = f["利用日時"], let occurredAt = JST.timestamp(slashed: whenText) else {
+            return .quarantined("Docomo decline: no readable 利用日時")
+        }
+        guard let currency = f["利用通貨"], let amountText = f["利用金額"] else {
+            return .quarantined("Docomo decline: no currency or amount")
+        }
+        let merchant = f["利用加盟店"] ?? ""
+        return .notice(Notice(
+            messageID: email.messageID,
+            source: .docomoDebit,
+            kind: .decline,
+            receivedAt: JST.timestamp(email.receivedAt),
+            occurredAt: occurredAt,
+            amount: currency == "JPY" ? Yen.parse(amountText) : nil,
+            currency: currency,
+            foreignAmount: currency == "JPY" ? nil : amountText,
+            merchant: merchant.isEmpty ? nil : merchant,
+            parser: version
+        ))
+    }
+
+    private static func account(_ email: NoticeEmail, _ kind: NoticeKind) -> ParseOutcome {
+        let f = Fields(email.text)
+        let amount = f.entries.lazy.filter { $0.key.contains("金額") }.compactMap { Yen.parse($0.value) }.first
+        let merchant = [f["サービス名"], f["振込依頼人名"], f["振込依頼人"]].compactMap { $0 }.first { !$0.isEmpty }
+        return .notice(Notice(
+            messageID: email.messageID,
+            source: .docomoAccount,
+            kind: kind,
+            receivedAt: JST.timestamp(email.receivedAt),
+            amount: amount.map { kind == .deposit ? -$0 : $0 },
+            currency: "JPY",
+            merchant: merchant,
+            parser: version
+        ))
     }
 
     private static func purchase(_ email: NoticeEmail) -> ParseOutcome {

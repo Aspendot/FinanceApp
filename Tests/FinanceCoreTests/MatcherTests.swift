@@ -100,6 +100,50 @@ struct MatcherTests {
         #expect(r.rowOnly == ["r1"])
     }
 
+    @Test func finalAmountFromASettlementIsMatched() {
+        let r = Matcher.match(
+            notices: [notice("n1", .merpay, at: "2026-01-15T10:00:00+09:00", amount: 6900, ref: "T5"),
+                      notice("n2", .merpay, kind: .settlement, at: "2026-01-15T10:00:00+09:00", amount: 6990, ref: "T5")],
+            rows: [row("r1", .merpay, amount: 6990)])
+        #expect(r.adjustments == ["n2"])
+        #expect(r.pairs.map { "\($0.noticeID)-\($0.rowID)" } == ["n1-r1"])
+    }
+
+    @Test func identicalPurchasesAcrossTwoDaysPair() {
+        let r = Matcher.match(
+            notices: [notice("n1", amount: 311), notice("n2", amount: 311),
+                      notice("n3", received: "2026-01-16T12:00:00+09:00", amount: 311)],
+            rows: [row("r0", date: "2026-01-14", amount: 311), row("r1", amount: 311), row("r2", amount: 311),
+                   row("r3", date: "2026-01-16", amount: 311)])
+        #expect(r.ambiguous.isEmpty)
+        #expect(Set(r.pairs.map { "\($0.noticeID)-\($0.rowID)" }) == ["n1-r1", "n2-r2", "n3-r3"])
+        #expect(r.rowOnly == ["r0"])
+    }
+
+    @Test func offsettingPurchaseAndRefundAreProbablyReversed() {
+        let r = Matcher.match(
+            notices: [notice("n1", .merpay, at: "2026-01-15T10:00:00+09:00", amount: 100, merchant: "SAMPLE A", ref: "T1"),
+                      notice("n2", .merpay, kind: .refund, on: "2026-01-15", amount: -100, merchant: "SAMPLE/A", ref: "T2")],
+            rows: [])
+        #expect(r.probablyReversed == [CancelledPair(cancellationID: "n2", purchaseID: "n1")])
+        #expect(r.noticeOnly.isEmpty)
+    }
+
+    @Test func cardCheckIsNotSpending() {
+        let r = Matcher.match(notices: [notice("n1", .merpay, kind: .cardCheck, amount: 1)], rows: [])
+        #expect(r.notSpending == ["n1"])
+    }
+
+    @Test func cancellationCallsOffItsPurchase() {
+        let r = Matcher.match(
+            notices: [notice("n1", .merpay, at: "2026-01-15T10:00:00+09:00", amount: 150, ref: "T1"),
+                      notice("n2", .merpay, kind: .cancellation, at: "2026-01-15T10:00:00+09:00", amount: -150, ref: "T1"),
+                      notice("n3", .merpay, kind: .cancellation, at: "2026-01-15T11:00:00+09:00", amount: -500, ref: "T9")],
+            rows: [row("r1", .merpay, amount: -500)])
+        #expect(r.cancelled == [CancelledPair(cancellationID: "n2", purchaseID: "n1")])
+        #expect(r.pairs.map { "\($0.noticeID)-\($0.rowID)" } == ["n3-r1"])
+    }
+
     @Test func inputOrderDoesNotMatter() {
         let notices = [notice("n1", amount: 150), notice("n2", amount: 150), notice("n3", amount: 900, merchant: "X"),
                        notice("n4", received: "2026-01-16T09:00:00+09:00", amount: 900, merchant: "Y")]

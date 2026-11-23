@@ -133,7 +133,7 @@ struct MUFGDebitParserTests {
     @Test func unknownSubjects() {
         let money = NoticeParsers.parse(email("mail@debit.bk.mufg.jp", "【三菱ＵＦＪ‐ＶＩＳＡデビット】新しいお知らせ", "ご利用金額 : 100"))
         let news = NoticeParsers.parse(email("mail@debit.bk.mufg.jp", "【三菱ＵＦＪ‐ＶＩＳＡデビット】サービス停止のご案内", "メンテナンスのお知らせです。"))
-        #expect(money == .quarantined("MUFG debit: unknown layout that mentions money"))
+        #expect(money == .quarantined("MUFG debit: unknown layout with an amount"))
         #expect(news == .ignored("MUFG debit: not a money notice"))
     }
 }
@@ -184,7 +184,36 @@ struct DocomoDebitParserTests {
 
     @Test func otherMailFromTheBank() {
         let news = NoticeParsers.parse(email("post_master@netbk.co.jp", "サービスのご案内(ドコモSMTBネット銀行)", "新しい機能が使えるようになりました。"))
+        let maintenance = NoticeParsers.parse(email("post_master@netbk.co.jp", "振込サービス臨時メンテナンスのご案内", "期間中は振込をご利用いただけません。\n時間：2:00～6:00"))
         #expect(news == .ignored("Docomo: not a money notice"))
+        #expect(maintenance == .ignored("Docomo: not a money notice"))
+    }
+
+    @Test func declinedCardPayment() {
+        let text = """
+        利用日時   ： 2026/01/15 13:11:30
+        利用加盟店 ： SAMPLE TRAVEL
+        利用通貨   ： JPY
+        利用金額   ： 20,000.00
+        """
+        guard case .notice(let n) = NoticeParsers.parse(email("post_master@netbk.co.jp", "【デビットカード】ご利用不可のお知らせ(ドコモSMTBネット銀行)", text)) else {
+            Issue.record("expected a notice")
+            return
+        }
+        #expect(n.kind == .decline)
+        #expect(n.amount == 20000)
+        #expect(n.occurredAt == "2026-01-15T13:11:30+09:00")
+    }
+
+    @Test func accountNotices() {
+        guard case .notice(let w) = NoticeParsers.parse(email("post_master@netbk.co.jp", "出金のお知らせ", "サービス名：ことら送金")),
+              case .notice(let d) = NoticeParsers.parse(email("post_master@netbk.co.jp", "振込入金のお知らせ", "入金金額：3,000円\n振込依頼人名：サンプル"))
+        else {
+            Issue.record("expected notices")
+            return
+        }
+        #expect(w.source == .docomoAccount && w.kind == .withdrawal && w.amount == nil && w.merchant == "ことら送金")
+        #expect(d.kind == .deposit && d.amount == -3000)
     }
 }
 

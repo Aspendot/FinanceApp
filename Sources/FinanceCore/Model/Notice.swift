@@ -19,8 +19,16 @@ public enum NoticeKind: String, Codable, Sendable {
     /// A later debit or credit for a card payment: a sale confirmed without an
     /// earlier authorization, a difference adjustment, or a fee.
     case settlement
-    /// A refused payment. Never spending.
+    /// A refused payment, or a failed transfer. Never spending.
     case decline
+    /// A payment that was called off, often a card check that was released. It
+    /// cancels its purchase notice; the amount is negative.
+    case cancellation
+    /// A bill was issued (the amount due). Not spending; the purchases on it count.
+    case bill
+    /// A ¥1 authorization that checks the card. Not spending; statements show it
+    /// as ¥0 or not at all.
+    case cardCheck = "card_check"
     /// Money moved into a wallet, such as a Merpay top-up. Not spending.
     case topUp = "top_up"
     /// A bill was paid. The purchases on it were already counted.
@@ -57,6 +65,9 @@ public struct Notice: Codable, Sendable, Equatable {
     public var merchant: String?
     /// 承認番号, 取引番号 or an order ID, when the notice has one.
     public var reference: String?
+    /// For a refund or cancellation: the 取引番号 of the original payment, when
+    /// the notice shows it separately.
+    public var relatedReference: String?
     /// An Apple order number named in another source's notice, which links the
     /// two records so the payment is counted once.
     public var orderID: String?
@@ -70,9 +81,10 @@ public struct Notice: Codable, Sendable, Equatable {
         messageID: String, source: NoticeSource, kind: NoticeKind, receivedAt: String,
         occurredAt: String? = nil, occurredOn: String? = nil, amount: Int? = nil,
         currency: String? = nil, foreignAmount: String? = nil, merchant: String? = nil,
-        reference: String? = nil, orderID: String? = nil, parts: [String: Int]? = nil,
-        parser: String
+        reference: String? = nil, relatedReference: String? = nil, orderID: String? = nil,
+        parts: [String: Int]? = nil, parser: String
     ) {
+        self.relatedReference = relatedReference
         self.orderID = orderID
         self.parts = parts
         self.messageID = messageID

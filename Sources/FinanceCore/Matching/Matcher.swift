@@ -63,9 +63,20 @@ public struct MatchReport: Codable, Sendable, Equatable {
     /// Settlement notices that share a 承認番号 with a purchase notice: they
     /// adjust that purchase and are not separate rows.
     public var adjustments: [String] = []
-    /// Declines, top-ups, bill payments and account moves: never matched to
-    /// spending rows.
+    /// Declines, top-ups, bills, bill payments and account moves: never matched
+    /// to spending rows.
     public var notSpending: [String] = []
+    /// Cancellations paired with the purchase notice they call off. Neither
+    /// reaches a statement.
+    public var cancelled: [CancelledPair] = []
+    /// A purchase and a refund of the same amount within a week, neither on the
+    /// statement and with no shared reference. Probably reversed; not confirmed.
+    public var probablyReversed: [CancelledPair] = []
+}
+
+public struct CancelledPair: Codable, Sendable, Equatable {
+    public var cancellationID: String
+    public var purchaseID: String
 }
 
 /// How far a statement row's date may sit from the notice's date, in days.
@@ -95,14 +106,42 @@ public enum Matcher {
         let rows = rows.sorted { $0.id < $1.id }
         let rowByID = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
 
-        // Settlements that adjust an earlier purchase notice.
+        // Settlements that adjust an earlier purchase notice. The latest one gives
+        // the final amount, which is what the statement shows.
         let purchaseRefs = Set(notices.filter { $0.kind == .purchase }.compactMap { ref($0) })
+        var finalAmount: [String: Int] = [:]
+        for n in notices.sorted(by: { ($0.receivedAt, $0.messageID) < ($1.receivedAt, $1.messageID) })
+        where n.kind == .settlement {
+            if let r = ref(n), purchaseRefs.contains(r), let amount = n.amount {
+                finalAmount["\(n.source.rawValue)|\(r)"] = amount
+            }
+        }
+        func effectiveAmount(_ n: Notice) -> Int? {
+            guard n.kind == .purchase, let r = ref(n) else { return n.amount }
+            return finalAmount["\(n.source.rawValue)|\(r)"] ?? n.amount
+        }
+
+        // Cancellations that call off a purchase notice with the same reference.
+        var purchaseByRef: [String: String] = [:]
+        for n in notices where n.kind == .purchase {
+            if let r = ref(n) { purchaseByRef["\(n.source.rawValue)|\(r)"] = purchaseByRef["\(n.source.rawValue)|\(r)"] ?? n.messageID }
+        }
+        var calledOff: Set<String> = []
+        for n in notices where n.kind == .cancellation {
+            let keys = [n.reference, n.relatedReference].compactMap { $0 }.filter { !$0.isEmpty }
+            if let purchase = keys.lazy.compactMap({ purchaseByRef["\(n.source.rawValue)|\($0)"] }).first(where: { !calledOff.contains($0) }) {
+                report.cancelled.append(CancelledPair(cancellationID: n.messageID, purchaseID: purchase))
+                calledOff.insert(purchase)
+                calledOff.insert(n.messageID)
+            }
+        }
+
         var eligible: [Notice] = []
-        for n in notices {
+        for n in notices where !calledOff.contains(n.messageID) {
             switch n.kind {
             case .settlement where ref(n).map(purchaseRefs.contains) == true:
                 report.adjustments.append(n.messageID)
-            case .purchase, .refund, .settlement:
+            case .purchase, .refund, .settlement, .cancellation:
                 if n.amount != nil {
                     eligible.append(n)
                 } else {
@@ -131,7 +170,7 @@ public enum Matcher {
 
         // 2. Mutual single best, repeated until nothing changes.
         func candidates(_ n: Notice) -> [(row: StatementRow, rank: Rank)] {
-            guard let amount = n.amount, let day = noticeDay(n) else { return [] }
+            guard let amount = effectiveAmount(n), let day = noticeDay(n) else { return [] }
             let policy = MatchPolicy.for(n.source, n.kind)
             return rows.compactMap { row in
                 guard openRows.contains(row.id), row.source == n.source, row.amount == amount,
@@ -161,18 +200,34 @@ public enum Matcher {
                     }
                 }
             }
-            var still: [Notice] = []
-            for n in openNotices {
-                if let best = bestRows[n.messageID], best.count == 1, let rowID = best.first,
+            var done: Set<String> = []
+            for n in openNotices where !done.contains(n.messageID) {
+                guard let best = bestRows[n.messageID] else { continue }
+                if best.count == 1, let rowID = best.first,
                    rowBest[rowID]?.notices == [n.messageID], openRows.contains(rowID), let row = rowByID[rowID] {
                     report.pairs.append(pair(n, row, .best))
                     openRows.remove(rowID)
+                    done.insert(n.messageID)
                     changed = true
-                } else {
-                    still.append(n)
+                    continue
+                }
+                // Identical notices that all have the same identical best rows:
+                // any pairing among them gives the same totals.
+                let bestSet = Set(best)
+                let rivals = Set(best.flatMap { rowBest[$0]?.notices ?? [] })
+                let group = openNotices.filter { rivals.contains($0.messageID) && !done.contains($0.messageID) }
+                let rowsInSet = best.compactMap { rowByID[$0] }
+                if best.count > 1, Set(rowsInSet.map(signature)).count == 1, Set(group.map(signature)).count == 1,
+                   group.allSatisfy({ Set(bestRows[$0.messageID] ?? []) == bestSet }) {
+                    for (g, row) in zip(group.sorted { $0.messageID < $1.messageID }, rowsInSet.sorted { $0.id < $1.id }) {
+                        report.pairs.append(pair(g, row, .interchangeable))
+                        openRows.remove(row.id)
+                        done.insert(g.messageID)
+                    }
+                    changed = true
                 }
             }
-            openNotices = still
+            openNotices = openNotices.filter { !done.contains($0.messageID) }
         }
 
         // 3. What's left: interchangeable groups pair in order; anything else is
@@ -225,11 +280,34 @@ public enum Matcher {
             }
         }
 
+        // 4. Leftover purchases and refunds of the same amount within a week:
+        // probably reversed before reaching the statement. Reported separately,
+        // because nothing confirms it.
+        let byID = Dictionary(notices.map { ($0.messageID, $0) }, uniquingKeysWith: { a, _ in a })
+        let leftovers = report.noticeOnly.compactMap { byID[$0] }
+        var reversed: Set<String> = []
+        let refunds = leftovers.filter { ($0.kind == .refund || $0.kind == .cancellation) && ($0.amount ?? 0) < 0 }
+        for r in refunds.sorted(by: { ($0.day, $0.messageID) < ($1.day, $1.messageID) }) {
+            guard let amount = r.amount, let refundDay = JST.dayNumber(r.day) else { continue }
+            let options = leftovers.filter { p in
+                guard p.kind == .purchase, p.source == r.source, p.amount == -amount, !reversed.contains(p.messageID),
+                      let d = JST.dayNumber(p.day) else { return false }
+                return (0...7).contains(refundDay - d)
+            }
+            if let p = options.max(by: { ($0.day, $1.messageID) < ($1.day, $0.messageID) }) {
+                report.probablyReversed.append(CancelledPair(cancellationID: r.messageID, purchaseID: p.messageID))
+                reversed.insert(p.messageID)
+                reversed.insert(r.messageID)
+            }
+        }
+        report.noticeOnly.removeAll { reversed.contains($0) }
+
         report.rowOnly = openRows.sorted()
         report.pairs.sort { ($0.noticeID, $0.rowID) < ($1.noticeID, $1.rowID) }
         report.noticeOnly.sort()
         report.adjustments.sort()
         report.notSpending.sort()
+        report.cancelled.sort { $0.cancellationID < $1.cancellationID }
         return report
     }
 

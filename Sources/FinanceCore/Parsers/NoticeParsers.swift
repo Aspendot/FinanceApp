@@ -22,21 +22,30 @@ public enum NoticeParsers {
             return DocomoDebitParser.parse(email)
         case MerpayParser.sender:
             return MerpayParser.parse(email)
+        case AppleReceiptParser.sender:
+            return AppleReceiptParser.parse(email)
         default:
             return .quarantined("no parser for this sender yet")
         }
     }
 
-    /// Words that suggest an unknown email moves money, so it is quarantined
-    /// rather than ignored.
-    static let moneyWords = ["金額", "引落", "入金", "出金", "振込", "請求", "支払"]
-
+    /// An unknown email is quarantined only if it looks like a transaction: a
+    /// "…金額 : <yen>" line, or a yen amount in the subject. News, maintenance and
+    /// marketing mail are ignored.
     static func unknown(_ email: NoticeEmail, _ label: String) -> ParseOutcome {
-        let text = email.subject + "\n" + email.text
-        if moneyWords.contains(where: { text.contains($0) }) {
-            return .quarantined("\(label): unknown layout that mentions money")
+        let fields = Fields(email.text)
+        let hasAmountLine = fields.entries.contains { $0.key.contains("金額") && Yen.parse($0.value.prefix { $0 != "(" && $0 != "（" }.trimmingCharacters(in: .whitespaces)) != nil }
+        if hasAmountLine || yenInSubject(email.subject) != nil {
+            return .quarantined("\(label): unknown layout with an amount")
         }
         return .ignored("\(label): not a money notice")
+    }
+
+    /// The first "￥12,345" or "¥12,345" in a subject.
+    static func yenInSubject(_ subject: String) -> Int? {
+        guard let mark = subject.firstIndex(where: { $0 == "￥" || $0 == "¥" }) else { return nil }
+        let digits = subject[subject.index(after: mark)...].prefix { ("0"..."9").contains($0) || $0 == "," || ("０"..."９").contains($0) || $0 == "，" }
+        return Yen.parse(String(digits))
     }
 }
 
@@ -44,18 +53,31 @@ public enum NoticeParsers {
 /// so full-width spellings and padding spaces don't matter. The first line with a
 /// given key wins, because the data lines come before the boilerplate.
 struct Fields {
-    private var values: [String: String] = [:]
+    struct Entry {
+        var key: String
+        var value: String
+    }
+
+    /// Every "key : value" line, in order, with folded keys.
+    private(set) var entries: [Entry] = []
 
     init(_ text: String) {
         for line in text.split(omittingEmptySubsequences: true, whereSeparator: \.isNewline) {
             guard let sep = line.firstIndex(where: { $0 == ":" || $0 == "：" }) else { continue }
             let key = TextFold.key(String(line[..<sep]))
-            guard !key.isEmpty, values[key] == nil else { continue }
-            values[key] = line[line.index(after: sep)...].trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty else { continue }
+            entries.append(Entry(key: key, value: line[line.index(after: sep)...].trimmingCharacters(in: .whitespaces)))
         }
     }
 
     subscript(_ key: String) -> String? {
-        values[TextFold.key(key)]
+        let folded = TextFold.key(key)
+        return entries.first { $0.key == folded }?.value
+    }
+
+    /// Every value for a key, in order.
+    func all(_ key: String) -> [String] {
+        let folded = TextFold.key(key)
+        return entries.filter { $0.key == folded }.map(\.value)
     }
 }
