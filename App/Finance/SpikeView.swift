@@ -39,13 +39,20 @@ struct SpikeView: View {
                     Button("Allow notifications") {
                         Task { notifyResult = await Notifier.requestPermission() }
                     }
-                    Button("Send a test notification") {
+                    Button("Send a test notification now") {
                         Task {
                             await Notifier.post(title: "Finance", body: "Test notification")
-                            notifyResult = "Sent; it shows when the app is in the background"
+                            notifyResult = await Notifier.status() + ". Sent one now."
+                        }
+                    }
+                    Button("Send one in 10 seconds (lock the phone)") {
+                        Task {
+                            await Notifier.post(title: "Finance", body: "Test notification on the lock screen", after: 10)
+                            notifyResult = await Notifier.status() + ". One arrives in 10 seconds."
                         }
                     }
                 }
+                .task { notifyResult = await Notifier.status() }
                 Section("Background refresh") {
                     Text(refreshResult).font(.footnote).foregroundStyle(.secondary)
                     Text(runs.isEmpty ? "No background runs yet" : "\(runs.count) runs, last \(runs.last!.formatted(date: .abbreviated, time: .shortened))")

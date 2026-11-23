@@ -32,12 +32,36 @@ enum Notifier {
         }
     }
 
-    static func post(title: String, body: String) async {
+    /// Posts a notification now, or after `delay` seconds.
+    static func post(title: String, body: String, after delay: TimeInterval? = nil) async {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        content.sound = .default
+        let trigger = delay.map { UNTimeIntervalNotificationTrigger(timeInterval: max(1, $0), repeats: false) }
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
         try? await UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Whether notifications are allowed, in plain words.
+    static func status() async -> String {
+        switch await UNUserNotificationCenter.current().notificationSettings().authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return "Notifications are allowed"
+        case .denied: return "Notifications are off for Finance (Settings → Notifications → Finance)"
+        case .notDetermined: return "Not asked yet: tap Allow notifications"
+        @unknown default: return "Unknown notification setting"
+        }
+    }
+}
+
+/// Shows the app's own notifications as banners even while the app is open.
+/// Without this, iOS shows nothing for a notification that arrives in the foreground.
+final class ForegroundNotifications: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = ForegroundNotifications()
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list, .sound])
     }
 }
 
