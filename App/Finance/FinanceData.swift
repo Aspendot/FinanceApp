@@ -15,7 +15,7 @@ struct FinanceData: Sendable {
     /// with local category overrides applied.
     let allItems: [BudgetItem]
     /// Reconciled timeline (Money Forward + local bill checkoffs).
-    let timeline: [TimelineEntry]
+    let timeline: [FinanceCore.TimelineEntry]
     /// Keys of timeline entries marked paid on the phone rather than confirmed by a bank row.
     let phoneCheckedBillKeys: Set<String>
     /// Fingerprints of items created locally on the phone (manual or CSV import).
