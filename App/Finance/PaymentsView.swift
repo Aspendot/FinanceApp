@@ -3,26 +3,30 @@ import SwiftUI
 
 struct PaymentsView: View {
     @EnvironmentObject private var model: AppModel
-    @State private var month = ""
+    @State private var selectedMonth: String?
     @State private var query = ""
 
     var body: some View {
+        let months = model.data?.months ?? []
+        let month = selectedMonth.flatMap { months.contains($0) ? $0 : nil } ?? months.last ?? ""
         NavigationStack {
             List {
                 if let data = model.data {
-                    let rows = data.payments(in: month).filter { item in
-                        query.isEmpty || (item.merchant + " " + item.category + " " + item.source).localizedCaseInsensitiveContains(query)
+                    let payments = data.paymentsByMonth[month] ?? []
+                    let rows = query.isEmpty ? payments : payments.filter { row in
+                        let item = row.value
+                        return (item.merchant + " " + item.category + " " + item.source).localizedCaseInsensitiveContains(query)
                     }
-                    let counted = rows.filter { data.layer(of: $0) != nil }.map(\.amount).reduce(0, +)
-                    let pendingCount = rows.filter(\.isPending).count
+                    let counted = rows.filter { data.layer(of: $0.value) != nil }.reduce(0) { $0 + $1.value.amount }
+                    let pendingCount = rows.filter { $0.value.isPending }.count
                     Section {
                         Text("\(rows.count) payments · \(Money.yen(counted)) counted as spending"
                              + (pendingCount > 0 ? " · \(pendingCount) pending, from bank emails, not on a statement yet" : ""))
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section {
-                        ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
-                            PaymentRow(item: item, counted: data.layer(of: item) != nil)
+                        ForEach(rows) { row in
+                            PaymentRow(item: row.value, counted: data.layer(of: row.value) != nil)
                         }
                     }
                 } else {
@@ -34,16 +38,13 @@ struct PaymentsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        ForEach((model.data?.months ?? []).reversed(), id: \.self) { m in
-                            Button(DayText.month(m)) { month = m }
+                        ForEach(months.reversed(), id: \.self) { m in
+                            Button(DayText.month(m)) { selectedMonth = m }
                         }
                     } label: {
                         Label("Month", systemImage: "calendar")
                     }
                 }
-            }
-            .onAppear {
-                if month.isEmpty { month = model.data?.months.last ?? "" }
             }
             .refreshable { await model.syncGmail() }
         }

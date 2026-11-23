@@ -11,11 +11,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var checkingInbox = false
 
     init() {
-        data = FinanceData.load()
+        data = FinanceData.load(notices: GmailSync.recentNotices())
     }
 
     func reload() {
-        data = FinanceData.load()
+        data = FinanceData.load(notices: GmailSync.recentNotices())
         FinanceData.refreshWidget()
     }
 
