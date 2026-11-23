@@ -68,10 +68,11 @@ struct FinanceData: Sendable {
         effectiveCoverage = layered.effectiveCoverage
         let items = bundle.items + layered.bankItems + layered.pendingItems
 
-        let upcoming = PaydayView.compute(timeline: bundle.timeline, today: today)
+        let timeline = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
+        let upcoming = PaydayView.compute(timeline: timeline, today: today)
         payday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
-        comingUp = ComingUp.groups(timeline: bundle.timeline, today: today)
-        let start = bundle.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
+        comingUp = ComingUp.groups(timeline: timeline, today: today)
+        let start = timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
         lastPayday = start
         spentSincePayday = start.map {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)

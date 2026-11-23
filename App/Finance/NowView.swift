@@ -831,7 +831,10 @@ struct ComingUpDayRow: View {
         let tags: [(String, QuietTag.Tone)] = {
             var list: [(String, QuietTag.Tone)] = []
             if entry.payday == true { list.append(("Payday", .good)) }
-            if entry.done == true { list.append(("Received", .neutral)) }
+            if entry.done == true {
+                let doneLabel = entry.amount < 0 ? "Received" : (entry.amount > 0 ? "Paid" : "Done")
+                list.append((doneLabel, .neutral))
+            }
             if entry.borrowed == true { list.append(("Borrowed", .bad)) }
             if entry.estimate == true { list.append(("Estimate", .neutral)) }
             return list
