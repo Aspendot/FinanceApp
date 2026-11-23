@@ -72,12 +72,15 @@ public struct MatchReport: Codable, Sendable, Equatable {
 public struct MatchPolicy: Sendable, Equatable {
     public var dayOffsets: ClosedRange<Int>
 
-    public static func `for`(_ source: NoticeSource) -> MatchPolicy {
-        switch source {
+    public static func `for`(_ source: NoticeSource, _ kind: NoticeKind = .purchase) -> MatchPolicy {
+        switch (source, kind) {
+        // MUFG's settlement notice moves money on the next bank business day,
+        // which can be several days later over a long holiday.
+        case (.mufgDebit, .settlement): return MatchPolicy(dayOffsets: 0...6)
         // MUFG notices have no purchase time; one can arrive the morning after
         // the statement date, and the statement can post a day later.
-        case .mufgDebit: return MatchPolicy(dayOffsets: -1...1)
-        case .apple: return MatchPolicy(dayOffsets: -1...3)
+        case (.mufgDebit, _): return MatchPolicy(dayOffsets: -1...1)
+        case (.apple, _): return MatchPolicy(dayOffsets: -1...3)
         default: return MatchPolicy(dayOffsets: -1...1)
         }
     }
@@ -129,7 +132,7 @@ public enum Matcher {
         // 2. Mutual single best, repeated until nothing changes.
         func candidates(_ n: Notice) -> [(row: StatementRow, rank: Rank)] {
             guard let amount = n.amount, let day = noticeDay(n) else { return [] }
-            let policy = MatchPolicy.for(n.source)
+            let policy = MatchPolicy.for(n.source, n.kind)
             return rows.compactMap { row in
                 guard openRows.contains(row.id), row.source == n.source, row.amount == amount,
                       let rowDay = JST.dayNumber(row.date)

@@ -109,6 +109,17 @@ struct MUFGDebitParserTests {
         #expect(n.amount == -500)
     }
 
+    @Test func nextBusinessDaySettlement() {
+        let subject = "【三菱ＵＦＪ‐ＶＩＳＡデビット】ご利用代金お引落し（またはご入金）のお知らせ"
+        guard case .notice(let n) = NoticeParsers.parse(email("mail@debit.bk.mufg.jp", subject, mufgBody(amount: "-1,000"))) else {
+            Issue.record("expected a notice")
+            return
+        }
+        #expect(n.kind == .settlement)
+        #expect(n.amount == -1000)
+        #expect(MatchPolicy.for(n.source, n.kind).dayOffsets == 0...6)
+    }
+
     @Test func missingMerchantLineIsQuarantined() {
         let outcome = NoticeParsers.parse(email("mail@debit.bk.mufg.jp", mufgSubject, mufgBody(amount: "980", merchantLine: nil)))
         #expect(outcome == .quarantined("MUFG debit: no merchant line"))
