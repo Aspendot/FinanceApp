@@ -65,7 +65,13 @@ struct SpikeLog: Codable {
 
 /// Background refresh. iOS decides when it runs; asking for 15 minutes is only a floor.
 enum BackgroundRefresh {
-    static let identifier = "io.github.aspendot.financeapp.refresh"
+    /// The task ID as installed. SideStore rewrites IDs that start with the original
+    /// bundle ID (it adds the team ID), and registering an ID that isn't in the
+    /// installed Info.plist crashes the app, so the ID is read back at runtime.
+    static let identifier: String = {
+        let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String]
+        return permitted?.first { $0.hasSuffix(".refresh") } ?? "io.github.aspendot.financeapp.refresh"
+    }()
 
     static func register() {
         BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { task in

@@ -296,6 +296,9 @@ def pre_push(entries: list[Entry], stdin: str) -> list[str]:
                 pass  # Scan all local ancestry when the receiving tip is unavailable.
             else:
                 rev_range.append("^" + remote_sha)
+        # Commits already on origin are already public, so scanning them again protects
+        # nothing. Commits known only from other remotes are still scanned.
+        rev_range += ["--not", "--remotes=origin"]
         history = git("rev-list", "--parents", *rev_range)
         for revision in history.decode("ascii").splitlines():
             oid, *parents = revision.split()
