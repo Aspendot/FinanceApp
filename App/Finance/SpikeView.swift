@@ -6,6 +6,7 @@ import WidgetKit
 /// Step 0 of the iPhone app: one screen that tests each risky piece on a real phone
 /// after SideStore has signed the app. Each row shows the latest result.
 struct SpikeView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @State private var groupResult = SharedStore.groupID.map { "App Group: \($0)" } ?? "No App Group available"
     @State private var faceIDResult = "Not tried yet"
     @State private var notifyResult = "Not tried yet"
@@ -60,13 +61,12 @@ struct SpikeView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.footnote)
-                        .onSubmit { GmailSync.setClientID(clientID) }
                     Text(gmailResult).font(.footnote).foregroundStyle(.secondary)
                     Button("Sign in with Google") {
-                        GmailSync.setClientID(clientID)
                         Task {
                             do {
-                                try await GmailSync.signIn()
+                                try await GmailSync.signIn(clientID: clientID)
+                                notices = GmailSync.recentNotices()
                                 gmailResult = "Signed in with read-only Gmail access"
                             } catch {
                                 gmailResult = "Sign-in failed: " + error.localizedDescription
@@ -85,8 +85,13 @@ struct SpikeView: View {
                         }
                     }
                     Button("Sign out", role: .destructive) {
-                        GmailSync.signOut()
-                        gmailResult = "Signed out"
+                        do {
+                            try GmailSync.signOut()
+                            notices = []
+                            gmailResult = "Signed out"
+                        } catch {
+                            gmailResult = "Sign-out failed: " + error.localizedDescription
+                        }
                     }
                 }
                 if !notices.isEmpty {
@@ -111,6 +116,9 @@ struct SpikeView: View {
                 }
             }
             .navigationTitle("Finance test")
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { notices = GmailSync.recentNotices() }
+            }
         }
     }
 }
