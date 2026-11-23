@@ -118,7 +118,10 @@ struct SpikeView: View {
                     }
                 }
                 Section("This install") {
-                    LabeledContent("Bundle ID", value: Bundle.main.bundleIdentifier ?? "?")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Bundle ID (press and hold to copy it for Google)").font(.caption).foregroundStyle(.secondary)
+                        Text(Bundle.main.bundleIdentifier ?? "?").font(.footnote.monospaced()).textSelection(.enabled)
+                    }
                     LabeledContent("Version", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "?")
                     LabeledContent("iOS", value: UIDevice.current.systemVersion)
                 }
