@@ -224,7 +224,7 @@ struct MonthsView: View {
                 )
                 .foregroundStyle(segment.layer.color)
                 .opacity(opacity)
-                .cornerRadius(isTop ? 5 : 0)
+                .cornerRadius(isTop ? 3 : 0)
             }
 
             if screen.incomePoints.count >= 2 {
@@ -255,6 +255,7 @@ struct MonthsView: View {
             }
         }
         .chartLegend(.hidden)
+        .chartXScale(domain: screen.months)
         .chartYScale(domain: 0...screen.maxChartTotal)
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in

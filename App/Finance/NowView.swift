@@ -158,14 +158,14 @@ struct NowView: View {
             switch alert.severity {
             case .urgent: return Theme.bad
             case .warning: return Theme.warn
-            case .info: return Theme.accent
+            case .info: return Color("LayerRent")
             }
         }()
         let tone: QuietTag.Tone = {
             switch alert.severity {
             case .urgent: return .bad
             case .warning: return .warn
-            case .info: return .accent
+            case .info: return .info
             }
         }()
 

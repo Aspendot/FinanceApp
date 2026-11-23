@@ -404,6 +404,7 @@ struct QuietTag: View {
         case good
         case bad
         case warn
+        case info
         case hero
 
         init(statusTone: StatusTone) {
@@ -448,6 +449,7 @@ struct QuietTag: View {
         case .good: return Theme.good
         case .bad: return Theme.bad
         case .warn: return Theme.warn
+        case .info: return Color("LayerRent")
         case .hero: return Theme.heroAccent
         }
     }
@@ -459,6 +461,7 @@ struct QuietTag: View {
         case .good: return Theme.goodWash
         case .bad: return Theme.badWash
         case .warn: return Theme.warn.opacity(colorScheme == .dark ? 0.16 : 0.12)
+        case .info: return Color("LayerRent").opacity(colorScheme == .dark ? 0.18 : 0.11)
         case .hero: return Theme.heroAccent.opacity(0.16)
         }
     }
@@ -470,6 +473,7 @@ struct QuietTag: View {
         case .good: return Theme.good.opacity(colorScheme == .dark ? 0.28 : 0.18)
         case .bad: return Theme.bad.opacity(colorScheme == .dark ? 0.28 : 0.18)
         case .warn: return Theme.warn.opacity(colorScheme == .dark ? 0.30 : 0.22)
+        case .info: return Color("LayerRent").opacity(colorScheme == .dark ? 0.30 : 0.20)
         case .hero: return Theme.heroAccent.opacity(0.32)
         }
     }
