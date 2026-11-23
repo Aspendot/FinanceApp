@@ -1,6 +1,7 @@
 import BackgroundTasks
 import Foundation
 import LocalAuthentication
+import UIKit
 import UserNotifications
 
 /// Face ID.
@@ -64,24 +65,42 @@ final class ForegroundNotifications: NSObject, UNUserNotificationCenterDelegate 
     }
 }
 
-/// A record of background runs, so the app can show that they happen.
-struct SpikeLog: Codable {
-    var backgroundRuns: [Date] = []
+/// Keeps the app alive briefly for foreground and App Intent syncs, cancelling the work
+/// if iOS is about to suspend the process.
+enum BackgroundAssertion {
+    @MainActor
+    private final class State {
+        var taskID: UIBackgroundTaskIdentifier = .invalid
 
-    private static let key = "spikeLog"
-
-    static func load() -> SpikeLog {
-        let store = SharedStore.defaults ?? .standard
-        guard let data = store.data(forKey: key), let log = try? JSONDecoder().decode(SpikeLog.self, from: data) else {
-            return SpikeLog()
+        func end() {
+            guard taskID != .invalid else { return }
+            let id = taskID
+            taskID = .invalid
+            UIApplication.shared.endBackgroundTask(id)
         }
-        return log
     }
 
-    func save() {
-        let store = SharedStore.defaults ?? .standard
-        if let data = try? JSONEncoder().encode(self) {
-            store.set(data, forKey: Self.key)
+    static func run<T: Sendable>(
+        name: String = "FinanceSync",
+        operation: @escaping @Sendable () async -> T
+    ) async -> T {
+        let work = Task {
+            await operation()
+        }
+        let state = await MainActor.run { () -> State in
+            let state = State()
+            state.taskID = UIApplication.shared.beginBackgroundTask(withName: name) {
+                work.cancel()
+                MainActor.assumeIsolated { state.end() }
+            }
+            return state
+        }
+        return await withTaskCancellationHandler {
+            let result = await work.value
+            await MainActor.run { state.end() }
+            return result
+        } onCancel: {
+            work.cancel()
         }
     }
 }
@@ -107,6 +126,16 @@ enum BackgroundRefresh {
         _ = registered
     }
 
+    /// Submits a background refresh request only if none is currently pending.
+    static func scheduleIfNeeded() async {
+        guard let identifier, registered else { return }
+        let pending = await BGTaskScheduler.shared.pendingTaskRequests()
+        if pending.contains(where: { $0.identifier == identifier }) {
+            return
+        }
+        _ = schedule()
+    }
+
     static func schedule() -> String {
         guard let identifier, registered else { return "Background refresh is unavailable in this install" }
         let request = BGAppRefreshTaskRequest(identifier: identifier)
@@ -120,36 +149,18 @@ enum BackgroundRefresh {
     }
 
     private static func handle(_ task: BGAppRefreshTask) {
-        _ = schedule()
         // The launch handler runs on the main queue, so expiration is set before work starts.
-        let work = Task { @MainActor in
-            var succeeded = false
-            defer { task.setTaskCompleted(success: succeeded && !Task.isCancelled) }
-            guard !Task.isCancelled else { return }
-            var log = SpikeLog.load()
-            log.backgroundRuns.append(Date())
-            log.save()
-            do {
-                if try GmailSync.hasCredentials() {
-                    let fresh = try await GmailSync.run()
-                    if !Task.isCancelled, !fresh.isEmpty {
-                        await Notifier.post(title: "Finance", body: "Open the app to see new notices.")
-                    }
-                } else if let data = await FinanceData.load(notices: []) {
-                    guard !Task.isCancelled else { return }
-                    FinanceData.publishWidget(data.widgetSnapshot)
-                } else {
-                    FinanceData.publishWidget(WidgetSnapshot(
-                        title: "Background refresh",
-                        value: "\(log.backgroundRuns.count) runs",
-                        detail: "Last " + Date().formatted(date: .omitted, time: .shortened),
-                        updatedAt: Date()))
-                    await Notifier.post(title: "Background refresh ran", body: "Run \(log.backgroundRuns.count). The widget was updated.")
-                }
+        let work = Task {
+            let report = await SyncEngine.shared.run(trigger: .background, minimumInterval: 600, timeLimit: 25)
+            _ = schedule()
+            let succeeded: Bool
+            switch report.outcome {
+            case .updated, .skipped, .notSignedIn, .busy:
                 succeeded = true
-            } catch {
-                return
+            case .timedOut, .cancelled, .failed, .signInRequired:
+                succeeded = false
             }
+            task.setTaskCompleted(success: succeeded && !Task.isCancelled)
         }
         task.expirationHandler = {
             work.cancel()

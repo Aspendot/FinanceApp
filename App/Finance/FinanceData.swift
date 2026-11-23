@@ -6,6 +6,8 @@ import WidgetKit
 /// on the phone, which become pending payments with the PC's own rules.
 struct FinanceData: Sendable {
     let bundle: DataBundle
+    /// Full pending calculation result, including message IDs aligned with `items`.
+    let pendingResult: PendingResult
     /// Notices before the statement cutoff, kept outside the pending totals.
     let unmatched: [Notice]
     let payday: PaydayView?
@@ -30,6 +32,7 @@ struct FinanceData: Sendable {
         let config = bundle.layerConfig
         let result = PendingBuilder.build(notices: notices, bundle: bundle,
                                           categorizer: Categorizer(rules: bundle.rules), config: config)
+        pendingResult = result
         unmatched = result.unmatched
         pendingCount = result.items.count
         let items = bundle.items + result.items
@@ -69,15 +72,28 @@ struct FinanceData: Sendable {
                               detail: "for everything else" + spent, updatedAt: Date())
     }
 
-    @MainActor
-    static func publishWidget(_ snapshot: WidgetSnapshot) {
+    static func publishWidget(_ snapshot: WidgetSnapshot, force: Bool = false) {
         guard SharedStore.groupID != nil else { return }
-        if let current = SharedStore.read(),
+        if !force, let current = SharedStore.read(),
            current.title == snapshot.title, current.value == snapshot.value, current.detail == snapshot.detail {
             return
         }
         SharedStore.write(snapshot)
         WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
+    }
+
+    /// Fallback widget snapshot when no data file has been imported yet.
+    static func noticeOnlySnapshot(notices: [Notice], now: Date = Date()) -> WidgetSnapshot {
+        let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
+        let amounts = notices.filter {
+            $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
+        }.compactMap(\.amount)
+        return WidgetSnapshot(
+            title: "Card notices, 7 days",
+            value: "¥" + amounts.reduce(0, +).formatted(),
+            detail: "\(amounts.count) notices · " + now.formatted(date: .abbreviated, time: .shortened),
+            updatedAt: now
+        )
     }
 }
 

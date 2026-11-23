@@ -44,9 +44,23 @@ struct FinanceWidgetView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .privacySensitive()
+            if entry.hasGroup, let updated = Self.updatedLabel(entry.snapshot.updatedAt) {
+                Text(updated)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .containerBackground(.fill.tertiary, for: .widget)
+    }
+
+    private static func updatedLabel(_ date: Date) -> String? {
+        guard date != .distantPast else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = Calendar.current.isDateInToday(date) ? "HH:mm" : "MMM d, HH:mm"
+        return "Updated " + formatter.string(from: date)
     }
 }
 

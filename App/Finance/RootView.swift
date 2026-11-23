@@ -21,6 +21,13 @@ struct RootView: View {
             guard !Task.isCancelled else { return }
             await model.syncGmail()
         }
+        .onChange(of: phase) { _, newPhase in
+            if newPhase == .background {
+                Task { await BackgroundRefresh.scheduleIfNeeded() }
+            } else if newPhase == .active {
+                model.refreshRunLog()
+            }
+        }
     }
 }
 

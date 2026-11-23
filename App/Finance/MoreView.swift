@@ -1,8 +1,18 @@
+import FinanceCore
 import SwiftUI
 
 struct MoreView: View {
     @EnvironmentObject private var model: AppModel
     @AppStorage("faceIDLock") private var faceIDLock = true
+
+    private var lastCheckedRun: SyncRunRecord? {
+        model.runLog.first { $0.outcome == .updated }
+    }
+
+    private var checksTodayCount: Int {
+        let today = JST.day(Date())
+        return model.runLog.filter { JST.day($0.startedAt) == today }.count
+    }
 
     var body: some View {
         NavigationStack {
@@ -27,11 +37,21 @@ struct MoreView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Bank emails") {
+                    if let last = lastCheckedRun {
+                        Text("Last checked \(SyncStorage.formatCheckTime(last.startedAt)) (\(last.trigger.rawValue))")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    } else {
+                        Text("Not checked yet").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Text(checksTodayCount == 0
+                        ? "No checks today"
+                        : "\(checksTodayCount) \(checksTodayCount == 1 ? "check" : "checks") today")
+                        .font(.footnote).foregroundStyle(.secondary)
                     if let message = model.syncMessage {
                         Text(message).font(.footnote).foregroundStyle(.secondary)
                     }
                     Button(model.syncing ? "Checking Gmail…" : "Check Gmail now") {
-                        Task { await model.syncGmail() }
+                        Task { await model.syncGmail(userInitiated: true) }
                     }
                     .disabled(model.syncing)
                     if let data = model.data, !data.unmatched.isEmpty {
@@ -52,6 +72,7 @@ struct MoreView: View {
                 }
             }
             .navigationTitle("More")
+            .onAppear { model.refreshRunLog() }
         }
     }
 }
