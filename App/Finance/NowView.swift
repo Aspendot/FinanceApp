@@ -563,6 +563,12 @@ struct NowView: View {
                         ComingUpDayRow(
                             day: day,
                             phoneCheckedBillKeys: screen.phoneCheckedBillKeys,
+                            todayCashBalance: day.isToday ? screen.todayCashBalance : nil,
+                            onTapCashNow: {
+                                if screen.liveCash != nil {
+                                    showingCashBreakdown = true
+                                }
+                            },
                             onSelectEntry: { entry in
                                 let isCustomReminder = model.localModifications.customReminders.contains {
                                     BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: entry)
@@ -1695,6 +1701,8 @@ struct ComingUpDayRow: View {
     @Environment(\.privacyMasked) private var privacyMasked
     let day: NowScreenModel.TimelineDay
     let phoneCheckedBillKeys: Set<String>
+    var todayCashBalance: ComingUpRunningBalance? = nil
+    var onTapCashNow: () -> Void = {}
     let onSelectEntry: (TimelineEntry) -> Void
 
     var body: some View {
@@ -1710,6 +1718,9 @@ struct ComingUpDayRow: View {
                             QuietTag("Today", tone: .accent)
                         }
                     }
+                    if let todayCash = todayCashBalance {
+                        todayCashBar(todayCash)
+                    }
                     entriesContent
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1718,7 +1729,7 @@ struct ComingUpDayRow: View {
                     calendarTile
                         .accessibilityHidden(true)
 
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if day.isToday {
                             HStack(spacing: 6) {
                                 QuietTag("Today", tone: .accent)
@@ -1727,6 +1738,9 @@ struct ComingUpDayRow: View {
                                     .foregroundStyle(Theme.muted)
                                     .lineLimit(1)
                             }
+                        }
+                        if let todayCash = todayCashBalance {
+                            todayCashBar(todayCash)
                         }
                         entriesContent
                     }
@@ -1819,6 +1833,99 @@ struct ComingUpDayRow: View {
         return Theme.ink
     }
 
+    private func todayCashBar(_ cash: ComingUpRunningBalance) -> some View {
+        let nowTint: Color = cash.cashNow < 0 ? Theme.bad : Theme.good
+        let holdLabel: String? = {
+            if cash.overdueUnpaidSum > 0 && cash.pastPhoneHeldSum > 0 {
+                return "After \(MaskedMoney.yen(cash.priorHeldSum, masked: privacyMasked)) overdue & pending"
+            }
+            if cash.overdueUnpaidSum > 0 {
+                return "After \(MaskedMoney.yen(cash.overdueUnpaidSum, masked: privacyMasked)) overdue"
+            }
+            if cash.pastPhoneHeldSum > 0 {
+                return "After \(MaskedMoney.yen(cash.pastPhoneHeldSum, masked: privacyMasked)) pending debit"
+            }
+            return nil
+        }()
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+
+        return Button(action: onTapCashNow) {
+            VStack(alignment: .leading, spacing: 4) {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Cash now")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.ink2)
+                        Text(MaskedMoney.yen(cash.cashNow, masked: privacyMasked))
+                            .font(.subheadline.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(nowTint)
+                    }
+                    if let holdLabel {
+                        Text("\(holdLabel): \(MaskedMoney.yen(cash.startingTodayCash, masked: privacyMasked))")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(cash.startingTodayCash < 0 ? Theme.bad : Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 6) {
+                        Circle()
+                            .fill(nowTint)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                        Text("Cash now")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.ink2)
+                        Spacer(minLength: 8)
+                        Text(MaskedMoney.yen(cash.cashNow, masked: privacyMasked))
+                            .font(.subheadline.weight(.bold))
+                            .monospacedDigit()
+                            .foregroundStyle(nowTint)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(Theme.muted.opacity(0.65))
+                            .accessibilityHidden(true)
+                    }
+                    if let holdLabel {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(holdLabel)
+                                .font(.caption2)
+                                .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                            Spacer(minLength: 6)
+                            Text(MaskedMoney.yen(cash.startingTodayCash, masked: privacyMasked))
+                                .font(.caption2.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(cash.startingTodayCash < 0 ? Theme.bad : Theme.muted)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                (cash.cashNow < 0 ? Theme.badWash : Theme.goodWash),
+                in: shape
+            )
+            .overlay(
+                shape.strokeBorder(
+                    (cash.cashNow < 0 ? Theme.bad : Theme.good).opacity(colorScheme == .dark ? 0.28 : 0.22),
+                    lineWidth: 0.6
+                )
+            )
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "Cash now, \(MaskedMoney.accessibility(cash.cashNow, masked: privacyMasked))"
+            + (holdLabel != nil ? ", after prior unpaid bills \(MaskedMoney.accessibility(cash.startingTodayCash, masked: privacyMasked))" : "")
+        )
+    }
+
     @ViewBuilder
     private var entriesContent: some View {
         if day.entries.isEmpty {
@@ -1831,7 +1938,7 @@ struct ComingUpDayRow: View {
                 Button {
                     onSelectEntry(row.value)
                 } label: {
-                    timelineEntryRow(row.value)
+                    timelineEntryRow(row.value, remainingBalance: row.remainingBalance)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1839,7 +1946,7 @@ struct ComingUpDayRow: View {
         }
     }
 
-    private func timelineEntryRow(_ entry: TimelineEntry) -> some View {
+    private func timelineEntryRow(_ entry: TimelineEntry, remainingBalance: Int?) -> some View {
         let isEvent = entry.event == true
         let isCardBilled = entry.cardBilled == true
         let moneyIn = entry.amount < 0 && entry.borrowed != true
@@ -1876,6 +1983,14 @@ struct ComingUpDayRow: View {
             return list
         }()
 
+        let balanceColor: Color = {
+            guard let balance = remainingBalance else { return Theme.muted }
+            if balance < 0 { return Theme.bad }
+            if balance < 20_000 { return Theme.warnText }
+            if moneyIn { return Theme.good }
+            return Theme.ink2.opacity(0.82)
+        }()
+
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 4) {
@@ -1906,6 +2021,14 @@ struct ComingUpDayRow: View {
                         }
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 2)
+                    }
+                    if let balance = remainingBalance {
+                        Text("Left after · \(MaskedMoney.yen(balance, masked: privacyMasked))")
+                            .font(.caption2.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(balanceColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 2)
                     }
                 }
             } else {
@@ -1938,14 +2061,32 @@ struct ComingUpDayRow: View {
                         }
                         .padding(.top, 2)
                     }
+                    if let balance = remainingBalance {
+                        HStack(alignment: .firstTextBaseline, spacing: 5) {
+                            Image(systemName: "arrow.turn.down.right")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundStyle(Theme.muted.opacity(0.6))
+                                .accessibilityHidden(true)
+                            Text("Left after")
+                                .font(.caption2)
+                                .foregroundStyle(Theme.muted)
+                            Spacer(minLength: 8)
+                            Text(MaskedMoney.yen(balance, masked: privacyMasked))
+                                .font(.caption2.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(balanceColor)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .padding(.top, 2)
+                    }
                 }
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(entryAccessibilityLabel(entry, tags: tags.map(\.0)))
+        .accessibilityLabel(entryAccessibilityLabel(entry, tags: tags.map(\.0), remainingBalance: remainingBalance))
     }
 
-    private func entryAccessibilityLabel(_ entry: TimelineEntry, tags: [String]) -> String {
+    private func entryAccessibilityLabel(_ entry: TimelineEntry, tags: [String], remainingBalance: Int?) -> String {
         var parts = [DayText.long(day.date), entry.item]
         let displayAmount = entry.cardBilled == true ? (entry.billedAmount ?? entry.amount) : entry.amount
         if entry.event != true && displayAmount != 0 {
@@ -1954,6 +2095,9 @@ struct ComingUpDayRow: View {
         parts.append(contentsOf: tags)
         if let note = entry.note, !note.isEmpty {
             parts.append(MaskedMoney.redactText(note, masked: privacyMasked))
+        }
+        if let balance = remainingBalance {
+            parts.append("left after \(MaskedMoney.accessibility(balance, masked: privacyMasked))")
         }
         return parts.joined(separator: ", ")
     }

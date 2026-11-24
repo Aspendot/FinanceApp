@@ -3,13 +3,21 @@ import Foundation
 
 /// Derived view model for the Now screen, computed from `FinanceData` without mutating it.
 struct NowScreenModel: Sendable {
+    struct TimelineRowItem: Identifiable, Sendable {
+        var id: NumberedRow<TimelineEntry>.ID { row.id }
+        let row: NumberedRow<TimelineEntry>
+        var value: TimelineEntry { row.value }
+        /// Projected bank cash remaining immediately after this payment/inflow, when applicable.
+        let remainingBalance: Int?
+    }
+
     struct TimelineDay: Identifiable, Sendable {
         var id: String { date }
         let date: String
         let monthKey: String
         let showsMonthHeader: Bool
         let label: String?
-        let entries: [NumberedRow<TimelineEntry>]
+        let entries: [TimelineRowItem]
         let isPast: Bool
         let isToday: Bool
         let hasPayday: Bool
@@ -22,6 +30,7 @@ struct NowScreenModel: Sendable {
     let payday: PaydayView?
     let paydayBreakdown: PaydayBreakdown?
     let liveCash: LiveCashSummary?
+    let todayCashBalance: ComingUpRunningBalance?
     let lastPayday: String?
     let spentSincePayday: Int?
     let pendingSincePayday: Int
@@ -64,20 +73,37 @@ struct NowScreenModel: Sendable {
             groups.sort { $0.date < $1.date }
         }
 
+        let runningProjection = ComingUp.runningBalances(
+            groups: groups,
+            today: today,
+            liveCash: data.liveCash,
+            phoneCheckedBillKeys: data.phoneCheckedBillKeys,
+            lastPayday: data.lastPayday
+        )
+        self.todayCashBalance = runningProjection
+
         var lastMonthKey: String? = nil
         var builtDays: [TimelineDay] = []
-        for group in groups {
+        for (gIdx, group) in groups.enumerated() {
             let mKey = String(group.date.prefix(7))
             let showHeader = (lastMonthKey != nil && lastMonthKey != mKey) || (lastMonthKey == nil && groups.count > 1)
             lastMonthKey = mKey
             let isNext = group.date == nextPaydayDate || group.entries.contains { $0.next == true }
             let dayLabel = group.entries.compactMap(\.label).first { !$0.isEmpty }
+            let numbered = NumberedRow.make(from: group.entries)
+            let groupBalances = runningProjection?.balanceAfter[gIdx]
+            let rowItems = numbered.enumerated().map { eIdx, row in
+                TimelineRowItem(
+                    row: row,
+                    remainingBalance: groupBalances?[eIdx]
+                )
+            }
             builtDays.append(TimelineDay(
                 date: group.date,
                 monthKey: mKey,
                 showsMonthHeader: showHeader,
                 label: dayLabel,
-                entries: NumberedRow.make(from: group.entries),
+                entries: rowItems,
                 isPast: group.date < today,
                 isToday: group.date == today,
                 hasPayday: group.hasPayday,

@@ -823,4 +823,65 @@ struct V06FeaturesTests {
         )
         #expect(!forecast.points.flatMap(\.events).contains(where: { $0.title.contains("Cloud Storage") }))
     }
+
+    @Test("ComingUp.runningBalances steps down from live bank cash, reserves overdue bills, ignores card/event/borrowed rows, and reconciles to LiveCashSummary")
+    func comingUpRunningBalanceMatchesLiveCashToTheYen() throws {
+        let timeline = [
+            TimelineEntry(date: "2026-04-10", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(date: "2026-04-10", item: "Card room", amount: -38_000, borrowed: true),
+            TimelineEntry(date: "2026-04-13", item: "Overdue Utility", amount: 9_900),
+            TimelineEntry(date: "2026-04-14", item: "Already Paid Sub", amount: 1_400, done: true),
+            TimelineEntry(date: "2026-04-14", item: "Internet", amount: 7_700),
+            TimelineEntry(date: "2026-04-14", item: "Card Gym", amount: 0, done: true, cardBilled: true, billedAmount: 3_050),
+            TimelineEntry(date: "2026-04-14", item: "Trip reminder", amount: 0, event: true),
+            TimelineEntry(date: "2026-04-16", item: "Rent", amount: 80_000),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+            TimelineEntry(date: "2026-04-26", item: "Next Cycle Sub", amount: 4_000),
+        ]
+        let balances = [
+            AccountBalance(source: "main_bank", label: "Main Bank", balance: 200_000, asOf: "2026-04-12", debitNoticeSources: ["main_debit"]),
+        ]
+        let labels = ["main_bank": "Main Bank", "main_debit": "Main Debit"]
+        let pending = [
+            BudgetItem(date: "2026-04-13", source: "Main Debit", merchant: "CAFE", amount: 2_000, group: "Living", category: "Dining", isPending: true),
+        ]
+
+        let payday = try #require(PaydayView.compute(timeline: timeline, today: "2026-04-14"))
+        let live = try #require(LiveCashSummary.compute(
+            accountBalances: balances,
+            sourceLabels: labels,
+            bankRows: [],
+            pendingItems: pending,
+            payday: payday,
+            lastPayday: "2026-04-10"
+        ))
+        let groups = ComingUp.groups(timeline: timeline, today: "2026-04-14")
+        let running = try #require(ComingUp.runningBalances(
+            groups: groups,
+            today: "2026-04-14",
+            liveCash: live,
+            lastPayday: "2026-04-10"
+        ))
+
+        // Cash now = 200,000 - 2,000 pending debit = 198,000.
+        #expect(running.cashNow == 198_000)
+        // Overdue Utility (9,900) reserved before today's bills -> 188,100 entering today.
+        #expect(running.overdueUnpaidSum == 9_900)
+        #expect(running.startingTodayCash == 188_100)
+
+        // Past groups (Apr 10, Apr 13) carry no balance lines.
+        #expect(running.balanceAfter[0] == [nil, nil])
+        #expect(running.balanceAfter[1] == [nil])
+
+        // Today (Apr 14): Paid sub -> nil, Internet -> 180,400, Card Gym -> nil, Event -> nil.
+        #expect(running.balanceAfter[2] == [nil, 180_400, nil, nil])
+
+        // Apr 16 Rent (80,000) -> 100,400, which MUST equal live.cashLeftUntilPayday to the exact yen.
+        #expect(running.balanceAfter[3] == [100_400])
+        #expect(live.cashLeftUntilPayday == 100_400)
+
+        // Apr 25 Payday Salary (+300,000) -> 400,400; Apr 26 Sub (4,000) -> 396,400.
+        #expect(running.balanceAfter[4] == [400_400])
+        #expect(running.balanceAfter[5] == [396_400])
+    }
 }

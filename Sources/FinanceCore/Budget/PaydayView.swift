@@ -172,6 +172,9 @@ public struct LiveCashSummary: Sendable, Equatable {
     public var cashLeftIfBorrowed: Int
     /// True whenever pending debit notices, post-coverage rows, phone checkoffs, or estimate bills are involved.
     public var isEstimate: Bool
+    /// `BillCheckoff.key` values for bills whose bank debit already matched a post-`asOf` bank outflow,
+    /// so timeline running balances avoid double-subtracting those entries.
+    public var postBalanceMatchedKeys: Set<String>
 
     public init(
         accounts: [LiveAccountBalance],
@@ -185,7 +188,8 @@ public struct LiveCashSummary: Sendable, Equatable {
         openBorrowedSum: Int,
         cashLeftUntilPayday: Int,
         cashLeftIfBorrowed: Int,
-        isEstimate: Bool
+        isEstimate: Bool,
+        postBalanceMatchedKeys: Set<String> = []
     ) {
         self.accounts = accounts
         self.confirmedBankCash = confirmedBankCash
@@ -199,6 +203,7 @@ public struct LiveCashSummary: Sendable, Equatable {
         self.cashLeftUntilPayday = cashLeftUntilPayday
         self.cashLeftIfBorrowed = cashLeftIfBorrowed
         self.isEstimate = isEstimate
+        self.postBalanceMatchedKeys = postBalanceMatchedKeys
     }
 
     public static func compute(
@@ -286,11 +291,13 @@ public struct LiveCashSummary: Sendable, Equatable {
             return false
         }
 
+        var postBalanceMatchedKeys = Set<String>()
         let remainingBills = (payday?.outs ?? []).filter { entry in
             guard entry.done != true else { return false }
             // If an unpaid bill without a match rule already posted as an exact-amount post-asOf bank row,
             // avoid double-subtracting it from estimated bank cash.
             if entry.match == nil, consumeMatchingPostOutflow(for: entry) {
+                postBalanceMatchedKeys.insert(BillCheckoff.key(for: entry))
                 return false
             }
             return true
@@ -306,6 +313,7 @@ public struct LiveCashSummary: Sendable, Equatable {
             }
             // Once the debit actually posts after account.asOf, release the temporary phone hold.
             if consumeMatchingPostOutflow(for: entry) {
+                postBalanceMatchedKeys.insert(BillCheckoff.key(for: entry))
                 return false
             }
             return true
@@ -339,7 +347,8 @@ public struct LiveCashSummary: Sendable, Equatable {
             openBorrowedSum: openBorrowedSum,
             cashLeftUntilPayday: cashLeft,
             cashLeftIfBorrowed: cashLeft + openBorrowedSum,
-            isEstimate: isEstimate
+            isEstimate: isEstimate,
+            postBalanceMatchedKeys: postBalanceMatchedKeys
         )
     }
 }
