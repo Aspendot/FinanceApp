@@ -198,7 +198,8 @@ struct PaymentsScreenModel: Sendable {
         self.spendingRowCount = spendingRows.count
         self.excludedRowCount = filtered.filter { data.layer(of: $0.value) == nil && $0.value.group != incomeGroup }.count
         self.countedSpending = spendingRows.reduce(0) { $0 + $1.value.amount }
-        self.incomeTotal = -filtered.filter { $0.value.group == incomeGroup }.reduce(0) { $0 + $1.value.amount }
+        let incomeRows = filtered.filter { $0.value.group == incomeGroup }
+        self.incomeTotal = -incomeRows.reduce(0) { $0 + $1.value.amount }
         self.pendingCount = filtered.filter { $0.value.isPending }.count
         self.manualCount = filtered.filter { data.isLocalItem($0.value) }.count
 

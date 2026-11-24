@@ -53,7 +53,7 @@ struct FinanceData: Sendable {
     /// All items (including Income) sorted newest first for all-time search and Income filtering.
     let allRowsSorted: [NumberedRow<BudgetItem>]
     /// Pre-folded search haystacks aligned 1-to-1 with `allRowsSorted` so typing in search does zero `TextFold.key` work.
-    let foldedSearchByRowID: [String: String]
+    let foldedSearchByRowID: [NumberedRow<BudgetItem>.ID: String]
     let subscriptionSummary: SubscriptionSummary
     /// Bundle plan rows with phone target overrides applied.
     let effectivePlan: [PlanEntry]
@@ -173,7 +173,7 @@ struct FinanceData: Sendable {
                   let synthesizedDate = PayCycleBuilder.shiftMonth(anchor, by: 1),
                   synthesizedDate >= today
             else { return nil }
-            let syntheticNext = TimelineEntry(
+            let syntheticNext = FinanceCore.TimelineEntry(
                 date: synthesizedDate,
                 item: "Next payday",
                 amount: 0,
@@ -183,7 +183,7 @@ struct FinanceData: Sendable {
                 estimate: true,
                 recurring: true
             )
-            let extended = checked.timeline.map { entry -> TimelineEntry in
+            let extended = checked.timeline.map { entry -> FinanceCore.TimelineEntry in
                 var copy = entry
                 copy.next = nil
                 return copy
@@ -226,7 +226,7 @@ struct FinanceData: Sendable {
         let sortedAll = items.sorted { ($0.date, $0.amount, $0.merchant) > ($1.date, $1.amount, $1.merchant) }
         let numberedAll = NumberedRow.make(from: sortedAll)
         self.allRowsSorted = numberedAll
-        var searchMap: [String: String] = [:]
+        var searchMap: [NumberedRow<BudgetItem>.ID: String] = [:]
         searchMap.reserveCapacity(numberedAll.count)
         for row in numberedAll {
             let item = row.value
