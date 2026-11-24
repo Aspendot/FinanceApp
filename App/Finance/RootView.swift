@@ -1,4 +1,5 @@
 import Combine
+import FinanceCore
 import LocalAuthentication
 import SwiftUI
 import UIKit
