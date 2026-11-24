@@ -1183,14 +1183,15 @@ struct PaydayHeroCard: View {
                 // Frosted 2-up key tiles: Cash in banks (or Money in) & tappable Bills left
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
-                        cashOrMoneyInTile
-                        Button(action: onTapBills) { billsTile }.buttonStyle(.plain)
+                        cashOrMoneyInTile(fillHeight: false)
+                        Button(action: onTapBills) { billsTile(fillHeight: false) }.buttonStyle(.plain)
                     }
                 } else {
                     HStack(alignment: .top, spacing: 10) {
-                        cashOrMoneyInTile
-                        Button(action: onTapBills) { billsTile }.buttonStyle(.plain)
+                        cashOrMoneyInTile(fillHeight: true)
+                        Button(action: onTapBills) { billsTile(fillHeight: true) }.buttonStyle(.plain)
                     }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 let openBorrowed = liveCash?.openBorrowedSum ?? payday.borrowedSum
@@ -1328,9 +1329,9 @@ struct PaydayHeroCard: View {
     }
 
     @ViewBuilder
-    private var cashOrMoneyInTile: some View {
+    private func cashOrMoneyInTile(fillHeight: Bool) -> some View {
         if let live = liveCash {
-            FrostedMetricTile {
+            FrostedMetricTile(fillHeight: fillHeight) {
                 Text("Cash in banks")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.heroInkMuted)
@@ -1344,11 +1345,11 @@ struct PaydayHeroCard: View {
                     .font(.caption2)
                     .monospacedDigit()
                     .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } else {
-            FrostedMetricTile {
+            FrostedMetricTile(fillHeight: fillHeight) {
                 Text("Money in")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(Theme.heroInkMuted)
@@ -1369,8 +1370,13 @@ struct PaydayHeroCard: View {
     }
 
     private func bankAccountsFootnote(_ live: LiveCashSummary) -> String {
-        var parts = live.accounts.map { acc in
-            "\(acc.label) \(MaskedMoney.yen(acc.estimatedBalance, masked: privacyMasked))"
+        var parts: [String]
+        if live.accounts.count == 1, let only = live.accounts.first {
+            parts = [only.label]
+        } else {
+            parts = live.accounts.map { acc in
+                "\(acc.label) \(MaskedMoney.yen(acc.estimatedBalance, masked: privacyMasked))"
+            }
         }
         if live.pendingDebitOutflow > 0 {
             parts.append("after −\(MaskedMoney.yen(live.pendingDebitOutflow, masked: privacyMasked)) pending")
@@ -1380,10 +1386,10 @@ struct PaydayHeroCard: View {
         return parts.joined(separator: " · ")
     }
 
-    private var billsTile: some View {
+    private func billsTile(fillHeight: Bool) -> some View {
         let displayBills = liveCash?.unsettledBillsSum ?? payday.outSum
         let title = liveCash != nil ? "Bills left" : "Bills until payday"
-        return FrostedMetricTile {
+        return FrostedMetricTile(fillHeight: fillHeight) {
             HStack(spacing: 4) {
                 Text(title)
                     .font(.caption2.weight(.medium))
