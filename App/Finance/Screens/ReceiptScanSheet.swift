@@ -68,8 +68,8 @@ struct ReceiptScanSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     captureHeroCard
 
                     if let previewImage {
@@ -118,9 +118,10 @@ struct ReceiptScanSheet: View {
                         draftsReviewSection
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle("Scan receipt or slip")
             .navigationBarTitleDisplayMode(.inline)

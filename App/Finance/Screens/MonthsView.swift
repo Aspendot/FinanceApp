@@ -21,22 +21,41 @@ struct MonthsView: View {
     @State private var breakdownTab: BreakdownTab = .categories
     @State private var showAllCategories = false
     @State private var isScrubbingChart = false
+    @State private var cachedScreenKey: String = ""
+    @State private var cachedScreen: MonthsScreenModel?
+
+    private var activeData: FinanceData? {
+        session.resolvedData(from: model)
+    }
 
     private var activeSelectedID: String? {
         session.periodMode == .payCycle ? session.monthsSelectedCycleID : session.monthsSelectedMonth
     }
 
+    private var screenCacheKey: String {
+        guard let data = activeData else { return "" }
+        return "\(data.id.uuidString)|\(session.periodMode.rawValue)|\(activeSelectedID ?? "")|\(session.today)"
+    }
+
+    private func resolvedScreen(for data: FinanceData) -> MonthsScreenModel {
+        let key = "\(data.id.uuidString)|\(session.periodMode.rawValue)|\(activeSelectedID ?? "")|\(session.today)"
+        if cachedScreenKey == key, let cachedScreen {
+            return cachedScreen
+        }
+        return MonthsScreenModel(
+            data: data,
+            periodMode: session.periodMode,
+            selectedPeriodID: activeSelectedID,
+            today: session.today
+        )
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
-                    if let data = session.resolvedData(from: model) {
-                        let screen = MonthsScreenModel(
-                            data: data,
-                            periodMode: session.periodMode,
-                            selectedPeriodID: activeSelectedID,
-                            today: session.today
-                        )
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
+                    if let data = activeData {
+                        let screen = resolvedScreen(for: data)
                         if screen.periods.isEmpty {
                             StateCard(
                                 kind: .empty,
@@ -71,11 +90,28 @@ struct MonthsView: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
             .navigationTitle(session.periodMode == .payCycle ? "Pay Cycles" : "Months")
+            .sensoryFeedback(.selection, trigger: session.periodMode)
+            .onChange(of: screenCacheKey, initial: true) { _, newKey in
+                guard let data = activeData, !newKey.isEmpty else {
+                    cachedScreen = nil
+                    cachedScreenKey = ""
+                    return
+                }
+                if cachedScreenKey != newKey || cachedScreen == nil {
+                    cachedScreen = MonthsScreenModel(
+                        data: data,
+                        periodMode: session.periodMode,
+                        selectedPeriodID: activeSelectedID,
+                        today: session.today
+                    )
+                    cachedScreenKey = newKey
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -321,9 +357,20 @@ struct MonthsView: View {
                 Rectangle()
                     .fill(.clear)
                     .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
+                    .onTapGesture { location in
+                        guard let plotFrame = proxy.plotFrame else { return }
+                        let plotX = location.x - geo[plotFrame].origin.x
+                        if let hit = proxy.value(atX: plotX, as: String.self),
+                           screen.periodIDs.contains(hit),
+                           hit != screen.selectedPeriodID {
+                            selectPeriod(hit)
+                        }
+                    }
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 14)
                             .onChanged { value in
+                                // Only scrub when dragging primarily horizontally so vertical page scrolling never sticks.
+                                guard abs(value.translation.width) > abs(value.translation.height) else { return }
                                 isScrubbingChart = true
                                 guard let plotFrame = proxy.plotFrame else { return }
                                 let plotX = value.location.x - geo[plotFrame].origin.x

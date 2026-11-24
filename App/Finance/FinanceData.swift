@@ -6,6 +6,8 @@ import WidgetKit
 /// transactions after each source's statement cutoff, remaining pending Gmail notices,
 /// and phone-local additions/overrides.
 struct FinanceData: Sendable {
+    /// Stable per-snapshot identity so SwiftUI views can cheaply cache derived screen models.
+    let id = UUID()
     let bundle: DataBundle
     /// All recent notices kept for detail lookups (timestamps, foreign amounts, split parts) and decline alerts.
     let notices: [Notice]
@@ -469,7 +471,8 @@ enum Money {
     }
 }
 
-/// Japan-time calendar days as text, in English.
+/// Japan-time calendar days as text, in English, with thread-safe cached formatters
+/// and memoized outputs so scrolling never allocates `DateFormatter`s per frame.
 enum DayText {
     static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -477,19 +480,89 @@ enum DayText {
         return calendar
     }()
 
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var templateFormatters: [String: DateFormatter] = [:]
+    private nonisolated(unsafe) static var fixedFormatters: [String: DateFormatter] = [:]
+    private nonisolated(unsafe) static var parsedDates: [String: Date] = [:]
+    private nonisolated(unsafe) static var formattedStrings: [String: String] = [:]
+
     static func date(_ day: String) -> Date? {
+        lock.lock()
+        if let cached = parsedDates[day] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         let p = day.split(separator: "-").compactMap { Int($0) }
         guard p.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: p[0], month: p[1], day: p[2]))
+        guard let d = calendar.date(from: DateComponents(year: p[0], month: p[1], day: p[2])) else { return nil }
+
+        lock.lock()
+        if parsedDates.count > 1_024 { parsedDates.removeAll(keepingCapacity: true) }
+        parsedDates[day] = d
+        lock.unlock()
+        return d
     }
 
     static func format(_ day: String, template: String) -> String {
+        let cacheKey = "t|\(template)|\(day)"
+        lock.lock()
+        if let cached = formattedStrings[cacheKey] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         guard let d = date(day) else { return day }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.timeZone = JST.timeZone
-        f.setLocalizedDateFormatFromTemplate(template)
-        return f.string(from: d)
+
+        lock.lock()
+        let f: DateFormatter
+        if let existing = templateFormatters[template] {
+            f = existing
+        } else {
+            let created = DateFormatter()
+            created.locale = Locale(identifier: "en_US")
+            created.timeZone = JST.timeZone
+            created.setLocalizedDateFormatFromTemplate(template)
+            templateFormatters[template] = created
+            f = created
+        }
+        let result = f.string(from: d)
+        if formattedStrings.count > 2_048 { formattedStrings.removeAll(keepingCapacity: true) }
+        formattedStrings[cacheKey] = result
+        lock.unlock()
+        return result
+    }
+
+    static func formatFixed(_ day: String, dateFormat: String) -> String {
+        let cacheKey = "f|\(dateFormat)|\(day)"
+        lock.lock()
+        if let cached = formattedStrings[cacheKey] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        guard let d = date(day) else { return day }
+
+        lock.lock()
+        let f: DateFormatter
+        if let existing = fixedFormatters[dateFormat] {
+            f = existing
+        } else {
+            let created = DateFormatter()
+            created.locale = Locale(identifier: "en_US")
+            created.timeZone = JST.timeZone
+            created.dateFormat = dateFormat
+            fixedFormatters[dateFormat] = created
+            f = created
+        }
+        let result = f.string(from: d)
+        if formattedStrings.count > 2_048 { formattedStrings.removeAll(keepingCapacity: true) }
+        formattedStrings[cacheKey] = result
+        lock.unlock()
+        return result
     }
 
     static func long(_ day: String) -> String { format(day, template: "EEEEMMMMd") }

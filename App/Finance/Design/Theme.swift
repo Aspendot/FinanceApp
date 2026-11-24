@@ -147,32 +147,17 @@ enum FinanceFormat {
 
     /// Short month chip label such as "Apr", or "Nov '25" when spanning years.
     static func monthChip(_ month: String, includeYear: Bool) -> String {
-        guard let date = DayText.date(month + "-01") else { return month }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.dateFormat = includeYear ? "MMM ''yy" : "MMM"
-        return formatter.string(from: date)
+        DayText.formatFixed(month + "-01", dateFormat: includeYear ? "MMM ''yy" : "MMM")
     }
 
     /// Short month axis label ("Nov", "Dec", "Jan") for compact chart axes.
     static func chartMonth(_ month: String) -> String {
-        guard let date = DayText.date(month + "-01") else { return month }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.dateFormat = "MMM"
-        return formatter.string(from: date)
+        DayText.formatFixed(month + "-01", dateFormat: "MMM")
     }
 
     /// Day section header in Payments, e.g. "TUE, APR 14".
     static func dayHeader(_ day: String) -> String {
-        guard let date = DayText.date(day) else { return day }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.setLocalizedDateFormatFromTemplate("EEEMMMd")
-        return formatter.string(from: date).uppercased()
+        DayText.format(day, template: "EEEMMMd").uppercased()
     }
 
     /// "11 days" / "1 day" / "Today" copy for countdown chips.

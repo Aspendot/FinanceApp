@@ -61,7 +61,18 @@ struct FinanceCard<Content: View>: View {
         }
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.surface, in: shape)
+        .background {
+            shape
+                .fill(Theme.surface)
+                .shadow(
+                    color: colorScheme == .dark
+                        ? Color.black.opacity(0.28)
+                        : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.06),
+                    radius: colorScheme == .dark ? 10 : 12,
+                    x: 0,
+                    y: 4
+                )
+        }
         .overlay(
             Group {
                 if colorScheme == .dark {
@@ -81,22 +92,6 @@ struct FinanceCard<Content: View>: View {
                     shape.strokeBorder(Theme.line.opacity(0.75), lineWidth: hairline)
                 }
             }
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.black.opacity(0.32)
-                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.055),
-            radius: colorScheme == .dark ? 12 : 16,
-            x: 0,
-            y: colorScheme == .dark ? 6 : 6
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.clear
-                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.03),
-            radius: 2,
-            x: 0,
-            y: 1
         )
     }
 }
@@ -127,28 +122,40 @@ struct HeroVaultCard<Content: View>: View {
         }
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
+        .background {
             ZStack {
-                LinearGradient(
-                    colors: [Theme.heroTop, Theme.heroMid, Theme.heroBottom],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                RadialGradient(
-                    colors: [accentTint.opacity(0.22), Color.clear],
-                    center: .topTrailing,
-                    startRadius: 8,
-                    endRadius: 240
-                )
-                RadialGradient(
-                    colors: [Color.white.opacity(0.05), Color.clear],
-                    center: .topLeading,
-                    startRadius: 2,
-                    endRadius: 160
-                )
+                shape
+                    .fill(Theme.heroBottom)
+                    .shadow(
+                        color: colorScheme == .dark
+                            ? Color.black.opacity(0.45)
+                            : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.22),
+                        radius: 16,
+                        x: 0,
+                        y: 8
+                    )
+                ZStack {
+                    LinearGradient(
+                        colors: [Theme.heroTop, Theme.heroMid, Theme.heroBottom],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    RadialGradient(
+                        colors: [accentTint.opacity(0.22), Color.clear],
+                        center: .topTrailing,
+                        startRadius: 8,
+                        endRadius: 240
+                    )
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.05), Color.clear],
+                        center: .topLeading,
+                        startRadius: 2,
+                        endRadius: 160
+                    )
+                }
+                .clipShape(shape)
             }
-            .clipShape(shape)
-        )
+        }
         .overlay(
             shape.strokeBorder(
                 LinearGradient(
@@ -162,22 +169,6 @@ struct HeroVaultCard<Content: View>: View {
                 ),
                 lineWidth: 0.9
             )
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.black.opacity(0.50)
-                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.24),
-            radius: 22,
-            x: 0,
-            y: 12
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.clear
-                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.08),
-            radius: 4,
-            x: 0,
-            y: 2
         )
     }
 }
@@ -449,6 +440,7 @@ struct ProgressMeter: View {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .center)
+            .clipped()
         }
         .frame(height: hasNotch ? height + 6 : height)
         .accessibilityHidden(true)
@@ -570,15 +562,18 @@ struct FilterChip: View {
                 .foregroundStyle(selectedForeground)
                 .padding(.horizontal, 15)
                 .padding(.vertical, 8.5)
-                .background(
-                    Group {
-                        if isSelected {
-                            Capsule().fill(Theme.accent)
-                        } else {
-                            Capsule().fill(Theme.surface)
-                        }
-                    }
-                )
+                .background {
+                    Capsule()
+                        .fill(isSelected ? Theme.accent : Theme.surface)
+                        .shadow(
+                            color: isSelected
+                                ? Theme.accent.opacity(colorScheme == .dark ? 0.24 : 0.20)
+                                : Color.clear,
+                            radius: 6,
+                            x: 0,
+                            y: 2
+                        )
+                }
                 .overlay(
                     Capsule().strokeBorder(
                         isSelected
@@ -586,14 +581,6 @@ struct FilterChip: View {
                             : Theme.line.opacity(colorScheme == .dark ? 0.9 : 0.8),
                         lineWidth: isSelected ? 0.6 : (1.0 / max(displayScale, 1))
                     )
-                )
-                .shadow(
-                    color: isSelected
-                        ? Theme.accent.opacity(colorScheme == .dark ? 0.28 : 0.24)
-                        : Color.black.opacity(colorScheme == .dark ? 0.16 : 0.03),
-                    radius: isSelected ? 7 : 4,
-                    x: 0,
-                    y: isSelected ? 3 : 1
                 )
                 .frame(minHeight: Theme.minTouchTarget)
                 .contentShape(Rectangle())
@@ -715,22 +702,25 @@ struct PrimaryActionButton: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, minHeight: Theme.minTouchTarget)
-                .background(background, in: shape)
+                .background {
+                    shape
+                        .fill(background)
+                        .shadow(
+                            color: isEnabled ? Theme.accent.opacity(colorScheme == .dark ? 0.22 : 0.20) : .clear,
+                            radius: 7,
+                            x: 0,
+                            y: 3
+                        )
+                }
                 .overlay(
                     shape.strokeBorder(
                         isEnabled ? Color.white.opacity(0.16) : Color.clear,
                         lineWidth: 0.6
                     )
                 )
-                .shadow(
-                    color: isEnabled ? Theme.accent.opacity(colorScheme == .dark ? 0.24 : 0.22) : .clear,
-                    radius: 8,
-                    x: 0,
-                    y: 4
-                )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileCardButtonStyle())
     }
 
     private var foreground: Color {
@@ -828,10 +818,32 @@ struct StateCard: View {
                         .frame(minHeight: Theme.minTouchTarget, alignment: .leading)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileCardButtonStyle())
                     .padding(.top, 2)
                 }
             }
         }
+    }
+}
+
+/// Subtle, responsive tactile press feedback for interactive cards and hero tiles.
+struct TactileCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .opacity(configuration.isPressed ? 0.92 : 1.0)
+            .animation(.easeOut(duration: 0.13), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Constrains vertical `ScrollView` page content strictly to the viewport width
+    /// so no inner view can ever widen `contentSize.width` or enable horizontal scrolling.
+    func verticalScrollPage() -> some View {
+        self
+            .padding(.horizontal, Theme.screenPadding)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .containerRelativeFrame(.horizontal)
     }
 }

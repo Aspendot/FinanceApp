@@ -9,16 +9,37 @@ struct NowView: View {
 
     @State private var inspectedPayment: InspectedPayment?
     @State private var selectedBill: TimelineEntry?
+    @State private var showingCashBreakdown = false
+    @State private var showAfterPayday = false
     @State private var showStoppedSubs = false
     @State private var showGoodToKnow = false
+    @State private var cachedScreenKey: String = ""
+    @State private var cachedScreen: NowScreenModel?
+
+    private var activeData: FinanceData? {
+        session.resolvedData(from: model)
+    }
+
+    private var screenCacheKey: String {
+        guard let data = activeData else { return "" }
+        return "\(data.id.uuidString)|\(session.today)"
+    }
+
+    private func resolvedScreen(for data: FinanceData) -> NowScreenModel {
+        let key = "\(data.id.uuidString)|\(session.today)"
+        if cachedScreenKey == key, let cachedScreen {
+            return cachedScreen
+        }
+        return NowScreenModel(data: data, today: session.today)
+    }
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { scrollProxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.cardSpacing) {
-                        if let data = session.resolvedData(from: model) {
-                            let screen = NowScreenModel(data: data, today: session.today)
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
+                        if let data = activeData {
+                            let screen = resolvedScreen(for: data)
                             paydaySection(screen: screen, scrollProxy: scrollProxy)
                             if screen.reviewQueueCount > 0 {
                                 reviewInboxBanner(count: screen.reviewQueueCount)
@@ -59,12 +80,24 @@ struct NowView: View {
                             NoDataView()
                         }
                     }
-                    .padding(.horizontal, Theme.screenPadding)
-                    .padding(.vertical, 12)
+                    .verticalScrollPage()
                 }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             }
             .background(Theme.page)
             .navigationTitle("Now")
+            .sensoryFeedback(.selection, trigger: session.privacyMasked)
+            .onChange(of: screenCacheKey, initial: true) { _, newKey in
+                guard let data = activeData, !newKey.isEmpty else {
+                    cachedScreen = nil
+                    cachedScreenKey = ""
+                    return
+                }
+                if cachedScreenKey != newKey || cachedScreen == nil {
+                    cachedScreen = NowScreenModel(data: data, today: session.today)
+                    cachedScreenKey = newKey
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -118,8 +151,20 @@ struct NowView: View {
                 await model.syncGmail()
             }
             .sheet(item: $inspectedPayment) { inspected in
-                if let data = session.resolvedData(from: model) {
+                if let data = activeData {
                     PaymentDetailSheet(item: inspected.item, data: data)
+                }
+            }
+            .sheet(isPresented: $showingCashBreakdown) {
+                if let data = activeData, let liveCash = data.liveCash {
+                    BankCashBreakdownSheet(
+                        liveCash: liveCash,
+                        payday: data.payday,
+                        onOpenRunway: {
+                            showingCashBreakdown = false
+                            session.activeSheet = .runway
+                        }
+                    )
                 }
             }
             .confirmationDialog(
@@ -319,7 +364,7 @@ struct NowView: View {
                 .contentShape(Rectangle())
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileCardButtonStyle())
     }
 
     // MARK: - Until payday
@@ -334,6 +379,11 @@ struct NowView: View {
                 spent: screen.spentSincePayday,
                 lastPayday: screen.lastPayday,
                 pendingCount: screen.pendingSincePayday,
+                onTapBankCash: {
+                    if screen.liveCash != nil {
+                        showingCashBreakdown = true
+                    }
+                },
                 onTapBills: {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         scrollProxy.scrollTo("comingUp", anchor: .top)
@@ -451,14 +501,18 @@ struct NowView: View {
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
                             Spacer(minLength: 8)
-                            Text(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked))
-                                .font(.subheadline.weight(.semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink)
-                            Text("/ \(MaskedMoney.yen(target, masked: privacyMasked))")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.muted)
+                            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                Text(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked))
+                                    .font(.subheadline.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink)
+                                Text("/ \(MaskedMoney.yen(target, masked: privacyMasked))")
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         }
                     }
                     ProgressMeter(ratio: ratio, tint: tint, height: 6, paceRatio: pace)
@@ -472,7 +526,19 @@ struct NowView: View {
     // MARK: - Coming up timeline
 
     private func comingUpSection(screen: NowScreenModel) -> some View {
-        FinanceCard {
+        let nextPaydayDate = screen.payday?.next.date
+        let primaryDays: [NowScreenModel.TimelineDay]
+        let afterPaydayDays: [NowScreenModel.TimelineDay]
+        if let cutoff = nextPaydayDate {
+            primaryDays = screen.timelineDays.filter { $0.date <= cutoff }
+            afterPaydayDays = screen.timelineDays.filter { $0.date > cutoff }
+        } else {
+            primaryDays = screen.timelineDays
+            afterPaydayDays = []
+        }
+        let visibleDays = showAfterPayday ? screen.timelineDays : primaryDays
+
+        return FinanceCard {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 8) {
                     SectionLabel("Coming up", symbol: "calendar.badge.clock")
@@ -480,10 +546,11 @@ struct NowView: View {
                     Text("Tap a bill to update")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
+                        .lineLimit(1)
                 }
 
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(screen.timelineDays.enumerated()), id: \.element.id) { index, day in
+                    ForEach(Array(visibleDays.enumerated()), id: \.element.id) { index, day in
                         if day.showsMonthHeader {
                             HStack(spacing: 8) {
                                 Text(DayText.monthUpper(day.monthKey))
@@ -521,7 +588,32 @@ struct NowView: View {
                     }
                 }
 
-                if let afterNote = screen.afterNote, !afterNote.isEmpty {
+                if !afterPaydayDays.isEmpty, let cutoff = nextPaydayDate {
+                    let afterItemsCount = afterPaydayDays.reduce(0) { $0 + $1.entries.count }
+                    HairlineDivider()
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            showAfterPayday.toggle()
+                        }
+                    } label: {
+                        HStack {
+                            Text(showAfterPayday
+                                 ? "Hide after \(DayText.short(cutoff))"
+                                 : "Show after \(DayText.short(cutoff)) (\(afterItemsCount) items)")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(Theme.accent)
+                            Spacer()
+                            Image(systemName: showAfterPayday ? "chevron.up" : "chevron.down")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .frame(minHeight: 36)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if showAfterPayday, let afterNote = screen.afterNote, !afterNote.isEmpty {
                     HairlineDivider()
                     Text(afterNote)
                         .font(.caption)
@@ -901,6 +993,8 @@ struct NowView: View {
                                 .font(.caption)
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.muted)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
                         }
                     }
                 }
@@ -1052,6 +1146,7 @@ struct PaydayHeroCard: View {
     let spent: Int?
     let lastPayday: String?
     let pendingCount: Int
+    var onTapBankCash: () -> Void = {}
     var onTapBills: () -> Void = {}
     var onTapDayToDay: () -> Void = {}
     var onTapRunway: () -> Void = {}
@@ -1180,18 +1275,25 @@ struct PaydayHeroCard: View {
                     onHeroSurface: true
                 )
 
-                // Frosted 2-up key tiles: Cash in banks (or Money in) & tappable Bills left
+                // Frosted 2-up key tiles: Cash in banks (tappable breakdown) & Bills left (jumps to Coming up)
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
-                        cashOrMoneyInTile(fillHeight: false)
-                        Button(action: onTapBills) { billsTile(fillHeight: false) }.buttonStyle(.plain)
+                        Button(action: onTapBankCash) { cashOrMoneyInTile(fillHeight: false) }
+                            .buttonStyle(TactileCardButtonStyle())
+                            .disabled(liveCash == nil)
+                        Button(action: onTapBills) { billsTile(fillHeight: false) }
+                            .buttonStyle(TactileCardButtonStyle())
                     }
                 } else {
-                    HStack(alignment: .top, spacing: 10) {
-                        cashOrMoneyInTile(fillHeight: true)
-                        Button(action: onTapBills) { billsTile(fillHeight: true) }.buttonStyle(.plain)
+                    Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 8) {
+                        GridRow {
+                            Button(action: onTapBankCash) { cashOrMoneyInTile(fillHeight: true) }
+                                .buttonStyle(TactileCardButtonStyle())
+                                .disabled(liveCash == nil)
+                            Button(action: onTapBills) { billsTile(fillHeight: true) }
+                                .buttonStyle(TactileCardButtonStyle())
+                        }
                     }
-                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 let openBorrowed = liveCash?.openBorrowedSum ?? payday.borrowedSum
@@ -1332,9 +1434,15 @@ struct PaydayHeroCard: View {
     private func cashOrMoneyInTile(fillHeight: Bool) -> some View {
         if let live = liveCash {
             FrostedMetricTile(fillHeight: fillHeight) {
-                Text("Cash in banks")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(Theme.heroInkMuted)
+                HStack(spacing: 4) {
+                    Text("Cash in banks")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.heroInkMuted)
+                    Spacer(minLength: 2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(Theme.heroInkMuted.opacity(0.75))
+                }
                 Text(MaskedMoney.yen(live.estimatedBankCash, masked: privacyMasked))
                     .font(.subheadline.weight(.bold))
                     .monospacedDigit()
@@ -1470,18 +1578,22 @@ struct SplitBar: View {
             GeometryReader { geo in
                 let gap: CGFloat = activeParts.count > 1 ? 3 : 0
                 let available = max(0, geo.size.width - gap * CGFloat(max(0, activeParts.count - 1)))
+                let rawWidths = activeParts.map { max(8, available * CGFloat($0.amount) / CGFloat(total)) }
+                let sumWidths = max(1, rawWidths.reduce(0, +))
+                let scale = sumWidths > available ? (available / sumWidths) : 1.0
                 ZStack(alignment: .leading) {
                     Capsule().fill(onHeroSurface ? Color.white.opacity(0.12) : Theme.track)
                     if !activeParts.isEmpty {
                         HStack(spacing: gap) {
-                            ForEach(activeParts) { part in
+                            ForEach(Array(activeParts.enumerated()), id: \.element.id) { idx, part in
                                 Capsule()
                                     .fill(part.color)
-                                    .frame(width: max(8, available * CGFloat(part.amount) / CGFloat(total)))
+                                    .frame(width: max(0, rawWidths[idx] * scale))
                             }
                         }
                     }
                 }
+                .clipped()
             }
             .frame(height: 9)
             .accessibilityHidden(true)

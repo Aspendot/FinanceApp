@@ -26,8 +26,8 @@ struct ReviewInboxSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     headerCard
                     if items.isEmpty {
                         StateCard(
@@ -41,9 +41,9 @@ struct ReviewInboxSheet: View {
                         }
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
             .navigationTitle("Review")
             .navigationBarTitleDisplayMode(.inline)

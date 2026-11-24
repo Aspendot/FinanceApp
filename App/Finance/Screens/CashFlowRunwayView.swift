@@ -17,6 +17,8 @@ struct CashFlowRunwayView: View {
     @AppStorage("runwayStartingCashOverride") private var storedStartingCash: Int = -1
     @State private var editingStartingCash = false
     @State private var startingCashInput = ""
+    @State private var cachedForecastKey: String = ""
+    @State private var cachedForecast: CashFlowSummary?
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
@@ -34,25 +36,42 @@ struct CashFlowRunwayView: View {
         )
     }
 
+    private var forecastCacheKey: String {
+        guard let data = activeData else { return "" }
+        let subsKey = cancelledSubIDs.sorted().joined(separator: ",")
+        return "\(data.id.uuidString)|\(session.today)|\(resolvedStartingOverride ?? -1)|\(subsKey)|\(Int(extraDebtPayment.rounded()))|\(Int(monthlyTrim.rounded()))"
+    }
+
+    private func computeForecast(for data: FinanceData) -> CashFlowSummary {
+        CashFlowForecast.project(
+            today: session.today,
+            days: 90,
+            payday: data.payday,
+            paydayBreakdown: data.paydayBreakdown,
+            timeline: data.timeline,
+            allItems: data.allItems,
+            subscriptionSummary: data.subscriptionSummary,
+            config: data.bundle.layerConfig,
+            layers: data.bundle.layers,
+            scenario: scenario,
+            startingCashOverride: resolvedStartingOverride,
+            liveCash: data.liveCash
+        )
+    }
+
+    private func resolvedForecast(for data: FinanceData) -> CashFlowSummary {
+        if cachedForecastKey == forecastCacheKey, let cachedForecast {
+            return cachedForecast
+        }
+        return computeForecast(for: data)
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
-                        let forecast = CashFlowForecast.project(
-                            today: session.today,
-                            days: 90,
-                            payday: data.payday,
-                            paydayBreakdown: data.paydayBreakdown,
-                            timeline: data.timeline,
-                            allItems: data.allItems,
-                            subscriptionSummary: data.subscriptionSummary,
-                            config: data.bundle.layerConfig,
-                            layers: data.bundle.layers,
-                            scenario: scenario,
-                            startingCashOverride: resolvedStartingOverride,
-                            liveCash: data.liveCash
-                        )
+                        let forecast = resolvedForecast(for: data)
                         heroSummaryCard(forecast: forecast)
                         runwayChartCard(forecast: forecast)
                         whatIfControlsCard(data: data, forecast: forecast)
@@ -61,12 +80,24 @@ struct CashFlowRunwayView: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle("90-day runway")
             .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: forecastCacheKey, initial: true) { _, newKey in
+                guard let data = activeData, !newKey.isEmpty else {
+                    cachedForecast = nil
+                    cachedForecastKey = ""
+                    return
+                }
+                if cachedForecastKey != newKey || cachedForecast == nil {
+                    cachedForecast = computeForecast(for: data)
+                    cachedForecastKey = newKey
+                }
+            }
             .toolbar {
                 if !scenario.isBaseline {
                     ToolbarItem(placement: .topBarLeading) {
@@ -203,20 +234,22 @@ struct CashFlowRunwayView: View {
 
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
-                        startingTile(forecast: forecast)
-                        lowestTile(lowest: lowest)
+                        startingTile(forecast: forecast, fillHeight: false)
+                        lowestTile(lowest: lowest, fillHeight: false)
                     }
                 } else {
-                    HStack(spacing: 10) {
-                        startingTile(forecast: forecast)
-                        lowestTile(lowest: lowest)
+                    Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 8) {
+                        GridRow {
+                            startingTile(forecast: forecast, fillHeight: true)
+                            lowestTile(lowest: lowest, fillHeight: true)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func startingTile(forecast: CashFlowSummary) -> some View {
+    private func startingTile(forecast: CashFlowSummary, fillHeight: Bool) -> some View {
         Button {
             guard !session.isDemo else { return }
             startingCashInput = String(max(0, forecast.startingCashEstimate))
@@ -224,7 +257,7 @@ struct CashFlowRunwayView: View {
                 editingStartingCash.toggle()
             }
         } label: {
-            FrostedMetricTile {
+            FrostedMetricTile(fillHeight: fillHeight) {
                 HStack(spacing: 4) {
                     Text(resolvedStartingOverride != nil ? "Bank cash set" : "Est. cash today")
                         .font(.caption2.weight(.medium))
@@ -246,13 +279,13 @@ struct CashFlowRunwayView: View {
                     .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileCardButtonStyle())
     }
 
-    private func lowestTile(lowest: CashFlowDayPoint?) -> some View {
+    private func lowestTile(lowest: CashFlowDayPoint?, fillHeight: Bool) -> some View {
         let lowVal = lowest?.scenarioBalance ?? 0
         let isLow = lowVal < 20_000
-        return FrostedMetricTile {
+        return FrostedMetricTile(fillHeight: fillHeight) {
             Text("Lowest point")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.heroInkMuted)

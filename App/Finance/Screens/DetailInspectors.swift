@@ -19,8 +19,8 @@ struct SubscriptionDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
                         let history = SubscriptionHistory.compute(
                             for: subscription,
@@ -38,9 +38,9 @@ struct SubscriptionDetailSheet: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
             .navigationTitle(subscription.entry.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -244,8 +244,8 @@ struct DebtDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
                         let current = resolvedDebt
                         let history = DebtHistory.compute(
@@ -265,9 +265,10 @@ struct DebtDetailSheet: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle(debt.name)
             .navigationBarTitleDisplayMode(.inline)
@@ -524,8 +525,8 @@ struct CategoryDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
                         let periods = data.periods(for: session.periodMode)
                         let totals = data.totals(for: session.periodMode)
@@ -550,9 +551,10 @@ struct CategoryDetailSheet: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle(categoryName)
             .navigationBarTitleDisplayMode(.inline)
@@ -771,8 +773,8 @@ struct MerchantDetailSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
                         let periods = data.periods(for: session.periodMode)
                         let selected = periodID.flatMap { id in periods.first(where: { $0.id == id }) } ?? periods.last
@@ -869,9 +871,9 @@ struct MerchantDetailSheet: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
             .navigationTitle(merchantName)
             .navigationBarTitleDisplayMode(.inline)
@@ -985,6 +987,224 @@ struct AddReminderSheet: View {
             defer { saving = false }
             try? await model.addCustomReminder(reminder)
             dismiss()
+        }
+    }
+}
+
+// MARK: - 6. Live Bank Cash Breakdown Sheet
+
+/// Line-by-line transparent breakdown showing exactly how `Until payday` is computed from real bank balances.
+struct BankCashBreakdownSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.privacyMasked) private var privacyMasked
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSession
+
+    let liveCash: LiveCashSummary
+    let payday: PaydayView?
+    let onOpenRunway: () -> Void
+
+    @State private var refreshing = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
+                    HeroVaultCard(accentTint: liveCash.cashLeftUntilPayday < 0 ? Theme.heroCoral : Theme.heroGlow) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                SectionLabel("Live bank cash math", symbol: "building.columns.fill", color: Theme.heroInkMuted)
+                                Spacer()
+                                if liveCash.isEstimate {
+                                    QuietTag("Estimate", tone: .hero)
+                                }
+                            }
+                            HeroMoneyText(
+                                amount: liveCash.cashLeftUntilPayday,
+                                color: liveCash.cashLeftUntilPayday < 0 ? Theme.heroCoral : Theme.heroInk
+                            )
+                            if let payday {
+                                Text("Cash left until \(DayText.long(payday.next.date)) after all unsettled bills.")
+                                    .font(.footnote)
+                                    .foregroundStyle(Theme.heroInkMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+
+                    FinanceCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            SectionLabel("Bank accounts", symbol: "banknote")
+                            ForEach(Array(liveCash.accounts.enumerated()), id: \.element.id) { index, acc in
+                                if index > 0 {
+                                    HairlineDivider()
+                                }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        Text(acc.label)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(Theme.ink)
+                                        Spacer()
+                                        Text(MaskedMoney.yen(acc.estimatedBalance, masked: privacyMasked))
+                                            .font(.subheadline.weight(.bold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(acc.estimatedBalance < 0 ? Theme.bad : Theme.good)
+                                    }
+                                    breakdownSubRow(
+                                        label: "Confirmed balance (through \(DayText.short(acc.asOf)))",
+                                        value: MaskedMoney.yen(acc.confirmedBalance, masked: privacyMasked)
+                                    )
+                                    if acc.postCoverageDelta != 0 {
+                                        breakdownSubRow(
+                                            label: "Bank rows since \(DayText.short(acc.asOf))",
+                                            value: MaskedMoney.signed(acc.postCoverageDelta, masked: privacyMasked),
+                                            color: acc.postCoverageDelta < 0 ? Theme.ink2 : Theme.good
+                                        )
+                                    }
+                                    if acc.pendingDebitOutflow != 0 {
+                                        breakdownSubRow(
+                                            label: "Unsettled debit notices",
+                                            value: MaskedMoney.signed(-acc.pendingDebitOutflow, masked: privacyMasked),
+                                            color: Theme.accent
+                                        )
+                                    }
+                                }
+                            }
+                            HairlineDivider()
+                            HStack {
+                                Text("Total estimated cash in banks")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Theme.ink)
+                                Spacer()
+                                Text(MaskedMoney.yen(liveCash.estimatedBankCash, masked: privacyMasked))
+                                    .font(.subheadline.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.ink)
+                            }
+                        }
+                    }
+
+                    FinanceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            SectionLabel("Until next payday", symbol: "equal.circle")
+                            breakdownRow(
+                                label: "Estimated cash in banks",
+                                value: MaskedMoney.yen(liveCash.estimatedBankCash, masked: privacyMasked),
+                                color: Theme.ink
+                            )
+                            if liveCash.remainingInflowsSum > 0 {
+                                breakdownRow(
+                                    label: "Expected inflows before payday",
+                                    value: MaskedMoney.signed(liveCash.remainingInflowsSum, masked: privacyMasked),
+                                    color: Theme.good
+                                )
+                            }
+                            breakdownRow(
+                                label: "Unpaid scheduled bills (\(liveCash.remainingBillsCount))",
+                                value: MaskedMoney.signed(-liveCash.remainingBillsSum, masked: privacyMasked),
+                                color: Theme.ink2
+                            )
+                            if liveCash.phoneCheckedBillsSum > 0 {
+                                breakdownRow(
+                                    label: "Marked paid on phone (awaiting bank debit)",
+                                    value: MaskedMoney.signed(-liveCash.phoneCheckedBillsSum, masked: privacyMasked),
+                                    color: Theme.muted
+                                )
+                            }
+                            HairlineDivider()
+                            HStack {
+                                Text("Cash left until payday")
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(Theme.ink)
+                                Spacer()
+                                Text(MaskedMoney.yen(liveCash.cashLeftUntilPayday, masked: privacyMasked))
+                                    .font(.headline.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(liveCash.cashLeftUntilPayday < 0 ? Theme.bad : Theme.good)
+                            }
+                            Text("Deferred credit card purchases are not subtracted here because they leave your bank on next month's scheduled card bill.")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.top, 2)
+                        }
+                    }
+
+                    FinanceCard {
+                        VStack(spacing: 10) {
+                            PrimaryActionButton(title: "Open 90-day runway & What-If") {
+                                onOpenRunway()
+                            }
+                            if !session.isDemo {
+                                Button {
+                                    refreshing = true
+                                    Task {
+                                        defer { refreshing = false }
+                                        await model.syncGmail()
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        if refreshing {
+                                            ProgressView().controlSize(.small).tint(Theme.accent)
+                                        } else {
+                                            Image(systemName: "arrow.clockwise")
+                                                .font(.caption.weight(.semibold))
+                                        }
+                                        Text(refreshing ? "Refreshing…" : "Refresh bank & email sync")
+                                            .font(.subheadline.weight(.medium))
+                                    }
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(maxWidth: .infinity, minHeight: 40)
+                                    .background(Theme.accentWash, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+                                .buttonStyle(TactileCardButtonStyle())
+                                .disabled(refreshing)
+                            }
+                        }
+                    }
+                }
+                .verticalScrollPage()
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .background(Theme.page)
+            .navigationTitle("Bank cash breakdown")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private func breakdownSubRow(label: String, value: String, color: Color = Theme.muted) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.caption.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+    }
+
+    private func breakdownRow(label: String, value: String, color: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink2)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 }
