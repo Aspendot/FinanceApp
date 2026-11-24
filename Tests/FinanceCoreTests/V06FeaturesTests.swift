@@ -493,4 +493,128 @@ struct V06FeaturesTests {
         #expect(drafts[0].category == "Groceries")
         #expect(drafts[0].group == "Living")
     }
+
+    @Test("LiveCashSummary tracks real bank balances, pending debits, deferred cards, and phone bill checkoffs without double-counting")
+    func liveCashSummaryReconcilesExactBankCash() {
+        let balances = [
+            AccountBalance(source: "main_bank", label: "Main Bank", balance: 230_000, asOf: "2026-04-12", debitNoticeSources: ["main_debit"]),
+            AccountBalance(source: "sub_bank", label: "Sub Bank", balance: 5_000, asOf: "2026-04-12", debitNoticeSources: ["sub_debit"]),
+        ]
+        let sourceLabels = [
+            "main_bank": "Main Bank",
+            "sub_bank": "Sub Bank",
+            "main_debit": "Main Debit",
+            "sub_debit": "Sub Debit",
+            "credit_card": "Deferred Card",
+        ]
+        let timeline = [
+            TimelineEntry(date: "2026-03-25", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(date: "2026-04-15", item: "Electric", amount: 10_000, done: true),
+            TimelineEntry(date: "2026-04-20", item: "Rent", amount: 80_000),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+        ]
+        let payday = PaydayView.compute(timeline: timeline, today: "2026-04-14")!
+        let phoneCheckedKey = BillCheckoff.key(for: timeline[1]) // Electric marked paid on phone only (no bank row yet)
+
+        let postBankRows = [
+            TimelineReconciler.BankRow(source: "Main Bank", date: "2026-04-13", amount: 3_000, description: "SUPERMARKET"),
+            // Same-day row on asOf must NOT be subtracted again (already in confirmed balance).
+            TimelineReconciler.BankRow(source: "Main Bank", date: "2026-04-12", amount: 9_999, description: "ALREADY IN BALANCE"),
+        ]
+        let pendingItems = [
+            BudgetItem(date: "2026-04-14", source: "Main Debit", merchant: "CAFE", amount: 1_500, group: "Living", category: "Dining", layer: "Day-to-day", isPending: true),
+            BudgetItem(date: "2026-04-14", source: "Sub Debit", merchant: "KONBINI", amount: 500, group: "Living", category: "Groceries", layer: "Day-to-day", isPending: true),
+            // Deferred credit card purchase must NOT reduce bank cash until its scheduled bill.
+            BudgetItem(date: "2026-04-14", source: "Deferred Card", merchant: "ONLINE SHOP", amount: 12_000, group: "Living", category: "Shopping", layer: "Day-to-day", isPending: true),
+        ]
+
+        let live = LiveCashSummary.compute(
+            accountBalances: balances,
+            sourceLabels: sourceLabels,
+            bankRows: postBankRows,
+            pendingItems: pendingItems,
+            payday: payday,
+            phoneCheckedBillKeys: [phoneCheckedKey]
+        )!
+
+        // Main Bank: 230,000 - 3,000 (post row) - 1,500 (pending debit) = 225,500
+        // Sub Bank: 5,000 - 500 (pending debit) = 4,500
+        // Total estimated bank cash = 230,000
+        #expect(live.confirmedBankCash == 235_000)
+        #expect(live.estimatedBankCash == 230_000)
+        #expect(live.pendingDebitOutflow == 2_000)
+        #expect(live.remainingBillsSum == 80_000)
+        #expect(live.phoneCheckedBillsSum == 10_000)
+        // Cash left = 230,000 - 80,000 (unpaid Rent) - 10,000 (phone-checked Electric) = 140,000
+        #expect(live.cashLeftUntilPayday == 140_000)
+
+        // CashFlowForecast starts from real bank cash minus phone-only checkoffs (230,000 - 10,000 = 220,000).
+        let forecast = CashFlowForecast.project(
+            today: "2026-04-14",
+            days: 30,
+            payday: payday,
+            paydayBreakdown: nil,
+            timeline: timeline,
+            allItems: pendingItems,
+            subscriptionSummary: SubscriptionSummary.compute(from: []),
+            config: Self.sampleConfig,
+            layers: Self.sampleLayers,
+            liveCash: live
+        )
+        #expect(forecast.startingCashEstimate == 220_000)
+    }
+
+    @Test("Alerts suppress consecutive-day routine convenience-store buys, active-sub collisions, pre-stop charges, and LAWSON-vs-AWS")
+    func alertPrecisionEliminatesFalsePositives() {
+        let items = [
+            // Consecutive-day routine convenience store purchases -> NOT duplicates.
+            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "KONBINI", amount: 685, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "KONBINI", amount: 685, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+            // Same-day identical charge -> IS a possible duplicate.
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "BAR SAMPLE", amount: 900, group: "Going out", category: "Bars", layer: "Day-to-day"),
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "BAR SAMPLE", amount: 900, group: "Going out", category: "Bars", layer: "Day-to-day"),
+            // Active Claude subscription must NOT trigger stopped API credits alert.
+            BudgetItem(date: "2026-04-10", source: "Sample Debit", merchant: "ANTHROPI", amount: 17_950, group: "Subscriptions", category: "AI", layer: "Subscriptions"),
+            // Pre-stop charge on a cancelled sub (stoppedDate 2026-04-10) must NOT alert.
+            BudgetItem(date: "2026-04-05", source: "Sample Debit", merchant: "DISCORD NITRO", amount: 1_050, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
+            // Post-stop charge on a cancelled sub MUST alert.
+            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "STREAMING PRO", amount: 1_980, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
+            // LAWSON contains "aws" inside the word -> must NOT match stopped AWS subscription.
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "LAWSON", amount: 3_500, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+        ]
+        let subs = [
+            SubscriptionEntry(name: "Claude (Anthropic)", monthly: 17_950, status: "Keep"),
+            SubscriptionEntry(name: "OpenAI / Anthropic API credits", monthly: 4_900, status: "Stopped", stoppedDate: "2026-04-01"),
+            SubscriptionEntry(name: "Discord Nitro", monthly: 1_050, status: "Cancelled", stoppedDate: "2026-04-10"),
+            SubscriptionEntry(name: "Streaming Pro", monthly: 1_980, status: "Cancelled", stoppedDate: "2026-04-10"),
+            SubscriptionEntry(name: "AWS", monthly: 18_400, status: "Stopped", stoppedDate: "2026-04-01"),
+        ]
+        let bundle = DataBundle(
+            generatedAt: "2026-04-14T10:00:00+09:00",
+            asOf: "2026-04-14",
+            items: items,
+            subs: subs,
+            layers: Self.sampleLayers,
+            layerConfig: Self.sampleConfig
+        )
+        let subSummary = SubscriptionSummary.compute(from: subs)
+        let planSummary = PlanSummary.compute(plan: [], planWindow: nil, totalsByMonth: [:], selectedMonth: "2026-04", currentMonth: "2026-04", inProgressMonth: "2026-04")
+        let alerts = SpendingInsights.detectAlerts(
+            bundle: bundle,
+            allItems: items,
+            notices: [],
+            timeline: [],
+            planSummary: planSummary,
+            subscriptionSummary: subSummary,
+            today: "2026-04-14"
+        )
+
+        let dupAlerts = alerts.filter { $0.kind == .possibleDuplicate }
+        #expect(dupAlerts.count == 1)
+        #expect(dupAlerts[0].detail.contains("BAR SAMPLE"))
+
+        let subAlerts = alerts.filter { $0.kind == .cancelledSubscriptionCharge }
+        #expect(subAlerts.count == 1)
+        #expect(subAlerts[0].detail.contains("STREAMING PRO"))
+    }
 }

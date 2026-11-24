@@ -21,6 +21,7 @@ struct NowScreenModel: Sendable {
     let activePeriodPace: Double?
     let payday: PaydayView?
     let paydayBreakdown: PaydayBreakdown?
+    let liveCash: LiveCashSummary?
     let lastPayday: String?
     let spentSincePayday: Int?
     let pendingSincePayday: Int
@@ -41,6 +42,7 @@ struct NowScreenModel: Sendable {
         self.activePeriodPace = data.currentPeriod(for: .calendarMonth, today: today)?.paceProgress(on: today)
         self.payday = data.payday
         self.paydayBreakdown = data.paydayBreakdown
+        self.liveCash = data.liveCash
         self.lastPayday = data.lastPayday
         self.spentSincePayday = data.spentSincePayday
         self.pendingSincePayday = data.pendingSincePayday

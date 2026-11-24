@@ -129,7 +129,7 @@ public struct SubscriptionHistory: Sendable, Equatable {
 
         let tokenHit = tokens.contains { token in
             guard !token.isEmpty else { return false }
-            if foldedMerchant.contains(token) { return true }
+            if Self.containsToken(token, in: foldedMerchant) { return true }
             // Japanese bank debit rows often truncate ASCII descriptors to 8 chars (e.g. "ANTHROPI", "PONTAPAS").
             if token.count >= 7, token.allSatisfy(\.isASCII) {
                 let truncated = String(token.prefix(7))
@@ -223,6 +223,29 @@ public struct SubscriptionHistory: Sendable, Equatable {
             out.append(foldedBase)
         }
         return Array(Set(out))
+    }
+
+    /// Matches a token against a folded merchant string without letting short ASCII tokens
+    /// (such as `"aws"`) fire inside unrelated English words (such as `"lawson"`).
+    private static func containsToken(_ token: String, in haystack: String) -> Bool {
+        guard token.count <= 4, token.allSatisfy(\.isASCII) else {
+            return haystack.contains(token)
+        }
+        var searchStart = haystack.startIndex
+        while searchStart < haystack.endIndex,
+              let range = haystack.range(of: token, range: searchStart..<haystack.endIndex)
+        {
+            let beforeIsASCIILetter: Bool = {
+                guard range.lowerBound > haystack.startIndex else { return false }
+                let prev = haystack[haystack.index(before: range.lowerBound)]
+                return prev.isASCII && prev.isLetter
+            }()
+            if !beforeIsASCIILetter {
+                return true
+            }
+            searchStart = haystack.index(after: range.lowerBound)
+        }
+        return false
     }
 }
 

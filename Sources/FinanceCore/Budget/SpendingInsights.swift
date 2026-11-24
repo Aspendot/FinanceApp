@@ -697,15 +697,35 @@ public enum SpendingInsights {
             }
         }
 
-        // 3. Cancelled or stopped subscriptions showing a recent charge (last 35 days).
+        // 3. Cancelled or stopped subscriptions showing a recent charge (last 35 days, after stoppedDate if known).
+        //    Never flag a charge that already belongs to an active subscription (e.g. active plan vs stopped API credits).
         if let cutoffDay = JST.addingDays(-35, to: today) {
             let offSubs = subscriptionSummary.stopped.filter(\.countsAsSaving)
             let recentCharges = allItems.filter {
                 $0.date >= cutoffDay && $0.amount > 0 && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
             }
+            var activeClaimedFingerprints = Set<String>()
+            for activeSub in subscriptionSummary.running {
+                for item in recentCharges where SubscriptionHistory.matchesItem(
+                    item,
+                    for: activeSub.entry,
+                    config: config,
+                    layers: bundle.layers,
+                    allowAnnualMultiplier: true
+                ) {
+                    activeClaimedFingerprints.insert(CategoryOverride.transactionFingerprint(for: item))
+                }
+            }
             for sub in offSubs {
+                let stoppedAfter = sub.entry.stoppedDate?.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let hit = recentCharges.first(where: { item in
-                    SubscriptionHistory.matchesItem(
+                    if let stoppedAfter, !stoppedAfter.isEmpty, item.date <= stoppedAfter {
+                        return false
+                    }
+                    if activeClaimedFingerprints.contains(CategoryOverride.transactionFingerprint(for: item)) {
+                        return false
+                    }
+                    return SubscriptionHistory.matchesItem(
                         item,
                         for: sub.entry,
                         config: config,
@@ -727,7 +747,9 @@ public enum SpendingInsights {
             }
         }
 
-        // 4. Possible duplicate charges within 1 day (last 21 days, >= ¥500, same card/amount/merchant).
+        // 4. Possible duplicate charges (last 21 days, same card/amount/merchant).
+        //    Same-day duplicates trigger at >= ¥500; consecutive-day duplicates require >= ¥2,000 and
+        //    skip routine everyday food/convenience categories so daily workday coffee/lunch doesn't spam alerts.
         if let cutoffDay = JST.addingDays(-21, to: today) {
             let recent = allItems
                 .filter {
@@ -738,14 +760,20 @@ public enum SpendingInsights {
                 }
                 .sorted { ($0.date, $0.merchant, $0.amount) < ($1.date, $1.merchant, $1.amount) }
 
+            let routineDailyKeywords = [
+                "convenience", "supermarket", "grocer", "dining", "eating out", "coffee", "cafe", "bakery", "transport",
+            ]
             var reportedDupKeys = Set<String>()
             for i in 0..<recent.count {
                 let a = recent[i]
                 let keyA = TextFold.key(a.merchant)
                 guard !keyA.isEmpty, let dayA = JST.dayNumber(a.date) else { continue }
+                let catLower = a.category.lowercased()
+                let isRoutineDaily = routineDailyKeywords.contains { catLower.contains($0) }
                 for j in (i + 1)..<recent.count {
                     let b = recent[j]
                     guard let dayB = JST.dayNumber(b.date), dayB - dayA <= 1 else { break }
+                    if dayB > dayA && (a.amount < 2_000 || isRoutineDaily) { continue }
                     guard a.amount == b.amount, a.source == b.source, TextFold.key(b.merchant) == keyA else { continue }
                     // Ignore when one is pending and the other is confirmed on the same source (likely unmatched lag).
                     guard a.isPending == b.isPending else { continue }

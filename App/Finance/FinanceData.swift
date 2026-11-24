@@ -26,6 +26,7 @@ struct FinanceData: Sendable {
     let noticeByFingerprint: [String: Notice]
     let payday: PaydayView?
     let paydayBreakdown: PaydayBreakdown?
+    let liveCash: LiveCashSummary?
     let comingUp: [ComingUpGroup]
     let lastPayday: String?
     let spentSincePayday: Int?
@@ -171,6 +172,14 @@ struct FinanceData: Sendable {
                 layers: bundle.layers
             )
         }
+        self.liveCash = LiveCashSummary.compute(
+            accountBalances: bundle.accountBalances ?? [],
+            sourceLabels: bundle.sourceLabels,
+            bankRows: layered.bankRows,
+            pendingItems: layered.pendingItems,
+            payday: activePayday,
+            phoneCheckedBillKeys: checked.phoneCheckedKeys
+        )
         self.pendingSincePayday = start.map { day in
             layered.pendingItems.filter {
                 $0.date >= day && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
@@ -370,17 +379,24 @@ struct FinanceData: Sendable {
             cycleProgress = nil
         }
 
+        let heroLeft = liveCash?.cashLeftUntilPayday
+            ?? paydayBreakdown?.estimatedRemainingDiscretionary
+            ?? p.left
+        let heroBills = liveCash?.unsettledBillsSum ?? p.outSum
+        let heroBorrowed = liveCash?.openBorrowedSum ?? p.borrowedSum
+        let detailPrefix = liveCash != nil ? "bank cash after bills" : "est. after bills"
+
         return WidgetSnapshot(
             title: "Until payday · \(p.daysToPayday) days",
-            value: Money.yen(p.left),
-            detail: "for everything else" + spent,
+            value: Money.yen(heroLeft),
+            detail: detailPrefix + spent,
             updatedAt: Date(),
-            compactValue: FinanceFormat.compactYen(p.left),
+            compactValue: FinanceFormat.compactYen(heroLeft),
             daysToPayday: p.daysToPayday,
             cycleProgress: cycleProgress,
-            billsSum: p.outSum,
-            leftSum: p.left,
-            borrowedSum: p.borrowedSum,
+            billsSum: heroBills,
+            leftSum: heroLeft,
+            borrowedSum: heroBorrowed,
             upcomingBills: unpaidBills
         )
     }

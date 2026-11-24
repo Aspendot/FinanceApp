@@ -151,14 +151,17 @@ public enum CashFlowForecast {
         config: LayerConfig,
         layers: [LayerDefinition],
         scenario: WhatIfScenario = WhatIfScenario(),
-        startingCashOverride: Int? = nil
+        startingCashOverride: Int? = nil,
+        liveCash: LiveCashSummary? = nil
     ) -> CashFlowSummary {
         let horizon = max(7, min(180, days))
         let endDate = JST.addingDays(horizon - 1, to: today) ?? today
 
-        // 1. Estimate starting cash on hand today from active payday cycle math.
+        // 1. Start from user override, else real bank cash (minus phone-only checkoffs whose bank debit hasn't posted),
+        //    else fall back to payday cycle math for legacy bundles without accountBalances.
         let startingCash: Int = {
             if let override = startingCashOverride { return override }
+            if let liveCash { return liveCash.estimatedBankCash - liveCash.phoneCheckedBillsSum }
             if let breakdown = paydayBreakdown {
                 return breakdown.receivedInSum - breakdown.paidBillsSum - breakdown.dayToDaySpentSincePayday
             }
