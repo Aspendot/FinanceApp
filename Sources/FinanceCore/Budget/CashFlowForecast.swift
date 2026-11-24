@@ -84,8 +84,13 @@ public struct CashFlowSummary: Sendable, Equatable {
     public var days: Int
     /// Estimated starting available cash on `startDate`.
     public var startingCashEstimate: Int
-    /// Estimated daily day-to-day discretionary spend used in baseline projection.
+    /// Estimated daily cash/debit day-to-day spend used in baseline projection
+    /// (excludes deferred credit cards already billed as monthly lump sums on the timeline).
     public var baselineDailyBurn: Int
+    /// Deferred credit/postpay card sources excluded from daily burn because their monthly bill is on the timeline.
+    public var excludedDeferredCardSources: [String]
+    /// Monthly debit/cash subscriptions not already on the timeline included in baseline outflow.
+    public var baselineMonthlySubs: Int
     /// Monthly savings unlocked by toggled-off subscriptions in the scenario.
     public var cancelledSubsMonthlyTotal: Int
     public var points: [CashFlowDayPoint]
@@ -103,6 +108,8 @@ public struct CashFlowSummary: Sendable, Equatable {
         days: Int,
         startingCashEstimate: Int,
         baselineDailyBurn: Int,
+        excludedDeferredCardSources: [String] = [],
+        baselineMonthlySubs: Int = 0,
         cancelledSubsMonthlyTotal: Int,
         points: [CashFlowDayPoint],
         baselineLowest: CashFlowDayPoint?,
@@ -117,6 +124,8 @@ public struct CashFlowSummary: Sendable, Equatable {
         self.days = days
         self.startingCashEstimate = startingCashEstimate
         self.baselineDailyBurn = baselineDailyBurn
+        self.excludedDeferredCardSources = excludedDeferredCardSources
+        self.baselineMonthlySubs = baselineMonthlySubs
         self.cancelledSubsMonthlyTotal = cancelledSubsMonthlyTotal
         self.points = points
         self.baselineLowest = baselineLowest
@@ -159,7 +168,32 @@ public enum CashFlowForecast {
             return 0
         }()
 
-        // 2. Estimate daily non-bill discretionary burn from the last 60 days of Day-to-day spending.
+        // Detect deferred-bill card sources (e.g. Merpay, PayPay Card) whose monthly lump-sum bill is
+        // already on the timeline so we don't double-count both their daily purchases AND their monthly bill.
+        let timelineBillTitles: [String] = timeline
+            .filter { $0.event != true && $0.borrowed != true && $0.amount > 0 }
+            .map { TextFold.key($0.item) }
+
+        let deferredCardSources: Set<String> = {
+            let distinctSources = Set(allItems.map(\.source))
+            var deferred = Set<String>()
+            for source in distinctSources {
+                let lower = source.lowercased()
+                if lower.contains("debit") || lower.contains("bank") || lower == "cash" || lower == "apple" {
+                    continue
+                }
+                let foldedSource = TextFold.key(source)
+                guard foldedSource.count >= 4 else { continue }
+                if timelineBillTitles.contains(where: { title in
+                    title.contains(foldedSource) && (title.contains("bill") || title.contains("請求") || title.contains("card"))
+                }) {
+                    deferred.insert(source)
+                }
+            }
+            return deferred
+        }()
+
+        // 2. Estimate daily non-bill discretionary cash/debit burn from the last 60 days of Day-to-day spending.
         let baselineDailyBurn: Int = {
             guard let lookbackStart = JST.addingDays(-60, to: today) else { return 0 }
             let keys = layers.count >= 4 ? Array(layers.prefix(4).map(\.key)) : LayerConfig.defaultLayerKeys
@@ -168,6 +202,7 @@ public enum CashFlowForecast {
                 item.date >= lookbackStart
                     && item.date <= today
                     && item.amount > 0
+                    && !deferredCardSources.contains(item.source)
                     && config.resolvedLayer(for: item, layers: layers) == dayToDayKey
             }
             guard !recent.isEmpty else { return 0 }
@@ -182,15 +217,54 @@ public enum CashFlowForecast {
             return Int((Double(sum) / Double(spanDays)).rounded())
         }()
 
+        // Include running subscriptions billed outside the timeline and outside deferred-bill cards so
+        // baseline drag and What-If cancellation toggles stay mathematically consistent.
+        let deferredFolded = deferredCardSources.map { TextFold.key($0) }
+        let baselineMonthlySubs: Int = subscriptionSummary.running
+            .filter { sub in
+                guard sub.entry.monthly > 0 else { return false }
+                let statusLower = (sub.entry.status ?? "").lowercased()
+                if statusLower.contains("repaid") || statusLower.contains("yearly") { return false }
+                // Skip subscriptions billed solely via a deferred card whose monthly bill is already on the timeline.
+                let viaParts = (sub.entry.via ?? "")
+                    .split(separator: "/")
+                    .map { TextFold.key(String($0)) }
+                    .filter { !$0.isEmpty }
+                if !viaParts.isEmpty,
+                   viaParts.allSatisfy({ part in deferredFolded.contains(where: { part.contains($0) }) })
+                {
+                    return false
+                }
+                // Skip subscriptions already represented directly as a bill on the timeline (e.g. Rakuten Mobile, BIGLOBE光).
+                let tokens = SubscriptionHistory.searchTokens(for: sub.entry.name)
+                if timelineBillTitles.contains(where: { title in tokens.contains(where: { title.contains($0) }) }) {
+                    return false
+                }
+                return true
+            }
+            .reduce(0) { $0 + $1.entry.monthly }
+
         // 3. Collect explicit unpaid upcoming timeline events inside [today, endDate],
         //    plus extrapolate monthly recurring salary & bills for months 2 and 3.
         var eventsByDate: [String: [CashFlowEvent]] = [:]
+        var explicitByMonthDir: [String: [String]] = [:]
         var existingKeys = Set<String>()
 
         func addEvent(_ event: CashFlowEvent) {
             guard event.date >= today, event.date <= endDate else { return }
-            let dedupe = "\(String(event.date.prefix(7)))|\(TextFold.key(event.title))|\(event.amount < 0 ? "in" : "out")"
+            let ym = String(event.date.prefix(7))
+            let dir = event.amount < 0 ? "in" : "out"
+            let foldedTitle = TextFold.key(event.title)
+            let dedupe = "\(ym)|\(foldedTitle)|\(dir)"
             guard existingKeys.insert(dedupe).inserted else { return }
+            if event.isProjectedRepeat {
+                let explicitTitles = explicitByMonthDir["\(ym)|\(dir)"] ?? []
+                if explicitTitles.contains(where: { $0 == foldedTitle || $0.hasPrefix(foldedTitle) || foldedTitle.hasPrefix($0) }) {
+                    return
+                }
+            } else {
+                explicitByMonthDir["\(ym)|\(dir)", default: []].append(foldedTitle)
+            }
             eventsByDate[event.date, default: []].append(event)
         }
 
@@ -208,22 +282,37 @@ public enum CashFlowForecast {
             ))
         }
 
-        // Recurring templates from the current cycle (payday salary + regular bills) projected +1, +2, +3 months.
+        // Recurring templates from the timeline (payday salary + regular monthly bills) projected +1..+3 months.
+        // Never blindly repeats one-off bills (loans paid back, quarterly taxes, bonuses, custom one-off reminders).
+        let hasExplicitRecurringFlags = timeline.contains { $0.recurring != nil }
+        let oneOffKeywords = ["bonus", "賞与", "resident tax", "住民税", "pay back", "manager", "cashback", "refund", "ポチっと", "flight", "hotel"]
+
         let recurringTemplates: [TimelineEntry] = {
-            var templates: [TimelineEntry] = []
+            var latestByTitle: [String: TimelineEntry] = [:]
             if let next = payday?.next, next.amount != 0 {
-                templates.append(next)
+                latestByTitle[TextFold.key(next.item)] = next
             }
             for entry in timeline {
                 guard entry.event != true, entry.borrowed != true, entry.amount != 0 else { continue }
-                // Skip one-off bonuses (usually flagged with estimate & label) from blind monthly repeat.
-                let lower = entry.item.lowercased()
-                if lower.contains("bonus") || lower.contains("賞与") { continue }
-                if entry.payday == true || entry.amount > 0 {
-                    templates.append(entry)
+                let shouldRepeat: Bool
+                if hasExplicitRecurringFlags {
+                    shouldRepeat = entry.recurring == true || entry.payday == true
+                } else {
+                    let lower = entry.item.lowercased()
+                    let looksOneOff = oneOffKeywords.contains { lower.contains($0) }
+                    shouldRepeat = !looksOneOff && (entry.payday == true || entry.amount > 0)
+                }
+                guard shouldRepeat else { continue }
+                let key = TextFold.key(entry.item)
+                if let existing = latestByTitle[key] {
+                    if entry.date >= existing.date {
+                        latestByTitle[key] = entry
+                    }
+                } else {
+                    latestByTitle[key] = entry
                 }
             }
-            return templates
+            return latestByTitle.values.sorted { ($0.date, $0.item) < ($1.date, $1.item) }
         }()
 
         for (tIdx, tmpl) in recurringTemplates.enumerated() {
@@ -247,6 +336,7 @@ public enum CashFlowForecast {
             .filter { scenario.cancelledSubscriptionIDs.contains($0.id) }
             .reduce(0) { $0 + $1.entry.monthly }
 
+        let dailyBaselineSubs = Double(baselineMonthlySubs) / 30.0
         let monthlyScenarioNetSaving = cancelledSubsMonthly
             + max(0, scenario.monthlyDayToDaySavings)
             - max(0, scenario.extraMonthlyDebtPayment)
@@ -269,8 +359,9 @@ public enum CashFlowForecast {
             runningScenario += Double(eventNet)
 
             if offset > 0 {
-                runningBaseline -= Double(baselineDailyBurn)
-                runningScenario -= Double(baselineDailyBurn)
+                let dailyDrag = Double(baselineDailyBurn) + dailyBaselineSubs
+                runningBaseline -= dailyDrag
+                runningScenario -= dailyDrag
                 runningScenario += dailyScenarioDelta
             }
 
@@ -300,6 +391,8 @@ public enum CashFlowForecast {
             days: points.count,
             startingCashEstimate: startingCash,
             baselineDailyBurn: baselineDailyBurn,
+            excludedDeferredCardSources: deferredCardSources.sorted(),
+            baselineMonthlySubs: baselineMonthlySubs,
             cancelledSubsMonthlyTotal: cancelledSubsMonthly,
             points: points,
             baselineLowest: baselineLowest,

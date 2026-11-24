@@ -124,6 +124,7 @@ struct FinanceBackupDocument: FileDocument {
 }
 
 struct LocalDataSettingsView: View {
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
@@ -210,6 +211,101 @@ struct LocalDataSettingsView: View {
                     }
                 } header: {
                     SectionLabel("Saved category rules")
+                }
+                .listRowBackground(Theme.surface)
+            }
+
+            if !mods.customReminders.isEmpty {
+                Section {
+                    ForEach(mods.customReminders) { rem in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rem.title)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(Theme.ink)
+                                    .lineLimit(1)
+                                let amtPart = rem.isEvent || rem.amount == 0
+                                    ? "Reminder"
+                                    : MaskedMoney.yen(rem.amount, masked: privacyMasked)
+                                Text("\(DayText.short(rem.date)) · \(amtPart)")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            Spacer()
+                            Button(role: .destructive) {
+                                Task { try? await model.removeCustomReminder(id: rem.id) }
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.bad)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                } header: {
+                    SectionLabel("Custom reminders")
+                }
+                .listRowBackground(Theme.surface)
+            }
+
+            if !mods.targetOverrides.isEmpty {
+                Section {
+                    ForEach(mods.targetOverrides.keys.sorted(), id: \.self) { category in
+                        if let cap = mods.targetOverrides[category] {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(category)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(Theme.ink)
+                                    Text("Monthly cap: \(MaskedMoney.yen(cap, masked: privacyMasked))")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    Task { try? await model.setTargetOverride(category: category, target: nil) }
+                                } label: {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.bad)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                } header: {
+                    SectionLabel("Edited monthly targets")
+                }
+                .listRowBackground(Theme.surface)
+            }
+
+            if !mods.debtBalanceOverrides.isEmpty {
+                Section {
+                    ForEach(mods.debtBalanceOverrides.keys.sorted(), id: \.self) { debtName in
+                        if let bal = mods.debtBalanceOverrides[debtName] {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(debtName)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(Theme.ink)
+                                    Text("Balance: \(MaskedMoney.yen(bal, masked: privacyMasked))")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    Task { try? await model.setDebtBalanceOverride(debtName: debtName, balance: nil) }
+                                } label: {
+                                    Image(systemName: "arrow.uturn.backward")
+                                        .font(.caption)
+                                        .foregroundStyle(Theme.bad)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                } header: {
+                    SectionLabel("Edited debt balances")
                 }
                 .listRowBackground(Theme.surface)
             }
@@ -334,7 +430,7 @@ struct LocalDataSettingsView: View {
     private func overrideScopeLabel(_ ov: CategoryOverride) -> String {
         switch ov.scope {
         case .merchant: return "all payments"
-        case .transaction(_, _, let date, let amount): return "\(date) · \(Money.yen(amount))"
+        case .transaction(_, _, let date, let amount): return "\(date) · \(MaskedMoney.yen(amount, masked: privacyMasked))"
         }
     }
 
@@ -504,9 +600,11 @@ struct ReceiptScannerSettingsView: View {
     @State private var apiKeyInput = ""
     @State private var hasStoredKey = false
     @State private var feedback: String?
+    @State private var feedbackIsError = false
+    @State private var testingKey = false
 
-    private var presetModels: [String] {
-        switch config.provider {
+    private static func presets(for provider: VisionProvider) -> [String] {
+        switch provider {
         case .anthropic:
             return ["claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
         case .gemini:
@@ -516,13 +614,17 @@ struct ReceiptScannerSettingsView: View {
         }
     }
 
+    private var presetModels: [String] {
+        Self.presets(for: config.provider)
+    }
+
     var body: some View {
         List {
             if let feedback {
                 Section {
                     Text(feedback)
                         .font(.footnote)
-                        .foregroundStyle(Theme.good)
+                        .foregroundStyle(feedbackIsError ? Theme.bad : Theme.good)
                 }
                 .listRowBackground(Theme.surface)
             }
@@ -617,8 +719,10 @@ struct ReceiptScannerSettingsView: View {
                         apiKeyInput = ""
                         hasStoredKey = VisionKeyStore.hasKey(for: config.provider)
                         feedback = "API key saved to Keychain for \(config.provider.displayName)"
+                        feedbackIsError = false
                     } catch {
                         feedback = error.localizedDescription
+                        feedbackIsError = true
                     }
                 }
                 .font(.subheadline.weight(.medium))
@@ -626,10 +730,18 @@ struct ReceiptScannerSettingsView: View {
                 .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
                 if hasStoredKey {
+                    Button(testingKey ? "Testing connection…" : "Test API key") {
+                        testSavedKey()
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(testingKey ? Theme.muted : Theme.accent)
+                    .disabled(testingKey)
+
                     Button("Remove API key", role: .destructive) {
                         VisionKeyStore.clearKey(for: config.provider)
                         hasStoredKey = false
                         feedback = "API key removed"
+                        feedbackIsError = false
                     }
                     .font(.subheadline.weight(.medium))
                 }
@@ -659,15 +771,39 @@ struct ReceiptScannerSettingsView: View {
             config = VisionScannerStore.load()
             hasStoredKey = VisionKeyStore.hasKey(for: config.provider)
         }
-        .onChange(of: config.provider) { _, newProvider in
-            if config.model.isEmpty || VisionProvider.allCases.map(\.defaultModel).contains(config.model) {
+        .onChange(of: config.provider) { oldProvider, newProvider in
+            let oldPresets = Set(Self.presets(for: oldProvider) + [oldProvider.defaultModel])
+            if config.model.isEmpty || oldPresets.contains(config.model) {
                 config.model = newProvider.defaultModel
             }
             VisionScannerStore.save(config)
             hasStoredKey = VisionKeyStore.hasKey(for: newProvider)
+            feedback = nil
         }
         .onChange(of: config) { _, updated in
             VisionScannerStore.save(updated)
+        }
+    }
+
+    private func testSavedKey() {
+        guard let key = VisionKeyStore.loadKey(for: config.provider) else {
+            feedback = "Save an API key first."
+            feedbackIsError = true
+            return
+        }
+        testingKey = true
+        feedback = nil
+        let snapshot = config
+        Task {
+            defer { testingKey = false }
+            do {
+                let message = try await ReceiptScannerService.testConnection(config: snapshot, apiKey: key)
+                feedback = message
+                feedbackIsError = false
+            } catch {
+                feedback = error.localizedDescription
+                feedbackIsError = true
+            }
         }
     }
 }

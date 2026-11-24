@@ -518,9 +518,13 @@ struct MonthsView: View {
                     }
                     if hasIncome {
                         let leftPositive = totals.left >= 0
+                        let hasExtraOutflows = totals.debt != 0 || totals.people != 0
+                        let leftLabel = leftPositive
+                            ? (hasExtraOutflows ? "Net left" : "Left after spending")
+                            : "Short by"
                         MetricWell(tint: leftPositive ? Theme.good : Theme.bad) {
                             summaryDetailRow(
-                                title: leftPositive ? "Left after spending" : "Short by",
+                                title: leftLabel,
                                 value: MaskedMoney.signed(totals.left, masked: privacyMasked),
                                 accessibilityValue: FinanceFormat.yenAccessibility(totals.left, signed: true),
                                 color: leftPositive ? Theme.good : Theme.bad,

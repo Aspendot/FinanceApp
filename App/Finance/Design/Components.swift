@@ -28,6 +28,15 @@ enum MaskedMoney {
         guard masked else { return Money.signed(value) }
         return value < 0 ? "−¥•••,•••" : "+¥•••,•••"
     }
+
+    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
+
+    /// Redacts any inline yen figures inside alert or Q&A strings when privacy mode is active.
+    static func redactText(_ text: String, masked: Bool) -> String {
+        guard masked, let regex = yenPattern else { return text }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "¥•••,•••")
+    }
 }
 
 /// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature,

@@ -205,6 +205,7 @@ public enum ReceiptExtraction {
 
             let resolvedPair: (group: String, category: String)
             if let cat = raw.category?.trimmingCharacters(in: .whitespacesAndNewlines),
+               cat.caseInsensitiveCompare("Uncategorized") != .orderedSame,
                let exact = categoryLookup[cat.lowercased()]
             {
                 resolvedPair = exact
@@ -282,11 +283,18 @@ public enum ReceiptExtraction {
             }
             trimmed = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        if let firstObj = trimmed.firstIndex(of: "{"), let lastObj = trimmed.lastIndex(of: "}"), firstObj < lastObj {
-            return String(trimmed[firstObj...lastObj])
+        let firstObj = trimmed.firstIndex(of: "{")
+        let lastObj = trimmed.lastIndex(of: "}")
+        let firstArr = trimmed.firstIndex(of: "[")
+        let lastArr = trimmed.lastIndex(of: "]")
+        if let fa = firstArr, let la = lastArr, fa < la {
+            if let fo = firstObj, let lo = lastObj, fo < lo, fo < fa {
+                return String(trimmed[fo...lo])
+            }
+            return String(trimmed[fa...la])
         }
-        if let firstArr = trimmed.firstIndex(of: "["), let lastArr = trimmed.lastIndex(of: "]"), firstArr < lastArr {
-            return String(trimmed[firstArr...lastArr])
+        if let fo = firstObj, let lo = lastObj, fo < lo {
+            return String(trimmed[fo...lo])
         }
         return trimmed
     }

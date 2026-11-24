@@ -32,13 +32,11 @@ enum BillReminderScheduler {
         let today = JST.day(now)
         let unpaid = timeline
             .filter { entry in
-                entry.done != true
-                    && entry.event != true
-                    && entry.borrowed != true
-                    && entry.amount > 0
-                    && entry.date >= today
+                guard entry.done != true, entry.borrowed != true, entry.date >= today else { return false }
+                // Schedule both unpaid cash bills (amount > 0) AND custom event reminders (e.g. subscription cancel dates).
+                return entry.amount > 0 || entry.event == true
             }
-            .sorted { ($0.date, $0.amount) < ($1.date, $1.amount) }
+            .sorted { ($0.date, $0.amount, $0.item) < ($1.date, $1.amount, $1.item) }
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = JST.timeZone
@@ -46,7 +44,7 @@ enum BillReminderScheduler {
         let hour = max(6, min(22, preferences.billReminderHourJST))
 
         var scheduled = 0
-        for entry in unpaid {
+        for (idx, entry) in unpaid.enumerated() {
             guard scheduled < maxScheduledBills else { break }
             guard let reminderDay = JST.addingDays(-daysBefore, to: entry.date) else { continue }
             let parts = reminderDay.split(separator: "-").compactMap { Int($0) }
@@ -71,17 +69,26 @@ enum BillReminderScheduler {
             default: timingLabel = "In \(daysBefore) days"
             }
             content.title = "\(timingLabel): \(entry.item)"
-            let amountText = Money.yen(entry.amount) + est
-            if let note = entry.note, !note.isEmpty {
-                content.body = "\(amountText) · \(note)"
+            if entry.event == true && entry.amount == 0 {
+                if let note = entry.note, !note.isEmpty {
+                    content.body = note
+                } else {
+                    content.body = "Reminder for \(DayText.short(entry.date))"
+                }
             } else {
-                content.body = "\(amountText) · scheduled for \(DayText.short(entry.date))"
+                let amountText = Money.yen(entry.amount) + est
+                if let note = entry.note, !note.isEmpty {
+                    content.body = "\(amountText) · \(note)"
+                } else {
+                    content.body = "\(amountText) · scheduled for \(DayText.short(entry.date))"
+                }
             }
             content.sound = .default
             content.threadIdentifier = "bill-reminders"
             content.categoryIdentifier = categoryIdentifier
 
-            let id = identifierPrefix + "\(entry.date)-\(abs(entry.item.hashValue))-\(entry.amount)"
+            let stableSlug = TextFold.key(entry.item).prefix(24)
+            let id = identifierPrefix + "\(entry.date)-\(idx)-\(stableSlug)-\(entry.amount)"
             let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
             let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
             try? await center.add(request)

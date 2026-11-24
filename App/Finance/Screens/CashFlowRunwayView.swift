@@ -14,9 +14,16 @@ struct CashFlowRunwayView: View {
     @State private var extraDebtPayment: Double = 0
     @State private var monthlyTrim: Double = 0
     @State private var scrubbedDayIndex: Int? = nil
+    @AppStorage("runwayStartingCashOverride") private var storedStartingCash: Int = -1
+    @State private var editingStartingCash = false
+    @State private var startingCashInput = ""
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
+    }
+
+    private var resolvedStartingOverride: Int? {
+        (!session.isDemo && storedStartingCash >= 0) ? storedStartingCash : nil
     }
 
     private var scenario: WhatIfScenario {
@@ -42,7 +49,8 @@ struct CashFlowRunwayView: View {
                             subscriptionSummary: data.subscriptionSummary,
                             config: data.bundle.layerConfig,
                             layers: data.bundle.layers,
-                            scenario: scenario
+                            scenario: scenario,
+                            startingCashOverride: resolvedStartingOverride
                         )
                         heroSummaryCard(forecast: forecast)
                         runwayChartCard(forecast: forecast)
@@ -138,10 +146,58 @@ struct CashFlowRunwayView: View {
                         .foregroundStyle(delta >= 0 ? Theme.heroAccent : Theme.heroCoral)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("Projects recurring bills, paydays, and your recent day-to-day pace (\(MaskedMoney.yen(forecast.baselineDailyBurn, masked: privacyMasked))/day).")
+                    let deferredNote = forecast.excludedDeferredCardSources.isEmpty
+                        ? ""
+                        : " (\(forecast.excludedDeferredCardSources.joined(separator: ", ")) counted via monthly bills)"
+                    Text("Projects recurring bills, paydays, and your recent cash/debit pace (\(MaskedMoney.yen(forecast.baselineDailyBurn, masked: privacyMasked))/day)\(deferredNote).")
                         .font(.footnote)
                         .foregroundStyle(Theme.heroInkMuted)
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if editingStartingCash {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 8) {
+                            TextField("Current bank cash (yen)", text: $startingCashInput)
+                                .keyboardType(.numberPad)
+                                .font(.subheadline.weight(.semibold))
+                                .monospacedDigit()
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 8)
+                                .background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .foregroundStyle(Theme.heroInk)
+                            Button("Set") {
+                                let clean = startingCashInput.replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let val = Int(clean), val >= 0 {
+                                    storedStartingCash = val
+                                }
+                                editingStartingCash = false
+                            }
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Theme.heroTop)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Theme.heroAccent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .buttonStyle(.plain)
+                        }
+                        HStack(spacing: 14) {
+                            if resolvedStartingOverride != nil {
+                                Button("Reset to estimate") {
+                                    storedStartingCash = -1
+                                    editingStartingCash = false
+                                }
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Theme.heroCoral)
+                                .buttonStyle(.plain)
+                            }
+                            Button("Cancel") {
+                                editingStartingCash = false
+                            }
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(Theme.heroInkMuted)
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
 
                 if dynamicTypeSize.isAccessibilitySize {
@@ -160,20 +216,36 @@ struct CashFlowRunwayView: View {
     }
 
     private func startingTile(forecast: CashFlowSummary) -> some View {
-        FrostedMetricTile {
-            Text("Est. cash today")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(Theme.heroInkMuted)
-            Text(MaskedMoney.yen(forecast.startingCashEstimate, masked: privacyMasked))
-                .font(.subheadline.weight(.bold))
-                .monospacedDigit()
-                .foregroundStyle(Theme.heroInk)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(DayText.short(forecast.startDate))
-                .font(.caption2)
-                .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
+        Button {
+            guard !session.isDemo else { return }
+            startingCashInput = String(max(0, forecast.startingCashEstimate))
+            withAnimation(.easeInOut(duration: 0.16)) {
+                editingStartingCash.toggle()
+            }
+        } label: {
+            FrostedMetricTile {
+                HStack(spacing: 4) {
+                    Text(resolvedStartingOverride != nil ? "Bank cash set" : "Est. cash today")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(Theme.heroInkMuted)
+                    if !session.isDemo {
+                        Image(systemName: "pencil")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .foregroundStyle(Theme.heroAccent)
+                    }
+                }
+                Text(MaskedMoney.yen(forecast.startingCashEstimate, masked: privacyMasked))
+                    .font(.subheadline.weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.heroInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                Text(DayText.short(forecast.startDate))
+                    .font(.caption2)
+                    .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
+            }
         }
+        .buttonStyle(.plain)
     }
 
     private func lowestTile(lowest: CashFlowDayPoint?) -> some View {
@@ -287,11 +359,14 @@ struct CashFlowRunwayView: View {
                 }
                 .chartLegend(.hidden)
                 .chartYScale(domain: yLow...yHigh)
+                .chartXScale(domain: 0...max(1, forecast.points.count - 1))
                 .chartXAxis {
-                    AxisMarks(values: [0, 30, 60, 89]) { value in
+                    AxisMarks(values: [0, 30, 60, max(1, forecast.points.count - 1)]) { value in
                         AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
                             .foregroundStyle(Theme.grid)
-                        AxisValueLabel {
+                        AxisValueLabel(
+                            anchor: value.as(Int.self) == max(1, forecast.points.count - 1) ? .topTrailing : (value.as(Int.self) == 0 ? .topLeading : .top)
+                        ) {
                             if let idx = value.as(Int.self), forecast.points.indices.contains(idx) {
                                 Text(DayText.short(forecast.points[idx].date))
                                     .font(.caption2)

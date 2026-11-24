@@ -455,11 +455,15 @@ enum Money {
 
 /// Japan-time calendar days as text, in English.
 enum DayText {
+    static let calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = JST.timeZone
+        return calendar
+    }()
+
     static func date(_ day: String) -> Date? {
         let p = day.split(separator: "-").compactMap { Int($0) }
         guard p.count == 3 else { return nil }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = JST.timeZone
         return calendar.date(from: DateComponents(year: p[0], month: p[1], day: p[2]))
     }
 

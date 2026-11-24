@@ -381,7 +381,9 @@ enum ReceiptScannerService {
                   let content = first["content"] as? [String: Any],
                   let parts = content["parts"] as? [[String: Any]]
             else { throw ReceiptScannerError.unreadableResponse }
-            let text = parts.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            let answerParts = parts.filter { ($0["thought"] as? Bool) != true }
+            let chosenParts = answerParts.isEmpty ? parts : answerParts
+            let text = chosenParts.compactMap { $0["text"] as? String }.joined(separator: "\n")
             guard !text.isEmpty else { throw ReceiptScannerError.unreadableResponse }
             return text
 
@@ -417,6 +419,77 @@ enum ReceiptScannerService {
                   !content.isEmpty
             else { throw ReceiptScannerError.unreadableResponse }
             return content
+        }
+    }
+
+    /// Sends a lightweight text-only ping to verify the configured provider, model ID, and Keychain API key.
+    static func testConnection(config: VisionScannerConfig, apiKey: String) async throws -> String {
+        let model = config.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? config.provider.defaultModel
+            : config.model.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let sessionConfig = URLSessionConfiguration.ephemeral
+        sessionConfig.timeoutIntervalForRequest = 15
+        sessionConfig.timeoutIntervalForResource = 20
+        let session = URLSession(configuration: sessionConfig)
+        defer { session.invalidateAndCancel() }
+
+        switch config.provider {
+        case .anthropic:
+            guard let url = URL(string: "https://api.anthropic.com/v1/messages") else {
+                throw ReceiptScannerError.invalidEndpoint
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+            req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            let body: [String: Any] = [
+                "model": model,
+                "max_tokens": 8,
+                "messages": [["role": "user", "content": "Reply OK"]],
+            ]
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: req)
+            try validateHTTP(response: response, data: data)
+            return "\(config.provider.displayName) connected (\(model))"
+
+        case .gemini:
+            let encodedModel = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? model
+            guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(encodedModel):generateContent") else {
+                throw ReceiptScannerError.invalidEndpoint
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+            let body: [String: Any] = [
+                "contents": [["parts": [["text": "Reply OK"]]]],
+                "generationConfig": ["maxOutputTokens": 8],
+            ]
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: req)
+            try validateHTTP(response: response, data: data)
+            return "\(config.provider.displayName) connected (\(model))"
+
+        case .openAICompatible:
+            let endpointStr = config.customEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: endpointStr.isEmpty ? VisionProvider.openAICompatible.defaultEndpoint : endpointStr) else {
+                throw ReceiptScannerError.invalidEndpoint
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            let body: [String: Any] = [
+                "model": model,
+                "max_tokens": 8,
+                "messages": [["role": "user", "content": "Reply OK"]],
+            ]
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await session.data(for: req)
+            try validateHTTP(response: response, data: data)
+            return "\(config.provider.displayName) connected (\(model))"
         }
     }
 

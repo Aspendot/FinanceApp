@@ -10,11 +10,13 @@ struct InspectedPayment: Identifiable {
 /// Detailed transaction inspector with notice metadata, merchant history and on-device re-categorization.
 struct PaymentDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
     let item: BudgetItem
     let data: FinanceData
+    var onCategorySaved: (() -> Void)? = nil
 
     @State private var selectedCategory: String
     @State private var selectedGroup: String
@@ -23,9 +25,10 @@ struct PaymentDetailSheet: View {
     @State private var confirmDelete = false
     @State private var feedback: String?
 
-    init(item: BudgetItem, data: FinanceData) {
+    init(item: BudgetItem, data: FinanceData, onCategorySaved: (() -> Void)? = nil) {
         self.item = item
         self.data = data
+        self.onCategorySaved = onCategorySaved
         _selectedCategory = State(initialValue: item.category)
         _selectedGroup = State(initialValue: item.group)
     }
@@ -129,7 +132,7 @@ struct PaymentDetailSheet: View {
                     if let parts = matchedNotice?.parts, !parts.isEmpty {
                         ForEach(parts.keys.sorted(), id: \.self) { key in
                             if let partVal = parts[key] {
-                                SettingsValueRow(label: "Split · \(key.capitalized)", value: Money.yen(partVal))
+                                SettingsValueRow(label: "Split · \(key.capitalized)", value: MaskedMoney.yen(partVal, masked: privacyMasked))
                             }
                         }
                     }
@@ -185,10 +188,10 @@ struct PaymentDetailSheet: View {
                 // Merchant history
                 if merchantHistory.count > 1 {
                     Section {
-                        SettingsValueRow(label: "All-time total", value: Money.yen(historyTotal))
+                        SettingsValueRow(label: "All-time total", value: MaskedMoney.yen(historyTotal, masked: privacyMasked))
                         SettingsValueRow(label: "Payments", value: "\(merchantHistory.count)")
                         if historyAverage > 0 {
-                            SettingsValueRow(label: "Average payment", value: Money.yen(historyAverage))
+                            SettingsValueRow(label: "Average payment", value: MaskedMoney.yen(historyAverage, masked: privacyMasked))
                         }
                         ForEach(Array(merchantHistory.prefix(5).enumerated()), id: \.offset) { _, row in
                             HStack {
@@ -201,7 +204,7 @@ struct PaymentDetailSheet: View {
                                         .foregroundStyle(Theme.muted)
                                 }
                                 Spacer()
-                                Text(Money.payment(row.amount))
+                                Text(MaskedMoney.payment(row.amount, masked: privacyMasked))
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
                                     .foregroundStyle(row.amount < 0 ? Theme.good : Theme.ink)
@@ -277,6 +280,7 @@ struct PaymentDetailSheet: View {
                     ? "Updated all payments at this shop to \(selectedCategory)"
                     : "Updated this payment to \(selectedCategory)"
                 showingCategoryEditor = false
+                onCategorySaved?()
             } catch {
                 feedback = error.localizedDescription
             }

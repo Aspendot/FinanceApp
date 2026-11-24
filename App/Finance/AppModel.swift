@@ -140,20 +140,35 @@ final class AppModel: ObservableObject {
     }
 
     func addManualEntry(_ entry: ManualEntry) async throws {
+        let config = data?.bundle.layerConfig ?? LayerConfig()
+        let layers = data?.bundle.layers ?? []
+        let fp = CategoryOverride.transactionFingerprint(for: entry.asBudgetItem(config: config, layers: layers))
         try await persistModificationsAndPush { mods in
+            mods.deletedEntryFingerprints.remove(fp)
             mods.manualEntries.insert(entry, at: 0)
         }
     }
 
     func addManualEntries(_ entries: [ManualEntry]) async throws {
         guard !entries.isEmpty else { return }
+        let config = data?.bundle.layerConfig ?? LayerConfig()
+        let layers = data?.bundle.layers ?? []
+        let fps = entries.map { CategoryOverride.transactionFingerprint(for: $0.asBudgetItem(config: config, layers: layers)) }
         try await persistModificationsAndPush { mods in
+            for fp in fps { mods.deletedEntryFingerprints.remove(fp) }
             mods.manualEntries.insert(contentsOf: entries, at: 0)
         }
     }
 
     func deleteLocalEntry(id: UUID) async throws {
+        let config = data?.bundle.layerConfig ?? LayerConfig()
+        let layers = data?.bundle.layers ?? []
         try await persistModificationsAndPush { mods in
+            let targets = mods.manualEntries.filter { $0.id == id } + mods.importedEntries.filter { $0.id == id }
+            for entry in targets {
+                let fp = CategoryOverride.transactionFingerprint(for: entry.asBudgetItem(config: config, layers: layers))
+                mods.deletedEntryFingerprints.insert(fp)
+            }
             mods.manualEntries.removeAll { $0.id == id }
             mods.importedEntries.removeAll { $0.id == id }
         }
@@ -232,10 +247,20 @@ final class AppModel: ObservableObject {
     }
 
     func excludeAsNonSpending(item: BudgetItem, categoryLabel: String = "Excluded") async throws {
-        let transferGroup = data?.bundle.layerConfig.notSpendingGroups.last ?? "Transfers"
+        let excludedGroup = data?.bundle.layerConfig.resolvedExcludedGroup ?? "Excluded"
         try await setCategoryOverride(
             for: item,
-            group: transferGroup,
+            group: excludedGroup,
+            category: categoryLabel,
+            applyToAllFromMerchant: false
+        )
+    }
+
+    func tagAsWorkExpense(item: BudgetItem, categoryLabel: String = "Work expense") async throws {
+        let workGroup = data?.bundle.layerConfig.resolvedWorkGroup ?? "Work"
+        try await setCategoryOverride(
+            for: item,
+            group: workGroup,
             category: categoryLabel,
             applyToAllFromMerchant: false
         )
@@ -331,6 +356,7 @@ final class AppModel: ObservableObject {
         let restored = try LocalBackupCodec.open(bytes, passphrase: passphrase)
         try LocalDataStore.saveModifications(restored)
         await reload()
+        scheduleBackgroundPhoneEditsPush()
         return restored
     }
 

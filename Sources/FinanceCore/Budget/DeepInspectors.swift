@@ -48,24 +48,17 @@ public struct SubscriptionHistory: Sendable, Equatable {
         for sub: SubscriptionItem,
         allItems: [BudgetItem],
         months: [String],
-        today: String
+        today: String,
+        config: LayerConfig? = nil,
+        layers: [LayerDefinition] = []
     ) -> SubscriptionHistory {
-        let tokens = subscriptionSearchTokens(sub.entry.name)
         let recentMonths = Array(months.suffix(12))
         let monthSet = Set(recentMonths)
         let currentMonth = String(today.prefix(7))
 
         let matched = allItems
             .filter { item in
-                guard item.amount > 0 else { return false }
-                let folded = TextFold.key(item.merchant)
-                guard tokens.contains(where: { !$0.isEmpty && folded.contains($0) }) else { return false }
-                if sub.entry.monthly > 0 {
-                    let ratio = Double(item.amount) / Double(sub.entry.monthly)
-                    // Allow annual bills (up to 13x) or partial pro-rata charges (0.35x+).
-                    return ratio >= 0.35 && ratio <= 13.0
-                }
-                return true
+                Self.matchesItem(item, for: sub.entry, config: config, layers: layers, allowAnnualMultiplier: true)
             }
             .sorted { ($0.date, $0.amount) > ($1.date, $1.amount) }
 
@@ -113,16 +106,121 @@ public struct SubscriptionHistory: Sendable, Equatable {
         )
     }
 
-    private static func subscriptionSearchTokens(_ name: String) -> [String] {
-        let base = name.split(separator: "(").first.map(String.init) ?? name
+    /// Matches a ledger `BudgetItem` to a `SubscriptionEntry` using folded vendor tokens,
+    /// parenthetical billing aliases (e.g. `(Anthropic)`, `(billed by KDDI)`), Japanese card
+    /// descriptor synonyms, and tighter amount bounds so retail orders don't pollute subscription views.
+    static func matchesItem(
+        _ item: BudgetItem,
+        for entry: SubscriptionEntry,
+        config: LayerConfig? = nil,
+        layers: [LayerDefinition] = [],
+        allowAnnualMultiplier: Bool = true
+    ) -> Bool {
+        guard item.amount > 0 else { return false }
+        if let config, config.isNotSpending(group: item.group) {
+            return false
+        }
+
+        let tokens = searchTokens(for: entry.name)
+        guard !tokens.isEmpty else { return false }
+
+        let foldedMerchant = TextFold.key(item.merchant)
+        guard !foldedMerchant.isEmpty else { return false }
+
+        let tokenHit = tokens.contains { token in
+            guard !token.isEmpty else { return false }
+            if foldedMerchant.contains(token) { return true }
+            // Japanese bank debit rows often truncate ASCII descriptors to 8 chars (e.g. "ANTHROPI", "PONTAPAS").
+            if token.count >= 7, token.allSatisfy(\.isASCII) {
+                let truncated = String(token.prefix(7))
+                if foldedMerchant.contains(truncated) { return true }
+            }
+            return false
+        }
+        guard tokenHit else { return false }
+
+        // Prevent shopping purchases (e.g. Amazon retail orders) from matching digital subscription entries.
+        let groupLower = item.group.lowercased()
+        let catLower = item.category.lowercased()
+        if groupLower == "shopping" || catLower.contains("online shopping") {
+            let subLower = entry.name.lowercased()
+            if subLower.contains("prime") || subLower.contains("aws") || subLower.contains("google") || subLower.contains("line") {
+                return false
+            }
+        }
+
+        if entry.monthly > 0 {
+            let ratio = Double(item.amount) / Double(entry.monthly)
+            let isYearly = (entry.status ?? "").lowercased().contains("year") || entry.name.lowercased().contains("yearly")
+            let isUsageBased = entry.name.lowercased().contains("api") || entry.name.lowercased().contains("povo") || entry.name.lowercased().contains("aws")
+            if isYearly {
+                return allowAnnualMultiplier ? (ratio >= 0.4 && ratio <= 14.0) : (ratio >= 0.4 && ratio <= 2.5)
+            }
+            if isUsageBased {
+                return ratio >= 0.15 && ratio <= 4.0
+            }
+            let inMonthlyBand = ratio >= 0.45 && ratio <= 2.2
+            let inAnnualBand = allowAnnualMultiplier && (ratio >= 9.5 && ratio <= 13.5)
+            return inMonthlyBand || inAnnualBand
+        }
+        return true
+    }
+
+    /// Extracts specific vendor tokens (including parenthetical billing names and standard JP descriptor aliases).
+    static func searchTokens(for name: String) -> [String] {
+        let stopWords: Set<String> = [
+            "plan", "plus", "pro", "card", "mobile", "home", "internet", "free", "pass", "with",
+            "extra", "yearly", "cycle", "night", "only", "last", "charge", "auto", "reload",
+            "billed", "usage", "data", "api", "credits", "commuter", "rent", "dating", "gym",
+            "sub", "monthly", "member", "paid", "check", "keep", "stop", "stopped", "review",
+            "each", "year", "months", "per", "all", "limits", "off", "option", "standard",
+            "amazon", "google", "apple", "line", "rakuten", "yahoo", "premium", "store", "app",
+            "service", "cloud", "music", "video", "news", "sample", "group", "billing"
+        ]
+
+        let foldedFull = TextFold.key(name)
         var out: [String] = []
-        let whole = TextFold.key(base)
-        if whole.count >= 3 { out.append(whole) }
-        for part in base.split(whereSeparator: { $0 == " " || $0 == "/" || $0 == "・" || $0 == "+" }) {
-            let token = TextFold.key(String(part))
-            if token.count >= 3, !["plan", "plus", "pro", "card", "mobile"].contains(token) {
+
+        // Full base phrase before "(" is often a strong multi-word match (e.g. "jpnight", "amazonprime", "lineスタンダード").
+        let base = name.split(separator: "(").first.map(String.init) ?? name
+        let foldedBase = TextFold.key(base)
+        if foldedBase.count >= 4, !stopWords.contains(foldedBase) {
+            out.append(foldedBase)
+        }
+        // Keep combined phrase including short parentheticals like "with (dating)" -> "withdating".
+        if foldedFull.count >= 6 && foldedFull.count <= 24, !stopWords.contains(foldedFull) {
+            out.append(foldedFull)
+        }
+
+        // Tokenize BOTH outside and inside parentheses so "(Anthropic)" and "(billed by KDDI)" are captured.
+        let separators = CharacterSet(charactersIn: " /・+()（）「」『』,、:：-–—·•")
+        for rawPart in name.components(separatedBy: separators) {
+            let token = TextFold.key(rawPart)
+            if token.count >= 3, !stopWords.contains(token), !token.allSatisfy(\.isNumber) {
                 out.append(token)
             }
+        }
+
+        // Standard global / Japanese payment-network descriptor aliases (no personal data).
+        let aliases: [(needle: String, expansions: [String])] = [
+            ("amazonprime", ["amazonp", "primeme", "アマゾンプライム"]),
+            ("aws", ["amazonw", "amazonweb", "aws"]),
+            ("rakutenmobile", ["ラクテンモバイル", "楽天モバイル"]),
+            ("googleai", ["googleg", "googlep", "googleone"]),
+            ("youtube", ["googlep", "googleg", "youtube"]),
+            ("chatgpt", ["chatgpt", "openai"]),
+            ("icloud", ["icloud"]),
+            ("netflix", ["ネツトフリツクス"]),
+            ("spotify", ["スポテイフアイ"]),
+        ]
+        let lowerFolded = foldedFull
+        for (needle, expansions) in aliases where lowerFolded.contains(needle) || out.contains(needle) {
+            out.append(contentsOf: expansions)
+        }
+
+        // Fallback if everything was filtered as stopwords (e.g., short single-word service).
+        if out.isEmpty && foldedBase.count >= 3 {
+            out.append(foldedBase)
         }
         return Array(Set(out))
     }
@@ -460,14 +558,37 @@ public enum ReviewInboxBuilder {
             queue.append(ReviewQueueItem(id: key, reason: reason, alert: alert))
         }
 
-        // Precompute top spending categories for fallback suggestions.
-        var categoryCounts: [String: (group: String, count: Int)] = [:]
+        // Precompute top day-to-day spending categories for fallback suggestions (avoid suggesting
+        // fixed bills like Rent/Utilities or non-spending groups for everyday card/cash purchases).
+        let deprioritizedGroups: Set<String> = [
+            "fixed bills", "bills", "housing", "subscriptions", "ai & subscriptions",
+            "income", "people", "debt", "transfers", "excluded", "work",
+        ]
+        let deprioritizedCategories: Set<String> = [
+            "rent", "utilities", "electricity & gas", "resident tax (住民税)", "salary", "salary / bonus"
+        ]
+        var preferredCounts: [String: (group: String, count: Int)] = [:]
+        var fallbackCounts: [String: (group: String, count: Int)] = [:]
         for item in allItems where item.amount > 0 && item.category.caseInsensitiveCompare("Uncategorized") != .orderedSame {
-            var cur = categoryCounts[item.category] ?? (item.group, 0)
-            cur.count += 1
-            categoryCounts[item.category] = cur
+            let gLower = item.group.lowercased()
+            let cLower = item.category.lowercased()
+            let isFixedOrNonSpend = deprioritizedGroups.contains(gLower)
+                || gLower.contains("work")
+                || deprioritizedCategories.contains(cLower)
+            if isFixedOrNonSpend {
+                var cur = fallbackCounts[item.category] ?? (item.group, 0)
+                cur.count += 1
+                fallbackCounts[item.category] = cur
+            } else {
+                var cur = preferredCounts[item.category] ?? (item.group, 0)
+                cur.count += 1
+                preferredCounts[item.category] = cur
+            }
         }
-        let popularCategories = categoryCounts
+        let popularCategories = preferredCounts
+            .sorted { $0.value.count > $1.value.count }
+            .map { CategorySuggestion(group: $0.value.group, category: $0.key) }
+            + fallbackCounts
             .sorted { $0.value.count > $1.value.count }
             .map { CategorySuggestion(group: $0.value.group, category: $0.key) }
 

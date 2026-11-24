@@ -33,7 +33,12 @@ struct ReceiptScanSheet: View {
     }
 
     private var selectedDrafts: [ReceiptDraft] {
-        drafts.filter { $0.isSelected && $0.amount != 0 && !$0.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        drafts.filter {
+            $0.isSelected
+                && $0.amount != 0
+                && JST.dayNumber($0.date) != nil
+                && !$0.merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
     }
 
     private var categoryOptions: [(group: String, category: String)] {
@@ -297,11 +302,19 @@ struct ReceiptScanSheet: View {
                     .padding(.vertical, 7)
                     .background(Theme.well, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-                    TextField("YYYY-MM-DD", text: draft.date)
-                        .font(.caption.monospaced())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .background(Theme.well, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    DatePicker(
+                        "Date",
+                        selection: Binding(
+                            get: { DayText.date(draft.date.wrappedValue) ?? Date() },
+                            set: { draft.date.wrappedValue = JST.day($0) }
+                        ),
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                    .datePickerStyle(.compact)
+                    .tint(Theme.accent)
+                    .environment(\.timeZone, JST.timeZone)
+                    .environment(\.calendar, DayText.calendar)
                 }
 
                 HStack(spacing: 10) {

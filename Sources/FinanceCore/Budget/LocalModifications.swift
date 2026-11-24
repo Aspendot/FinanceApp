@@ -156,7 +156,8 @@ public struct CustomReminder: Codable, Sendable, Identifiable, Hashable {
             item: title,
             amount: isEvent ? 0 : amount,
             note: note,
-            event: isEvent ? true : nil
+            event: isEvent ? true : nil,
+            recurring: false
         )
     }
 }
@@ -179,6 +180,8 @@ public struct LocalModifications: Codable, Sendable, Equatable {
     public var customReminders: [CustomReminder]
     /// Item or alert keys confirmed in the daily Review inbox.
     public var reviewedItemKeys: Set<String>
+    /// Fingerprints (`date|source|amount|foldedMerchant`) of previously-synced local entries deleted on the phone.
+    public var deletedEntryFingerprints: Set<String>
     /// Last modification timestamp for two-way Drive sync.
     public var updatedAt: Date?
 
@@ -193,6 +196,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         debtBalanceOverrides: [String: Int] = [:],
         customReminders: [CustomReminder] = [],
         reviewedItemKeys: Set<String> = [],
+        deletedEntryFingerprints: Set<String> = [],
         updatedAt: Date? = nil
     ) {
         self.version = version
@@ -205,12 +209,13 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         self.debtBalanceOverrides = debtBalanceOverrides
         self.customReminders = customReminders
         self.reviewedItemKeys = reviewedItemKeys
+        self.deletedEntryFingerprints = deletedEntryFingerprints
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, manualEntries, importedEntries, categoryOverrides, billCheckoffs, dismissedAlertIDs
-        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys, updatedAt
+        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys, deletedEntryFingerprints, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -225,6 +230,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         debtBalanceOverrides = try c.decodeIfPresent([String: Int].self, forKey: .debtBalanceOverrides) ?? [:]
         customReminders = try c.decodeIfPresent([CustomReminder].self, forKey: .customReminders) ?? []
         reviewedItemKeys = try c.decodeIfPresent(Set<String>.self, forKey: .reviewedItemKeys) ?? []
+        deletedEntryFingerprints = try c.decodeIfPresent(Set<String>.self, forKey: .deletedEntryFingerprints) ?? []
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
 
@@ -238,6 +244,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
             && debtBalanceOverrides.isEmpty
             && customReminders.isEmpty
             && reviewedItemKeys.isEmpty
+            && deletedEntryFingerprints.isEmpty
     }
 }
 
@@ -246,24 +253,33 @@ public enum LocalDataApplier {
     public struct AppliedItems: Sendable, Equatable {
         /// All items (bundle + bank + pending + deduplicated local entries) with overrides applied.
         public var allItems: [BudgetItem]
-        /// Set of `BudgetItem` values that originated from manual or CSV-imported local entries.
+        /// Set of transaction fingerprints that originated from manual or CSV-imported local entries.
         public var localItemKeys: Set<String>
         /// Mapping from transaction fingerprint to local `ManualEntry.ID` for edit/delete lookup.
         public var localEntryByFingerprint: [String: UUID]
-        /// Number of imported entries automatically suppressed because the bundle already contains them.
+        /// Number of manual/imported entries automatically suppressed because the bundle already contains them.
         public var supersededImportCount: Int
     }
 
     /// Merges manual and imported entries into the base item list and applies local category overrides.
+    ///
+    /// Deduplicates BOTH `manualEntries` and `importedEntries` against `baseItems` so two-way Drive sync
+    /// round-trips never double-count cash entries or scanned receipts once the PC bundle absorbs them,
+    /// while preserving `localItemKeys` and `localEntryByFingerprint` so the user can still delete them.
     public static func apply(
         baseItems: [BudgetItem],
         modifications: LocalModifications,
         config: LayerConfig,
         layers: [LayerDefinition]
     ) -> AppliedItems {
-        // Count base items by (date, source, amount, foldedMerchant) so overlapping CSV imports never double-count.
+        let deleted = modifications.deletedEntryFingerprints
+        let filteredBase: [BudgetItem] = deleted.isEmpty
+            ? baseItems
+            : baseItems.filter { !deleted.contains(CategoryOverride.transactionFingerprint(for: $0)) }
+
+        // Count base items by (date, source, amount, foldedMerchant) so round-tripped entries never double-count.
         var basePool: [String: Int] = [:]
-        for item in baseItems {
+        for item in filteredBase {
             let fp = CategoryOverride.transactionFingerprint(for: item)
             basePool[fp, default: 0] += 1
         }
@@ -276,14 +292,21 @@ public enum LocalDataApplier {
         for entry in modifications.manualEntries {
             let item = entry.asBudgetItem(config: config, layers: layers)
             let fp = CategoryOverride.transactionFingerprint(for: item)
-            localItems.append(item)
+            if deleted.contains(fp) { continue }
             localKeys.insert(fp)
             entryByFP[fp] = entry.id
+            if let remaining = basePool[fp], remaining > 0 {
+                basePool[fp] = remaining - 1
+                superseded += 1
+                continue
+            }
+            localItems.append(item)
         }
 
         for entry in modifications.importedEntries {
             let item = entry.asBudgetItem(config: config, layers: layers)
             let fp = CategoryOverride.transactionFingerprint(for: item)
+            if deleted.contains(fp) { continue }
             if let remaining = basePool[fp], remaining > 0 {
                 basePool[fp] = remaining - 1
                 superseded += 1
@@ -294,7 +317,7 @@ public enum LocalDataApplier {
             entryByFP[fp] = entry.id
         }
 
-        let combined = baseItems + localItems
+        let combined = filteredBase + localItems
         guard !modifications.categoryOverrides.isEmpty else {
             return AppliedItems(
                 allItems: combined,
