@@ -167,7 +167,7 @@ struct NowView: View {
                     let matchingReminder = model.localModifications.customReminders.first {
                         BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: bill)
                     }
-                    if bill.event != true && bill.amount > 0 && (bill.done != true || isPhoneChecked) {
+                    if bill.event != true && bill.cardBilled != true && bill.amount > 0 && (bill.done != true || isPhoneChecked) {
                         Button(isPhoneChecked ? "Mark unpaid" : "Mark paid on phone") {
                             let target = bill
                             selectedBill = nil
@@ -195,7 +195,8 @@ struct NowView: View {
                 }
             } message: {
                 if let bill = selectedBill {
-                    let amt = bill.amount == 0 ? "" : MaskedMoney.payment(bill.amount, masked: privacyMasked) + " · "
+                    let shownAmount = bill.cardBilled == true ? (bill.billedAmount ?? bill.amount) : bill.amount
+                    let amt = shownAmount == 0 ? "" : MaskedMoney.payment(shownAmount, masked: privacyMasked) + " · "
                     let noteText = bill.note.map { "\n\(MaskedMoney.redactText($0, masked: privacyMasked))" } ?? ""
                     Text(amt + DayText.long(bill.date) + noteText)
                 }
@@ -1759,7 +1760,7 @@ struct ComingUpDayRow: View {
     private var hasOverdueUnpaidBill: Bool {
         day.isPast && !day.isToday && day.entries.contains { row in
             let entry = row.value
-            return entry.done != true && entry.event != true && entry.borrowed != true && entry.amount > 0
+            return entry.done != true && entry.event != true && entry.borrowed != true && entry.cardBilled != true && entry.amount > 0
         }
     }
 
@@ -1840,25 +1841,31 @@ struct ComingUpDayRow: View {
 
     private func timelineEntryRow(_ entry: TimelineEntry) -> some View {
         let isEvent = entry.event == true
+        let isCardBilled = entry.cardBilled == true
         let moneyIn = entry.amount < 0 && entry.borrowed != true
         let isBorrowed = entry.borrowed == true
-        let amountText = (isEvent || entry.amount == 0) ? "" : MaskedMoney.payment(entry.amount, masked: privacyMasked)
+        let displayAmount = isCardBilled ? (entry.billedAmount ?? entry.amount) : entry.amount
+        let amountText = (isEvent || displayAmount == 0) ? "" : MaskedMoney.payment(displayAmount, masked: privacyMasked)
         let amountColor: Color = {
+            if isCardBilled { return Theme.muted }
             if isBorrowed { return Theme.bad }
             if moneyIn { return Theme.good }
             return Theme.ink
         }()
 
         let isPhoneChecked = phoneCheckedBillKeys.contains(BillCheckoff.key(for: entry))
-        let isOverdue = day.isPast && !day.isToday && entry.done != true && !isEvent && !isBorrowed && entry.amount > 0
+        let isOverdue = day.isPast && !day.isToday && entry.done != true && !isEvent && !isBorrowed && !isCardBilled && entry.amount > 0
         let tags: [(String, QuietTag.Tone)] = {
             var list: [(String, QuietTag.Tone)] = []
             if isOverdue { list.append(("Overdue", .bad)) }
             if isEvent { list.append(("Event", .accent)) }
+            if isCardBilled { list.append(("On card bill", .neutral)) }
             if entry.payday == true { list.append(("Payday", .good)) }
             if entry.done == true {
                 if isPhoneChecked {
                     list.append(("Paid (phone)", .accent))
+                } else if isCardBilled {
+                    list.append(("Charged", .good))
                 } else {
                     let doneLabel = entry.amount < 0 ? "Received" : (entry.amount > 0 ? "Paid" : "Done")
                     list.append((doneLabel, .neutral))
@@ -1940,8 +1947,9 @@ struct ComingUpDayRow: View {
 
     private func entryAccessibilityLabel(_ entry: TimelineEntry, tags: [String]) -> String {
         var parts = [DayText.long(day.date), entry.item]
-        if entry.event != true && entry.amount != 0 {
-            parts.append(MaskedMoney.paymentAccessibility(entry.amount, masked: privacyMasked))
+        let displayAmount = entry.cardBilled == true ? (entry.billedAmount ?? entry.amount) : entry.amount
+        if entry.event != true && displayAmount != 0 {
+            parts.append(MaskedMoney.paymentAccessibility(displayAmount, masked: privacyMasked))
         }
         parts.append(contentsOf: tags)
         if let note = entry.note, !note.isEmpty {

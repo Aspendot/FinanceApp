@@ -759,4 +759,68 @@ struct V06FeaturesTests {
         let lowerAns = FinanceQueryEngine.answer("How much did I spend on power?", context: queryCtx)
         #expect(lowerAns.headline != "¥50,000")
     }
+
+    @Test("Card-billed subscriptions never double-count in PaydayView, CashFlowForecast, Alerts, or Queries, and exact brand subs match history")
+    func cardBilledSubscriptionsAndExactBrandMatching() throws {
+        let timeline = [
+            TimelineEntry(date: "2026-03-25", item: "Salary", amount: -300_000, payday: true, done: true, recurring: true),
+            TimelineEntry(date: "2026-04-10", item: "Cloud Storage", amount: 0, recurring: false, cardBilled: true, billedAmount: 1_800),
+            TimelineEntry(date: "2026-04-12", item: "Deferred Card bill", amount: 50_000, recurring: true),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true, recurring: true),
+        ]
+        let payday = try #require(PaydayView.compute(timeline: timeline, today: "2026-04-14"))
+        #expect(payday.outSum == 50_000)
+        #expect(payday.outs.map(\.item) == ["Deferred Card bill"])
+
+        let items = [
+            BudgetItem(date: "2026-04-01", source: "Sample Card", merchant: "Google", amount: 490, group: "Subscriptions", category: "Other subs", layer: "Subscriptions"),
+            BudgetItem(date: "2026-04-10", source: "Sample Debit", merchant: "GOOGLE PLAY", amount: 4_000, group: "Subscriptions", category: "AI subs", layer: "Subscriptions"),
+        ]
+        let bundle = DataBundle(
+            generatedAt: "2026-04-14T10:00:00+09:00",
+            asOf: "2026-04-14",
+            items: items,
+            timeline: timeline,
+            subs: [SubscriptionEntry(name: "Google (Sample Card)", monthly: 490, via: "Sample Card", status: "Check")],
+            layers: Self.sampleLayers,
+            layerConfig: Self.sampleConfig
+        )
+        let subSummary = SubscriptionSummary.compute(from: bundle.subs)
+        let hist = SubscriptionHistory.compute(
+            for: subSummary.running[0],
+            allItems: items,
+            months: ["2026-04"],
+            today: "2026-04-14",
+            config: Self.sampleConfig,
+            layers: Self.sampleLayers
+        )
+        #expect(hist.matchedItems.count == 1)
+        #expect(hist.matchedItems[0].amount == 490)
+
+        let alerts = SpendingInsights.detectAlerts(
+            bundle: bundle,
+            allItems: items,
+            notices: [],
+            timeline: timeline,
+            planSummary: PlanSummary.compute(plan: [], planWindow: nil, totalsByMonth: [:], selectedMonth: "2026-04", currentMonth: "2026-04", inProgressMonth: "2026-04"),
+            subscriptionSummary: subSummary,
+            today: "2026-04-14"
+        )
+        // Past-date card-billed item must NOT trigger an Overdue cash alert.
+        #expect(!alerts.contains(where: { $0.title.contains("Cloud Storage") }))
+
+        let forecast = CashFlowForecast.project(
+            today: "2026-04-14",
+            days: 30,
+            payday: payday,
+            paydayBreakdown: nil,
+            timeline: timeline,
+            allItems: items,
+            subscriptionSummary: subSummary,
+            config: Self.sampleConfig,
+            layers: Self.sampleLayers,
+            startingCashOverride: 100_000
+        )
+        #expect(!forecast.points.flatMap(\.events).contains(where: { $0.title.contains("Cloud Storage") }))
+    }
 }

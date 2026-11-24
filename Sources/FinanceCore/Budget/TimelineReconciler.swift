@@ -67,6 +67,7 @@ public enum TimelineReconciler {
         var candidates: [CandidatePair] = []
         for (entryIndex, entry) in timeline.enumerated() {
             guard entry.done != true,
+                  entry.event != true,
                   let match = entry.match,
                   !match.pattern.isEmpty,
                   match.window.count == 2,
@@ -98,6 +99,10 @@ public enum TimelineReconciler {
                 } else {
                     guard parsed.row.amount < 0 else { continue }
                 }
+
+                let magnitude = abs(parsed.row.amount)
+                if let minAmount = match.minAmount, magnitude < minAmount { continue }
+                if let maxAmount = match.maxAmount, magnitude > maxAmount { continue }
 
                 let offset = parsed.dayNumber - entryDay
                 guard offset >= minOffset && offset <= maxOffset else { continue }
@@ -140,7 +145,11 @@ public enum TimelineReconciler {
             let row = bankRows[pair.rowIndex]
             result[pair.entryIndex].done = true
             result[pair.entryIndex].date = row.date
-            result[pair.entryIndex].amount = row.amount
+            if result[pair.entryIndex].cardBilled == true {
+                result[pair.entryIndex].billedAmount = abs(row.amount)
+            } else {
+                result[pair.entryIndex].amount = row.amount
+            }
             result[pair.entryIndex].estimate = nil
         }
 
@@ -174,9 +183,51 @@ public enum TimelineReconciler {
         // while unpaid overdue bills must remain visible and reserved until settled or explicitly checked off.
         if let start = newCycleStart {
             return result.filter { entry in
-                entry.date >= start || (entry.done != true && entry.amount > 0 && entry.event != true && entry.borrowed != true)
+                entry.date >= start || (entry.done != true && entry.amount > 0 && entry.event != true && entry.borrowed != true && entry.cardBilled != true)
             }
         }
         return result
+    }
+
+    /// Reconciles remaining open non-payday outflow entries against unsettled debit or card notices,
+    /// mapping debit card notice sources to their linked bank's label via `accountBalances`.
+    ///
+    /// This prevents double-counting during the 1-3 day gap when a debit email has already reduced
+    /// `LiveCashSummary.estimatedBankCash` before Money Forward posts the settled bank row, and
+    /// marks card-billed subscription renewals as charged as soon as their card notice arrives.
+    public static func reconcilePendingNotices(
+        timeline: [TimelineEntry],
+        pendingItems: [BudgetItem],
+        accountBalances: [AccountBalance],
+        sourceLabels: [String: String]
+    ) -> [TimelineEntry] {
+        guard !timeline.isEmpty, !pendingItems.isEmpty else { return timeline }
+        guard timeline.contains(where: { $0.done != true && $0.payday != true && $0.match != nil }) else {
+            return timeline
+        }
+
+        var debitLabelToBankLabel: [String: String] = [:]
+        for account in accountBalances {
+            let bankLabel = sourceLabels[account.source] ?? account.label
+            for debitKey in account.debitNoticeSources ?? [] where !debitKey.isEmpty {
+                debitLabelToBankLabel[debitKey] = bankLabel
+                if let label = sourceLabels[debitKey], !label.isEmpty {
+                    debitLabelToBankLabel[label] = bankLabel
+                }
+            }
+        }
+
+        let syntheticRows: [BankRow] = pendingItems.compactMap { item in
+            guard item.isPending, item.amount > 0 else { return nil }
+            let resolvedSource = debitLabelToBankLabel[item.source] ?? item.source
+            return BankRow(
+                source: resolvedSource,
+                date: item.date,
+                amount: item.amount,
+                description: item.merchant
+            )
+        }
+        guard !syntheticRows.isEmpty else { return timeline }
+        return reconcile(timeline: timeline, bankRows: syntheticRows)
     }
 }

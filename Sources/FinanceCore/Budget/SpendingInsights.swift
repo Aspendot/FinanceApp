@@ -690,6 +690,7 @@ public enum SpendingInsights {
             entry.done != true
                 && entry.event != true
                 && entry.borrowed != true
+                && entry.cardBilled != true
                 && entry.amount > 0
                 && entry.date < today
         }
@@ -713,6 +714,7 @@ public enum SpendingInsights {
                 entry.done != true
                     && entry.event != true
                     && entry.borrowed != true
+                    && entry.cardBilled != true
                     && entry.amount > 0
                     && entry.date >= today
                     && entry.date <= soonLimit

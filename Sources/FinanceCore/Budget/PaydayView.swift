@@ -54,8 +54,8 @@ public struct PaydayView: Codable, Sendable, Equatable {
         }
 
         let period = timeline.filter { $0.next != true && $0.date < next.date }
-        let ins = period.filter { $0.amount < 0 && $0.borrowed != true }
-        let outs = period.filter { $0.amount > 0 }
+        let ins = period.filter { $0.amount < 0 && $0.borrowed != true && $0.cardBilled != true }
+        let outs = period.filter { $0.amount > 0 && $0.cardBilled != true }
         let borrowed = period.filter { $0.borrowed == true }
 
         let inSum = -ins.reduce(0) { $0 + $1.amount }

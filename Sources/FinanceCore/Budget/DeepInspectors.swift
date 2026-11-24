@@ -127,7 +127,9 @@ public struct SubscriptionHistory: Sendable, Equatable {
         let foldedMerchant = TextFold.key(item.merchant)
         guard !foldedMerchant.isEmpty else { return false }
 
-        let tokenHit = tokens.contains { token in
+        let foldedBase = TextFold.key(entry.name.split(separator: "(").first.map(String.init) ?? entry.name)
+        let exactBaseHit = foldedBase.count >= 4 && foldedMerchant == foldedBase
+        let tokenHit = exactBaseHit || tokens.contains { token in
             guard !token.isEmpty else { return false }
             if Self.containsToken(token, in: foldedMerchant) { return true }
             // Japanese bank debit rows often truncate ASCII descriptors to 7-8 chars (e.g. "SAMPLECO").

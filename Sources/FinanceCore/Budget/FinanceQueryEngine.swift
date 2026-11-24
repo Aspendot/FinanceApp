@@ -308,11 +308,11 @@ public enum FinanceQueryEngine {
 
     private static func upcomingBillsAnswer(context: Context) -> QueryAnswer {
         let unpaid = context.timeline.filter { entry in
-            entry.done != true && entry.event != true && entry.borrowed != true && entry.amount > 0
+            entry.done != true && entry.event != true && entry.borrowed != true && entry.cardBilled != true && entry.amount > 0
                 && (context.payday.map { entry.date < $0.next.date } ?? true)
         }
         let total = unpaid.reduce(0) { $0 + $1.amount }
-        let rows = unpaid.prefix(8).map { entry in
+        let rows = unpaid.prefix(12).map { entry in
             QueryAnswerRow(
                 label: entry.item,
                 value: formatYen(entry.amount),
@@ -355,7 +355,7 @@ public enum FinanceQueryEngine {
 
     private static func subscriptionsAnswer(context: Context) -> QueryAnswer {
         let summary = context.subscriptionSummary
-        let rows = summary.running.prefix(8).map { item in
+        let rows = summary.running.prefix(16).map { item in
             QueryAnswerRow(
                 label: item.entry.name,
                 value: "\(formatYen(item.entry.monthly))/mo",

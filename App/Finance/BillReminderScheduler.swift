@@ -32,7 +32,7 @@ enum BillReminderScheduler {
         let today = JST.day(now)
         let unpaid = timeline
             .filter { entry in
-                guard entry.done != true, entry.borrowed != true, entry.date >= today else { return false }
+                guard entry.done != true, entry.borrowed != true, entry.cardBilled != true, entry.date >= today else { return false }
                 // Schedule both unpaid cash bills (amount > 0) AND custom event reminders (e.g. subscription cancel dates).
                 return entry.amount > 0 || entry.event == true
             }

@@ -147,8 +147,14 @@ struct FinanceData: Sendable {
         self.noticeByFingerprint = noticeMap
 
         let bankReconciled = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
-        let withReminders = LocalDataApplier.mergeCustomReminders(
+        let noticeReconciled = TimelineReconciler.reconcilePendingNotices(
             timeline: bankReconciled,
+            pendingItems: layered.pendingItems,
+            accountBalances: bundle.accountBalances ?? [],
+            sourceLabels: bundle.sourceLabels
+        )
+        let withReminders = LocalDataApplier.mergeCustomReminders(
+            timeline: noticeReconciled,
             reminders: localModifications.customReminders
         )
         let checked = LocalDataApplier.applyBillCheckoffs(
@@ -395,7 +401,7 @@ struct FinanceData: Sendable {
         let dayToDay = paydayBreakdown?.dayToDaySpentSincePayday ?? spentSincePayday
         let spent = dayToDay.map { " · spent " + Money.yen($0) } ?? ""
         let unpaidBills: [WidgetBill] = p.outs
-            .filter { $0.done != true && $0.amount > 0 }
+            .filter { $0.done != true && $0.cardBilled != true && $0.amount > 0 }
             .prefix(3)
             .map { entry in
                 WidgetBill(

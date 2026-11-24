@@ -415,4 +415,69 @@ struct TimelineReconcilerTests {
         #expect(view.inSum == 330000)
         #expect(view.left == 250000)
     }
+
+    @Test func amountBoundsDisambiguateSharedDescriptorsAndPendingNoticesPreventDoubleCount() throws {
+        let timeline = [
+            TimelineEntry(date: "2026-03-25", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(
+                date: "2026-04-14",
+                item: "App Pro",
+                amount: 3_000,
+                match: TimelineMatch(source: "Sample Bank", pattern: "APP\\.COM/BILL", dir: "out", window: [-5, 5], minAmount: 2_500, maxAmount: 3_500)
+            ),
+            TimelineEntry(
+                date: "2026-04-15",
+                item: "App Basic",
+                amount: 650,
+                match: TimelineMatch(source: "Sample Bank", pattern: "APP\\.COM/BILL", dir: "out", window: [-5, 5], minAmount: 500, maxAmount: 800)
+            ),
+            TimelineEntry(
+                date: "2026-04-15",
+                item: "Card Gym",
+                amount: 0,
+                match: TimelineMatch(source: "Sample Card", pattern: "SAMPLE GYM", dir: "out", window: [-5, 5], minAmount: 2_500, maxAmount: 3_500),
+                cardBilled: true,
+                billedAmount: 3_000
+            ),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+        ]
+        let balances = [
+            AccountBalance(source: "sample_bank", label: "Sample Bank", balance: 100_000, asOf: "2026-04-12", debitNoticeSources: ["sample_debit"]),
+        ]
+        let labels = ["sample_bank": "Sample Bank", "sample_debit": "Sample Debit", "sample_card": "Sample Card"]
+        let pending = [
+            BudgetItem(date: "2026-04-14", source: "Sample Debit", merchant: "APP.COM/BILL", amount: 3_000, group: "Subscriptions", category: "Apps", isPending: true),
+            BudgetItem(date: "2026-04-15", source: "Sample Card", merchant: "SAMPLE GYM", amount: 3_058, group: "Other", category: "Gym", isPending: true),
+        ]
+
+        let reconciled = TimelineReconciler.reconcilePendingNotices(
+            timeline: timeline,
+            pendingItems: pending,
+            accountBalances: balances,
+            sourceLabels: labels
+        )
+        #expect(reconciled[1].done == true)
+        #expect(reconciled[1].amount == 3_000)
+        // App Basic (¥650) must NOT be matched by the ¥3,000 APP.COM/BILL notice.
+        #expect(reconciled[2].done == nil)
+        // Card-billed gym marks done and updates billedAmount without adding to cash amount.
+        #expect(reconciled[3].done == true)
+        #expect(reconciled[3].amount == 0)
+        #expect(reconciled[3].billedAmount == 3_058)
+
+        let payday = try #require(PaydayView.compute(timeline: reconciled, today: "2026-04-15"))
+        // Card Gym is excluded from outs; App Pro is already done; only App Basic (¥650) remains unpaid.
+        let live = try #require(LiveCashSummary.compute(
+            accountBalances: balances,
+            sourceLabels: labels,
+            bankRows: [],
+            pendingItems: pending,
+            payday: payday
+        ))
+        // Bank cash: 100,000 - 3,000 (pending App Pro debit) = 97,000.
+        // Remaining bills: 650 (App Basic only — App Pro is NOT subtracted a second time, Card Gym is ¥0).
+        #expect(live.estimatedBankCash == 97_000)
+        #expect(live.remainingBillsSum == 650)
+        #expect(live.cashLeftUntilPayday == 96_350)
+    }
 }

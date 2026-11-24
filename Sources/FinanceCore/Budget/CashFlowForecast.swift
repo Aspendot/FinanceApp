@@ -174,7 +174,7 @@ public enum CashFlowForecast {
         // Detect deferred-bill card sources (credit cards whose monthly lump-sum bill is already on the
         // timeline) so we do not double-count both their daily purchases and their monthly bill.
         let timelineBillTitles: [String] = timeline
-            .filter { $0.event != true && $0.borrowed != true && $0.amount > 0 }
+            .filter { $0.event != true && $0.borrowed != true && $0.cardBilled != true && $0.amount > 0 }
             .map { TextFold.key($0.item) }
 
         let deferredCardSources: Set<String> = {
@@ -275,7 +275,7 @@ public enum CashFlowForecast {
 
         // Explicit future/today entries from timeline, plus overdue unpaid bills reserved on day 0.
         for (idx, entry) in timeline.enumerated() {
-            guard entry.done != true, entry.event != true, entry.borrowed != true, entry.amount != 0 else { continue }
+            guard entry.done != true, entry.event != true, entry.borrowed != true, entry.cardBilled != true, entry.amount != 0 else { continue }
             if entry.date < today {
                 // Reserve overdue unpaid outflows on day 0 so Runway stays consistent with Now.
                 guard entry.amount > 0 else { continue }
@@ -311,7 +311,7 @@ public enum CashFlowForecast {
                 latestByTitle[TextFold.key(next.item)] = next
             }
             for entry in timeline {
-                guard entry.event != true, entry.borrowed != true, entry.amount != 0 else { continue }
+                guard entry.event != true, entry.borrowed != true, entry.cardBilled != true, entry.amount != 0 else { continue }
                 let shouldRepeat: Bool
                 if hasExplicitRecurringFlags {
                     shouldRepeat = entry.recurring == true || entry.payday == true
