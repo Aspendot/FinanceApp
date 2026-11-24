@@ -103,21 +103,60 @@ final class AppModel: ObservableObject {
         return "Connected"
     }
 
-    // MARK: - Local entries, CSV import, overrides, checkoffs, notifications
+    // MARK: - Local entries, CSV import, overrides, checkoffs, reminders, two-way Drive push
 
-    func addManualEntry(_ entry: ManualEntry) async throws {
+    private func persistModificationsAndPush(_ mutate: (inout LocalModifications) -> Void) async throws {
         var mods = LocalDataStore.loadModifications()
-        mods.manualEntries.insert(entry, at: 0)
+        mutate(&mods)
+        mods.updatedAt = Date()
         try LocalDataStore.saveModifications(mods)
         await reload()
+        scheduleBackgroundPhoneEditsPush()
+    }
+
+    private func scheduleBackgroundPhoneEditsPush() {
+        guard gmailConnected && driveKeyPaired && driveScopeGranted else { return }
+        Task.detached(priority: .utility) {
+            _ = await SyncEngine.shared.pushLocalModificationsNow(force: false)
+            await MainActor.run {
+                self.refreshConnectionStates()
+            }
+        }
+    }
+
+    func pushPhoneEditsNow() async -> String {
+        let result = await SyncEngine.shared.pushLocalModificationsNow(force: true)
+        refreshConnectionStates()
+        switch result {
+        case .success(.pushed(let bytes)):
+            return "Synced phone edits to Drive (\(bytes.formatted()) B)"
+        case .success(.unchanged):
+            return "Phone edits already up to date"
+        case .success(.needsConsent):
+            return "Grant Google Drive access first"
+        case .failure(let error):
+            return DriveSync.diagnostic(for: error)
+        }
+    }
+
+    func addManualEntry(_ entry: ManualEntry) async throws {
+        try await persistModificationsAndPush { mods in
+            mods.manualEntries.insert(entry, at: 0)
+        }
+    }
+
+    func addManualEntries(_ entries: [ManualEntry]) async throws {
+        guard !entries.isEmpty else { return }
+        try await persistModificationsAndPush { mods in
+            mods.manualEntries.insert(contentsOf: entries, at: 0)
+        }
     }
 
     func deleteLocalEntry(id: UUID) async throws {
-        var mods = LocalDataStore.loadModifications()
-        mods.manualEntries.removeAll { $0.id == id }
-        mods.importedEntries.removeAll { $0.id == id }
-        try LocalDataStore.saveModifications(mods)
-        await reload()
+        try await persistModificationsAndPush { mods in
+            mods.manualEntries.removeAll { $0.id == id }
+            mods.importedEntries.removeAll { $0.id == id }
+        }
     }
 
     func importPayPayCSV(url: URL) async throws -> PayPayImportResult {
@@ -133,10 +172,10 @@ final class AppModel: ObservableObject {
     }
 
     func importPayPayCSV(text: String) async throws -> PayPayImportResult {
-        var mods = LocalDataStore.loadModifications()
+        let currentMods = LocalDataStore.loadModifications()
         let categorizer = Categorizer(rules: data?.bundle.rules ?? RuleSet())
         let existingItems = data?.allItems ?? []
-        let existingIDs = Set(mods.importedEntries.compactMap(\.externalID))
+        let existingIDs = Set(currentMods.importedEntries.compactMap(\.externalID))
         let peopleGroup = data?.bundle.layerConfig.peopleGroup ?? "People"
 
         let result = try PayPayCSVParser.parse(
@@ -147,9 +186,9 @@ final class AppModel: ObservableObject {
             peopleGroup: peopleGroup
         )
         if !result.entries.isEmpty {
-            mods.importedEntries.append(contentsOf: result.entries)
-            try LocalDataStore.saveModifications(mods)
-            await reload()
+            try await persistModificationsAndPush { mods in
+                mods.importedEntries.append(contentsOf: result.entries)
+            }
         }
         return result
     }
@@ -160,71 +199,116 @@ final class AppModel: ObservableObject {
         category: String,
         applyToAllFromMerchant: Bool
     ) async throws {
-        var mods = LocalDataStore.loadModifications()
         let folded = TextFold.key(item.merchant)
         let fp = CategoryOverride.transactionFingerprint(for: item)
-
-        if applyToAllFromMerchant {
-            mods.categoryOverrides.removeAll {
-                if case .merchant(let key, _) = $0.scope { return key == folded }
-                return false
+        try await persistModificationsAndPush { mods in
+            if applyToAllFromMerchant {
+                mods.categoryOverrides.removeAll {
+                    if case .merchant(let key, _) = $0.scope { return key == folded }
+                    return false
+                }
+                mods.categoryOverrides.append(CategoryOverride(
+                    scope: .merchant(foldedKey: folded, displayMerchant: item.merchant),
+                    group: group,
+                    category: category
+                ))
+            } else {
+                mods.categoryOverrides.removeAll {
+                    if case .transaction(let existingFP, _, _, _) = $0.scope { return existingFP == fp }
+                    return false
+                }
+                mods.categoryOverrides.append(CategoryOverride(
+                    scope: .transaction(
+                        fingerprint: fp,
+                        displayMerchant: item.merchant,
+                        date: item.date,
+                        amount: item.amount
+                    ),
+                    group: group,
+                    category: category
+                ))
             }
-            mods.categoryOverrides.append(CategoryOverride(
-                scope: .merchant(foldedKey: folded, displayMerchant: item.merchant),
-                group: group,
-                category: category
-            ))
-        } else {
-            mods.categoryOverrides.removeAll {
-                if case .transaction(let existingFP, _, _, _) = $0.scope { return existingFP == fp }
-                return false
-            }
-            mods.categoryOverrides.append(CategoryOverride(
-                scope: .transaction(
-                    fingerprint: fp,
-                    displayMerchant: item.merchant,
-                    date: item.date,
-                    amount: item.amount
-                ),
-                group: group,
-                category: category
-            ))
         }
-        try LocalDataStore.saveModifications(mods)
-        await reload()
+    }
+
+    func excludeAsNonSpending(item: BudgetItem, categoryLabel: String = "Excluded") async throws {
+        let transferGroup = data?.bundle.layerConfig.notSpendingGroups.last ?? "Transfers"
+        try await setCategoryOverride(
+            for: item,
+            group: transferGroup,
+            category: categoryLabel,
+            applyToAllFromMerchant: false
+        )
     }
 
     func removeCategoryOverride(id: UUID) async throws {
-        var mods = LocalDataStore.loadModifications()
-        mods.categoryOverrides.removeAll { $0.id == id }
-        try LocalDataStore.saveModifications(mods)
-        await reload()
+        try await persistModificationsAndPush { mods in
+            mods.categoryOverrides.removeAll { $0.id == id }
+        }
+    }
+
+    func setTargetOverride(category: String, target: Int?) async throws {
+        try await persistModificationsAndPush { mods in
+            if let target {
+                mods.targetOverrides[category] = max(0, target)
+            } else {
+                mods.targetOverrides.removeValue(forKey: category)
+            }
+        }
+    }
+
+    func setDebtBalanceOverride(debtName: String, balance: Int?) async throws {
+        try await persistModificationsAndPush { mods in
+            if let balance {
+                mods.debtBalanceOverrides[debtName] = max(0, balance)
+            } else {
+                mods.debtBalanceOverrides.removeValue(forKey: debtName)
+            }
+        }
+    }
+
+    func addCustomReminder(_ reminder: CustomReminder) async throws {
+        try await persistModificationsAndPush { mods in
+            mods.customReminders.append(reminder)
+        }
+    }
+
+    func removeCustomReminder(id: UUID) async throws {
+        try await persistModificationsAndPush { mods in
+            mods.customReminders.removeAll { $0.id == id }
+        }
+    }
+
+    func markReviewed(keys: [String]) async {
+        guard !keys.isEmpty else { return }
+        try? await persistModificationsAndPush { mods in
+            for k in keys {
+                mods.reviewedItemKeys.insert(k)
+            }
+        }
     }
 
     func toggleBillCheckoff(for entry: TimelineEntry) async {
-        var mods = LocalDataStore.loadModifications()
         let key = BillCheckoff.key(for: entry)
-        if mods.billCheckoffs.contains(where: { $0.key == key }) {
-            mods.billCheckoffs.removeAll { $0.key == key }
-        } else {
-            mods.billCheckoffs.append(BillCheckoff(key: key))
+        try? await persistModificationsAndPush { mods in
+            if mods.billCheckoffs.contains(where: { $0.key == key }) {
+                mods.billCheckoffs.removeAll { $0.key == key }
+            } else {
+                mods.billCheckoffs.append(BillCheckoff(key: key))
+            }
         }
-        try? LocalDataStore.saveModifications(mods)
-        await reload()
     }
 
     func dismissAlert(id: String) async {
-        var mods = LocalDataStore.loadModifications()
-        mods.dismissedAlertIDs.insert(id)
-        try? LocalDataStore.saveModifications(mods)
-        await reload()
+        try? await persistModificationsAndPush { mods in
+            mods.dismissedAlertIDs.insert(id)
+        }
     }
 
     func restoreDismissedAlerts() async {
-        var mods = LocalDataStore.loadModifications()
-        mods.dismissedAlertIDs.removeAll()
-        try? LocalDataStore.saveModifications(mods)
-        await reload()
+        try? await persistModificationsAndPush { mods in
+            mods.dismissedAlertIDs.removeAll()
+        }
     }
 
     func updateNotificationPreferences(_ prefs: NotificationPreferences) async {

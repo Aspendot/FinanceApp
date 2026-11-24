@@ -48,9 +48,21 @@ struct DriveSyncSettingsView: View {
                 }
                 if let importedAt = driveState.lastImportedGeneratedAt {
                     SettingsValueRow(
-                        label: "Latest file",
+                        label: "Latest PC file",
                         value: FinanceFormat.bundleTimestamp(importedAt)
                     )
+                }
+                if let pushedAt = driveState.lastPushedEditsAt {
+                    SettingsValueRow(
+                        label: "Phone edits synced",
+                        value: SyncStorage.formatCheckTime(pushedAt),
+                        valueColor: Theme.good
+                    )
+                }
+                if let pushErr = driveState.lastPushErrorMessage, !pushErr.isEmpty {
+                    Text(pushErr)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.bad)
                 }
                 if let error = driveState.lastErrorMessage, !error.isEmpty {
                     Text(error)
@@ -160,6 +172,19 @@ struct DriveSyncSettingsView: View {
                     }
                     .disabled(busy || model.syncing)
                     .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+
+                    Button {
+                        busy = true
+                        Task {
+                            defer { busy = false }
+                            feedback = await model.pushPhoneEditsNow()
+                        }
+                    } label: {
+                        Text("Push phone edits to Drive now")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(busy || model.syncing ? Theme.muted : Theme.accent)
+                    }
+                    .disabled(busy || model.syncing)
                 }
 
                 Button {

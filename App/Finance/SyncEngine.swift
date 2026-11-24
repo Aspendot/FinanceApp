@@ -349,6 +349,44 @@ actor SyncEngine {
         return try await operation()
     }
 
+    /// Uploads encrypted `phone-edits.fnb` to Google Drive immediately when Drive sync is paired.
+    func pushLocalModificationsNow(force: Bool = false) async -> Result<DriveSync.PushOutcome, any Error> {
+        guard let clientID = GmailSync.clientID else {
+            return .failure(GoogleDriveClientError.notSignedIn)
+        }
+        let tokenStore = KeychainTokenStore()
+        guard let tokens = try? tokenStore.load(),
+              tokens.scope == nil || tokens.hasScope(GoogleOAuth.driveAppDataScope),
+              let driveKey = try? DriveSync.loadKey()
+        else {
+            return .failure(GoogleDriveClientError.missingDriveScope)
+        }
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel() }
+        let client = GoogleDriveClient(
+            clientID: clientID,
+            tokenStore: tokenStore,
+            transport: URLSessionHTTPTransport(session: session),
+            retryPolicy: RetryPolicy(maxRetries: 1, initialDelay: .seconds(1), maxDelay: .seconds(2))
+        )
+        let mods = LocalDataStore.loadModifications()
+        do {
+            let outcome = try await DriveSync.pushLocalModifications(
+                client: client,
+                key: driveKey,
+                modifications: mods,
+                force: force,
+                now: Date()
+            )
+            return .success(outcome)
+        } catch {
+            return .failure(error)
+        }
+    }
+
     /// Clears Google Keychain tokens, stored Gmail sync state and widget data during sign-out.
     func clearForSignOut() async throws {
         guard !inFlight else { throw GmailSync.SyncProblem.busy }
@@ -513,7 +551,8 @@ actor SyncEngine {
         var hitHardTimeout = false
         var nonFatalErrors = credentialErrors
 
-        // 1. Encrypted Google Drive bundle sync (runs first so Gmail & Money Forward see fresh coverage/rules).
+        // 1. Encrypted Google Drive bundle sync (runs first so Gmail & Money Forward see fresh coverage/rules)
+        //    plus two-way upload of phone-local edits (`phone-edits.fnb`).
         if hasDrive, let clientID, let driveKey, !Task.isCancelled, !Self.isPast(deadline) {
             let stageDeadline = nextStageDeadline()
             let driveClient = GoogleDriveClient(
@@ -524,7 +563,15 @@ actor SyncEngine {
             )
             do {
                 let outcome = try await Self.runWithDeadline(stageDeadline) {
-                    try await DriveSync.checkAndImport(client: driveClient, key: driveKey, now: Date())
+                    let localMods = LocalDataStore.loadModifications()
+                    _ = try? await DriveSync.pushLocalModifications(
+                        client: driveClient,
+                        key: driveKey,
+                        modifications: localMods,
+                        force: false,
+                        now: Date()
+                    )
+                    return try await DriveSync.checkAndImport(client: driveClient, key: driveKey, now: Date())
                 }
                 if let outcome {
                     if case .imported = outcome {

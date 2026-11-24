@@ -17,6 +17,8 @@ struct NowScreenModel: Sendable {
     }
 
     let alerts: [FinanceAlert]
+    let reviewQueueCount: Int
+    let activePeriodPace: Double?
     let payday: PaydayView?
     let paydayBreakdown: PaydayBreakdown?
     let lastPayday: String?
@@ -35,6 +37,8 @@ struct NowScreenModel: Sendable {
 
     init(data: FinanceData, today: String) {
         self.alerts = data.alerts
+        self.reviewQueueCount = data.reviewQueue.count
+        self.activePeriodPace = data.currentPeriod(for: .calendarMonth, today: today)?.paceProgress(on: today)
         self.payday = data.payday
         self.paydayBreakdown = data.paydayBreakdown
         self.lastPayday = data.lastPayday
@@ -97,8 +101,8 @@ struct NowScreenModel: Sendable {
             .filter { data.layer(of: $0.value) != nil }
             .reduce(0) { $0 + $1.value.amount }
 
-        self.debts = data.bundle.debts
-        self.totalDebt = data.bundle.debts.reduce(0) { $0 + $1.balance }
+        self.debts = data.effectiveDebts
+        self.totalDebt = data.effectiveDebts.reduce(0) { $0 + $1.balance }
         self.notes = data.bundle.notes ?? []
         self.subscriptionSummary = data.subscriptionSummary
     }

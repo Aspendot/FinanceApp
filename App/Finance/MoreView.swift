@@ -29,7 +29,17 @@ struct MoreView: View {
         var parts: [String] = []
         if total > 0 { parts.append("\(total) local") }
         if !mods.categoryOverrides.isEmpty { parts.append("\(mods.categoryOverrides.count) rules") }
+        let edits = mods.targetOverrides.count + mods.debtBalanceOverrides.count + mods.customReminders.count
+        if edits > 0 { parts.append("\(edits) edits") }
         return parts.isEmpty ? "PayPay CSV, overrides, backup" : parts.joined(separator: " · ")
+    }
+
+    private var scannerSummary: String {
+        let cfg = VisionScannerStore.load()
+        if cfg.preferAIVision && VisionKeyStore.hasKey(for: cfg.provider) {
+            return "\(cfg.provider.displayName) · \(cfg.model)"
+        }
+        return "On-device Apple Vision OCR"
     }
 
     private var notificationsSummary: String {
@@ -51,6 +61,14 @@ struct MoreView: View {
                 ConnectionsSection(footerText: dataSummaryLine)
 
                 Section {
+                    NavigationLink(value: MoreDestination.receiptScanner) {
+                        moreRow(
+                            symbol: "doc.text.viewfinder",
+                            tint: Theme.accent,
+                            title: "Receipt scanner (AI & OCR)",
+                            subtitle: scannerSummary
+                        )
+                    }
                     NavigationLink(value: MoreDestination.notifications) {
                         moreRow(
                             symbol: "bell.badge.fill",
@@ -138,6 +156,8 @@ struct MoreView: View {
                     MoneyForwardSettingsView()
                 case .drive:
                     DriveSyncSettingsView()
+                case .receiptScanner:
+                    ReceiptScannerSettingsView()
                 case .notifications:
                     NotificationSettingsView()
                 case .localData:

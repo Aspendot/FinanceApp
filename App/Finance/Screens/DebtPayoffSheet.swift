@@ -17,7 +17,7 @@ struct DebtPayoffSheet: View {
     }
 
     private var debts: [DebtEntry] {
-        activeData?.bundle.debts ?? []
+        activeData?.effectiveDebts ?? []
     }
 
     private var currentDebt: DebtEntry? {

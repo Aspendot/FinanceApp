@@ -39,13 +39,25 @@ struct FinanceData: Sendable {
     let months: [String]
     /// Monthly totals computed once over `allItems` (fixes Money Forward omission in Months).
     let totalsByMonth: [String: MonthTotals]
+    /// Calendar-month periods covering every available month.
+    let calendarPeriods: [BudgetPeriod]
+    /// Payday-to-day-before-next-payday periods discovered from timeline and salary rows.
+    let payCycles: [BudgetPeriod]
+    /// Period totals keyed by pay-cycle `BudgetPeriod.id`.
+    let totalsByCycle: [String: MonthTotals]
     /// Payments (excluding Income) grouped by month.
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
     /// All items (including Income) sorted newest first for all-time search and Income filtering.
     let allRowsSorted: [NumberedRow<BudgetItem>]
     let subscriptionSummary: SubscriptionSummary
+    /// Bundle plan rows with phone target overrides applied.
+    let effectivePlan: [PlanEntry]
+    /// Bundle debts with phone balance overrides applied.
+    let effectiveDebts: [DebtEntry]
     let planSummary: PlanSummary
     let alerts: [FinanceAlert]
+    /// Daily review inbox queue (pending emails, uncategorized items, and anomalies not yet reviewed).
+    let reviewQueue: [ReviewQueueItem]
     /// Distinct (group, category) pairs available in this dataset for pickers.
     let availableCategories: [(group: String, category: String)]
     /// Most frequent known merchant display spellings for Quick Add autocomplete.
@@ -130,8 +142,12 @@ struct FinanceData: Sendable {
         self.noticeByFingerprint = noticeMap
 
         let bankReconciled = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
-        let checked = LocalDataApplier.applyBillCheckoffs(
+        let withReminders = LocalDataApplier.mergeCustomReminders(
             timeline: bankReconciled,
+            reminders: localModifications.customReminders
+        )
+        let checked = LocalDataApplier.applyBillCheckoffs(
+            timeline: withReminders,
             checkoffs: localModifications.billCheckoffs
         )
         self.timeline = checked.timeline
@@ -170,9 +186,21 @@ struct FinanceData: Sendable {
 
         let payments = sortedAll.filter { $0.group != incomeGroup }
         self.paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
-        self.months = Set(paymentsByMonth.keys).union(totals.keys).sorted()
+        let sortedMonths = Set(paymentsByMonth.keys).union(totals.keys).sorted()
+        self.months = sortedMonths
 
-        let currentMonth = months.last ?? String(today.prefix(7))
+        let calPeriods = PayCycleBuilder.calendarPeriods(months: sortedMonths, asOf: bundle.asOf, today: today)
+        self.calendarPeriods = calPeriods
+        let cycles = PayCycleBuilder.payCycles(items: items, timeline: checked.timeline, config: config, today: today)
+        self.payCycles = cycles
+        self.totalsByCycle = PayCycleBuilder.totalsByPeriod(
+            items: items,
+            periods: cycles,
+            config: config,
+            layers: bundle.layers
+        )
+
+        let currentMonth = sortedMonths.last ?? String(today.prefix(7))
         let asOfMonth = String(bundle.asOf.prefix(7))
         let latestPartial = max(asOfMonth, String(today.prefix(7)))
         let inProgressMonth: String? = (currentMonth >= latestPartial) ? currentMonth : nil
@@ -180,8 +208,34 @@ struct FinanceData: Sendable {
         let subs = SubscriptionSummary.compute(from: bundle.subs)
         self.subscriptionSummary = subs
 
-        let plan = PlanSummary.compute(
+        // Recent 3 completed months average per category for newly added phone targets.
+        let completedRecentMonths = Array(sortedMonths.filter { $0 != inProgressMonth }.suffix(3))
+        var avgByCategory: [String: Int] = [:]
+        if !completedRecentMonths.isEmpty {
+            var sums: [String: Int] = [:]
+            for m in completedRecentMonths {
+                for (cat, stat) in totals[m]?.categories ?? [:] {
+                    sums[cat, default: 0] += stat.sum
+                }
+            }
+            for (cat, totalSum) in sums {
+                avgByCategory[cat] = Int((Double(totalSum) / Double(completedRecentMonths.count)).rounded())
+            }
+        }
+
+        let resolvedPlan = LocalDataApplier.applyPlanOverrides(
             plan: bundle.plan,
+            overrides: localModifications.targetOverrides,
+            recentAverageByCategory: avgByCategory
+        )
+        self.effectivePlan = resolvedPlan
+        self.effectiveDebts = LocalDataApplier.applyDebtOverrides(
+            debts: bundle.debts,
+            overrides: localModifications.debtBalanceOverrides
+        )
+
+        let plan = PlanSummary.compute(
+            plan: resolvedPlan,
             planWindow: bundle.planWindow,
             totalsByMonth: totals,
             selectedMonth: currentMonth,
@@ -203,7 +257,8 @@ struct FinanceData: Sendable {
             today: today,
             discreetCategories: discreet
         )
-        self.alerts = detectedAlerts.filter { !localModifications.dismissedAlertIDs.contains($0.id) }
+        let activeAlerts = detectedAlerts.filter { !localModifications.dismissedAlertIDs.contains($0.id) }
+        self.alerts = activeAlerts
 
         // Distinct categories from items + rules so pickers always offer every known category.
         var catPairs: [String: String] = [:]
@@ -213,9 +268,18 @@ struct FinanceData: Sendable {
         for rule in bundle.rules.rules where !rule.category.isEmpty {
             catPairs[rule.category] = catPairs[rule.category] ?? rule.group
         }
-        self.availableCategories = catPairs
+        let sortedCategories = catPairs
             .map { (group: $0.value, category: $0.key) }
             .sorted { $0.category.localizedCaseInsensitiveCompare($1.category) == .orderedAscending }
+        self.availableCategories = sortedCategories
+
+        self.reviewQueue = ReviewInboxBuilder.build(
+            allItems: items,
+            alerts: activeAlerts,
+            availableCategories: sortedCategories,
+            reviewedKeys: localModifications.reviewedItemKeys,
+            today: today
+        )
 
         // Frequent merchant names for Quick Add autocomplete.
         var merchantCounts: [String: Int] = [:]
@@ -249,6 +313,29 @@ struct FinanceData: Sendable {
 
     func matchedNotice(for item: BudgetItem) -> Notice? {
         noticeByFingerprint[CategoryOverride.transactionFingerprint(for: item)]
+    }
+
+    func periods(for mode: BudgetPeriodMode) -> [BudgetPeriod] {
+        switch mode {
+        case .calendarMonth:
+            return calendarPeriods
+        case .payCycle:
+            return payCycles.isEmpty ? calendarPeriods : payCycles
+        }
+    }
+
+    func totals(for mode: BudgetPeriodMode) -> [String: MonthTotals] {
+        switch mode {
+        case .calendarMonth:
+            return totalsByMonth
+        case .payCycle:
+            return payCycles.isEmpty ? totalsByMonth : totalsByCycle
+        }
+    }
+
+    func currentPeriod(for mode: BudgetPeriodMode, today: String) -> BudgetPeriod? {
+        let list = periods(for: mode)
+        return list.first(where: { $0.contains(today) }) ?? list.last
     }
 
     var widgetSnapshot: WidgetSnapshot {

@@ -120,9 +120,50 @@ public struct BillCheckoff: Codable, Sendable, Hashable {
     }
 }
 
+/// Custom bill, subscription cancellation reminder, or timeline event added on the phone.
+public struct CustomReminder: Codable, Sendable, Identifiable, Hashable {
+    public var id: UUID
+    /// Scheduled date in `"YYYY-MM-DD"` format.
+    public var date: String
+    public var title: String
+    /// Whole yen; 0 for non-cash events, positive for outflow, negative for inflow.
+    public var amount: Int
+    public var note: String?
+    public var isEvent: Bool
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        date: String,
+        title: String,
+        amount: Int = 0,
+        note: String? = nil,
+        isEvent: Bool = false,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.date = date
+        self.title = title
+        self.amount = amount
+        self.note = note
+        self.isEvent = isEvent
+        self.createdAt = createdAt
+    }
+
+    public func asTimelineEntry() -> TimelineEntry {
+        TimelineEntry(
+            date: date,
+            item: title,
+            amount: isEvent ? 0 : amount,
+            note: note,
+            event: isEvent ? true : nil
+        )
+    }
+}
+
 /// All phone-local additions, overrides and dismissals kept separately from the PC bundle.
 public struct LocalModifications: Codable, Sendable, Equatable {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     public var version: Int
     public var manualEntries: [ManualEntry]
@@ -130,6 +171,16 @@ public struct LocalModifications: Codable, Sendable, Equatable {
     public var categoryOverrides: [CategoryOverride]
     public var billCheckoffs: [BillCheckoff]
     public var dismissedAlertIDs: Set<String>
+    /// Category name -> edited monthly yen cap synced back to PC.
+    public var targetOverrides: [String: Int]
+    /// Debt name -> updated balance yen synced back to PC.
+    public var debtBalanceOverrides: [String: Int]
+    /// User-added bills and cancellation/review reminders merged into Coming up.
+    public var customReminders: [CustomReminder]
+    /// Item or alert keys confirmed in the daily Review inbox.
+    public var reviewedItemKeys: Set<String>
+    /// Last modification timestamp for two-way Drive sync.
+    public var updatedAt: Date?
 
     public init(
         version: Int = LocalModifications.currentVersion,
@@ -137,7 +188,12 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         importedEntries: [ManualEntry] = [],
         categoryOverrides: [CategoryOverride] = [],
         billCheckoffs: [BillCheckoff] = [],
-        dismissedAlertIDs: Set<String> = []
+        dismissedAlertIDs: Set<String> = [],
+        targetOverrides: [String: Int] = [:],
+        debtBalanceOverrides: [String: Int] = [:],
+        customReminders: [CustomReminder] = [],
+        reviewedItemKeys: Set<String> = [],
+        updatedAt: Date? = nil
     ) {
         self.version = version
         self.manualEntries = manualEntries
@@ -145,6 +201,31 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         self.categoryOverrides = categoryOverrides
         self.billCheckoffs = billCheckoffs
         self.dismissedAlertIDs = dismissedAlertIDs
+        self.targetOverrides = targetOverrides
+        self.debtBalanceOverrides = debtBalanceOverrides
+        self.customReminders = customReminders
+        self.reviewedItemKeys = reviewedItemKeys
+        self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, manualEntries, importedEntries, categoryOverrides, billCheckoffs, dismissedAlertIDs
+        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = try c.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        manualEntries = try c.decodeIfPresent([ManualEntry].self, forKey: .manualEntries) ?? []
+        importedEntries = try c.decodeIfPresent([ManualEntry].self, forKey: .importedEntries) ?? []
+        categoryOverrides = try c.decodeIfPresent([CategoryOverride].self, forKey: .categoryOverrides) ?? []
+        billCheckoffs = try c.decodeIfPresent([BillCheckoff].self, forKey: .billCheckoffs) ?? []
+        dismissedAlertIDs = try c.decodeIfPresent(Set<String>.self, forKey: .dismissedAlertIDs) ?? []
+        targetOverrides = try c.decodeIfPresent([String: Int].self, forKey: .targetOverrides) ?? [:]
+        debtBalanceOverrides = try c.decodeIfPresent([String: Int].self, forKey: .debtBalanceOverrides) ?? [:]
+        customReminders = try c.decodeIfPresent([CustomReminder].self, forKey: .customReminders) ?? []
+        reviewedItemKeys = try c.decodeIfPresent(Set<String>.self, forKey: .reviewedItemKeys) ?? []
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
 
     public var isEmpty: Bool {
@@ -153,6 +234,10 @@ public struct LocalModifications: Codable, Sendable, Equatable {
             && categoryOverrides.isEmpty
             && billCheckoffs.isEmpty
             && dismissedAlertIDs.isEmpty
+            && targetOverrides.isEmpty
+            && debtBalanceOverrides.isEmpty
+            && customReminders.isEmpty
+            && reviewedItemKeys.isEmpty
     }
 }
 
@@ -270,5 +355,68 @@ public enum LocalDataApplier {
             return copy
         }
         return (updated, phoneChecked)
+    }
+
+    /// Applies on-device monthly cap edits to the bundle's plan rows.
+    /// Categories not yet in `plan` are appended as active `"Cut"` rows using `recentAverage` when supplied.
+    public static func applyPlanOverrides(
+        plan: [PlanEntry],
+        overrides: [String: Int],
+        recentAverageByCategory: [String: Int] = [:]
+    ) -> [PlanEntry] {
+        guard !overrides.isEmpty else { return plan }
+        var seen = Set<String>()
+        var updated = plan.map { entry -> PlanEntry in
+            seen.insert(entry.category)
+            guard let customTarget = overrides[entry.category] else { return entry }
+            var copy = entry
+            copy.target = max(0, customTarget)
+            return copy
+        }
+        for (category, target) in overrides.sorted(by: { $0.key < $1.key }) where !seen.contains(category) {
+            let baseline = recentAverageByCategory[category] ?? target
+            updated.append(PlanEntry(
+                category: category,
+                now: max(0, baseline),
+                target: max(0, target),
+                status: "Cut",
+                note: "Target set on phone"
+            ))
+        }
+        return updated
+    }
+
+    /// Applies on-device balance updates to tracked debts.
+    public static func applyDebtOverrides(
+        debts: [DebtEntry],
+        overrides: [String: Int]
+    ) -> [DebtEntry] {
+        guard !overrides.isEmpty else { return debts }
+        return debts.map { debt in
+            guard let updatedBalance = overrides[debt.name] else { return debt }
+            var copy = debt
+            copy.balance = max(0, updatedBalance)
+            return copy
+        }
+    }
+
+    /// Merges phone-created reminders and custom bills into the timeline, sorted ascending by date.
+    public static func mergeCustomReminders(
+        timeline: [TimelineEntry],
+        reminders: [CustomReminder]
+    ) -> [TimelineEntry] {
+        guard !reminders.isEmpty else { return timeline }
+        var combined = timeline
+        for reminder in reminders {
+            let entry = reminder.asTimelineEntry()
+            let key = BillCheckoff.key(for: entry)
+            if !combined.contains(where: { BillCheckoff.key(for: $0) == key }) {
+                combined.append(entry)
+            }
+        }
+        return combined.sorted {
+            if $0.date != $1.date { return $0.date < $1.date }
+            return $0.item < $1.item
+        }
     }
 }

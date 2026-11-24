@@ -1,6 +1,35 @@
 import FinanceCore
 import SwiftUI
 
+private struct PrivacyMaskedKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    /// When true (train/commute privacy mode), yen figures render masked as `¥•••,•••`.
+    var privacyMasked: Bool {
+        get { self[PrivacyMaskedKey.self] }
+        set { self[PrivacyMaskedKey.self] = newValue }
+    }
+}
+
+/// Formats yen figures cleanly while respecting the 1-tap Train Privacy Mask.
+enum MaskedMoney {
+    static func yen(_ value: Int, masked: Bool) -> String {
+        masked ? "¥•••,•••" : Money.yen(value)
+    }
+
+    static func payment(_ value: Int, masked: Bool) -> String {
+        guard masked else { return Money.payment(value) }
+        return value < 0 ? "+¥•••,•••" : "¥•••,•••"
+    }
+
+    static func signed(_ value: Int, masked: Bool) -> String {
+        guard masked else { return Money.signed(value) }
+        return value < 0 ? "−¥•••,•••" : "+¥•••,•••"
+    }
+}
+
 /// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature,
 /// fine hairline border, specular dark-mode rim, and whisper-soft ambient depth.
 struct FinanceCard<Content: View>: View {
@@ -285,6 +314,7 @@ struct SectionLabel: View {
 
 /// Editorial hero yen value with subtly lighter, refined ¥ currency prefix and crisp bold monospaced digits.
 struct HeroMoneyText: View {
+    @Environment(\.privacyMasked) private var privacyMasked
     let amount: Int
     var color: Color = Theme.ink
     var signed: Bool = false
@@ -297,7 +327,7 @@ struct HeroMoneyText: View {
             if signed && amount > 0 { return "+¥" }
             return "¥"
         }()
-        let digits = amount.magnitude.formatted()
+        let digits = privacyMasked ? "•••,•••" : amount.magnitude.formatted()
 
         HStack(alignment: .firstTextBaseline, spacing: 2) {
             Text(prefix)
@@ -313,12 +343,13 @@ struct HeroMoneyText: View {
         .minimumScaleFactor(0.45)
         .allowsTightening(true)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
+        .accessibilityLabel(privacyMasked ? "Hidden amount" : FinanceFormat.yenAccessibility(amount, signed: signed))
     }
 }
 
 /// Editorial 24 pt bold metric yen value with refined ¥ prefix and monospaced digits.
 struct MetricMoneyText: View {
+    @Environment(\.privacyMasked) private var privacyMasked
     let amount: Int
     var color: Color = Theme.ink
     var signed: Bool = false
@@ -331,7 +362,7 @@ struct MetricMoneyText: View {
             if signed && amount > 0 { return "+¥" }
             return "¥"
         }()
-        let digits = amount.magnitude.formatted()
+        let digits = privacyMasked ? "•••,•••" : amount.magnitude.formatted()
 
         HStack(alignment: .firstTextBaseline, spacing: 1.5) {
             Text(prefix)
@@ -347,7 +378,7 @@ struct MetricMoneyText: View {
         .minimumScaleFactor(0.5)
         .allowsTightening(true)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(FinanceFormat.yenAccessibility(amount, signed: signed))
+        .accessibilityLabel(privacyMasked ? "Hidden amount" : FinanceFormat.yenAccessibility(amount, signed: signed))
     }
 }
 
@@ -363,18 +394,24 @@ struct HairlineDivider: View {
     }
 }
 
-/// Sculpted capsule progress meter with subtle tonal sheen and guaranteed visibility for non-zero ratios.
+/// Sculpted capsule progress meter with subtle tonal sheen, guaranteed visibility for non-zero ratios,
+/// and an optional quiet "Pace Notch" vertical marker showing where today sits in the active period.
 struct ProgressMeter: View {
     let ratio: Double
     var tint: Color = Theme.accent
     var track: Color = Theme.track
     var height: CGFloat = 6.5
+    /// Optional 0...1 fraction showing today's position in the current month or pay cycle.
+    var paceRatio: Double? = nil
 
     var body: some View {
         let clamped = min(1.0, max(0.0, ratio))
+        let hasNotch = paceRatio != nil
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(track)
+                Capsule()
+                    .fill(track)
+                    .frame(height: height)
                 if clamped > 0 {
                     Capsule()
                         .fill(
@@ -384,12 +421,40 @@ struct ProgressMeter: View {
                                 endPoint: .trailing
                             )
                         )
-                        .frame(width: max(height, geo.size.width * clamped))
+                        .frame(width: max(height, geo.size.width * clamped), height: height)
+                }
+                if let pace = paceRatio {
+                    let clampedPace = min(0.98, max(0.02, pace))
+                    let xPos = geo.size.width * clampedPace
+                    ZStack {
+                        Capsule()
+                            .fill(Theme.surface.opacity(0.92))
+                            .frame(width: 4, height: height + 6)
+                        Capsule()
+                            .fill(Theme.ink.opacity(0.78))
+                            .frame(width: 1.75, height: height + 5)
+                    }
+                    .offset(x: xPos - 2)
                 }
             }
+            .frame(maxHeight: .infinity, alignment: .center)
         }
-        .frame(height: height)
+        .frame(height: hasNotch ? height + 6 : height)
         .accessibilityHidden(true)
+    }
+}
+
+/// Refined segmented pill switch for global `Calendar | Pay Cycle` period mode.
+struct PeriodModeSwitch: View {
+    @Binding var mode: BudgetPeriodMode
+
+    var body: some View {
+        Picker("Period mode", selection: $mode) {
+            ForEach(BudgetPeriodMode.allCases) { option in
+                Text(option.rawValue).tag(option)
+            }
+        }
+        .pickerStyle(.segmented)
     }
 }
 

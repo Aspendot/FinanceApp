@@ -87,10 +87,12 @@ public enum GoogleDriveClientError: Error, LocalizedError, Equatable, Sendable {
     }
 }
 
-/// Async client for reading the encrypted bundle from Google Drive's hidden `appDataFolder`.
+/// Async client for reading and writing encrypted envelopes in Google Drive's hidden `appDataFolder`.
 public actor GoogleDriveClient {
     public static let defaultBaseURL = URL(string: "https://www.googleapis.com/drive/v3")!
+    public static let defaultUploadURL = URL(string: "https://www.googleapis.com/upload/drive/v3")!
     public static let bundleFileName = "finance-bundle.fnb"
+    public static let phoneEditsFileName = "phone-edits.fnb"
 
     private let clientID: String
     private let tokenStore: any TokenStore
@@ -98,6 +100,7 @@ public actor GoogleDriveClient {
     private let sleeper: any Sleeper
     private let retryPolicy: RetryPolicy
     private let baseURL: URL
+    private let uploadBaseURL: URL
     private let now: @Sendable () -> Date
 
     private static let rateLimitReasons: Set<String> = [
@@ -121,6 +124,7 @@ public actor GoogleDriveClient {
         sleeper: any Sleeper = TaskSleeper(),
         retryPolicy: RetryPolicy = .default,
         baseURL: URL = GoogleDriveClient.defaultBaseURL,
+        uploadBaseURL: URL = GoogleDriveClient.defaultUploadURL,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.clientID = clientID
@@ -129,6 +133,7 @@ public actor GoogleDriveClient {
         self.sleeper = sleeper
         self.retryPolicy = retryPolicy
         self.baseURL = baseURL
+        self.uploadBaseURL = uploadBaseURL
         self.now = now
     }
 
@@ -194,7 +199,97 @@ public actor GoogleDriveClient {
         return try await performAuthorizedGET(url, accept: "application/octet-stream")
     }
 
+    /// Uploads (creating or replacing) a binary file in `appDataFolder`.
+    ///
+    /// Used by the phone to push encrypted `phone-edits.fnb` back to the PC pipeline.
+    public func uploadAppDataFile(
+        name: String = GoogleDriveClient.phoneEditsFileName,
+        data: Data,
+        mimeType: String = "application/octet-stream"
+    ) async throws -> DriveFileMetadata {
+        let existing = try await listAppDataFiles(name: name)
+        let responseBody: Data
+        if let target = existing.first {
+            guard isValidFileID(target.id) else {
+                throw GoogleDriveClientError.invalidFileID
+            }
+            let endpoint = uploadBaseURL
+                .appendingPathComponent("files")
+                .appendingPathComponent(target.id)
+            guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+                throw GoogleDriveClientError.invalidFileID
+            }
+            components.queryItems = [
+                URLQueryItem(name: "uploadType", value: "media"),
+                URLQueryItem(name: "fields", value: "id,name,modifiedTime,md5Checksum,size"),
+            ]
+            guard let url = components.url else {
+                throw GoogleDriveClientError.invalidFileID
+            }
+            responseBody = try await performAuthorizedRequest(
+                method: "PATCH",
+                url: url,
+                headers: [
+                    "Accept": "application/json",
+                    "Content-Type": mimeType,
+                ],
+                body: data
+            )
+        } else {
+            let endpoint = uploadBaseURL.appendingPathComponent("files")
+            guard var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false) else {
+                throw GoogleDriveClientError.invalidResponse("could not build Drive upload URL.")
+            }
+            components.queryItems = [
+                URLQueryItem(name: "uploadType", value: "multipart"),
+                URLQueryItem(name: "fields", value: "id,name,modifiedTime,md5Checksum,size"),
+            ]
+            guard let url = components.url else {
+                throw GoogleDriveClientError.invalidResponse("could not build Drive upload URL.")
+            }
+            let boundary = "FinanceAppBoundary\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+            let metadataPayload: [String: Any] = [
+                "name": name,
+                "parents": ["appDataFolder"],
+            ]
+            let metadataJSON = try JSONSerialization.data(withJSONObject: metadataPayload, options: [])
+            var multipart = Data()
+            multipart.append(Data("--\(boundary)\r\n".utf8))
+            multipart.append(Data("Content-Type: application/json; charset=UTF-8\r\n\r\n".utf8))
+            multipart.append(metadataJSON)
+            multipart.append(Data("\r\n--\(boundary)\r\n".utf8))
+            multipart.append(Data("Content-Type: \(mimeType)\r\n\r\n".utf8))
+            multipart.append(data)
+            multipart.append(Data("\r\n--\(boundary)--\r\n".utf8))
+
+            responseBody = try await performAuthorizedRequest(
+                method: "POST",
+                url: url,
+                headers: [
+                    "Accept": "application/json",
+                    "Content-Type": "multipart/related; boundary=\(boundary)",
+                ],
+                body: multipart
+            )
+        }
+
+        do {
+            return try JSONDecoder().decode(DriveFileMetadata.self, from: responseBody)
+        } catch {
+            throw GoogleDriveClientError.invalidResponse("could not decode Drive upload response JSON.")
+        }
+    }
+
     private func performAuthorizedGET(_ url: URL, accept: String) async throws -> Data {
+        try await performAuthorizedRequest(method: "GET", url: url, headers: ["Accept": accept], body: nil)
+    }
+
+    private func performAuthorizedRequest(
+        method: String,
+        url: URL,
+        headers: [String: String],
+        body: Data?
+    ) async throws -> Data {
         try Task.checkCancellation()
         guard var tokens = try await loadTokens() else {
             throw GoogleDriveClientError.notSignedIn
@@ -213,13 +308,13 @@ public actor GoogleDriveClient {
 
         var rateLimitAttempt = 0
         while true {
+            var allHeaders = headers
+            allHeaders["Authorization"] = "Bearer \(tokens.accessToken)"
             let request = HTTPRequest(
-                method: "GET",
+                method: method,
                 url: url,
-                headers: [
-                    "Authorization": "Bearer \(tokens.accessToken)",
-                    "Accept": accept,
-                ]
+                headers: allHeaders,
+                body: body
             )
             let response = try await sendRequest(request)
 

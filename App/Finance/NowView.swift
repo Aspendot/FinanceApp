@@ -5,6 +5,7 @@ struct NowView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
 
     @State private var inspectedPayment: InspectedPayment?
     @State private var selectedBill: TimelineEntry?
@@ -18,7 +19,10 @@ struct NowView: View {
                     VStack(alignment: .leading, spacing: Theme.cardSpacing) {
                         if let data = session.resolvedData(from: model) {
                             let screen = NowScreenModel(data: data, today: session.today)
-                            paydaySection(screen: screen)
+                            paydaySection(screen: screen, scrollProxy: scrollProxy)
+                            if screen.reviewQueueCount > 0 {
+                                reviewInboxBanner(count: screen.reviewQueueCount)
+                            }
                             if !screen.alerts.isEmpty {
                                 alertsSection(screen: screen, scrollProxy: scrollProxy)
                             }
@@ -73,13 +77,40 @@ struct NowView: View {
                     .accessibilityLabel("Ask Finance")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        session.activeSheet = .quickAdd
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.body.weight(.semibold))
+                    HStack(spacing: 12) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                session.privacyMasked.toggle()
+                            }
+                        } label: {
+                            Image(systemName: session.privacyMasked ? "eye.slash.fill" : "eye")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(session.privacyMasked ? Theme.accent : Theme.ink2)
+                        }
+                        .accessibilityLabel(session.privacyMasked ? "Show amounts" : "Hide amounts")
+
+                        Menu {
+                            Button {
+                                session.activeSheet = .quickAdd
+                            } label: {
+                                Label("Add payment", systemImage: "plus.circle")
+                            }
+                            Button {
+                                session.activeSheet = .scanReceipt
+                            } label: {
+                                Label("Scan receipt or slip", systemImage: "doc.text.viewfinder")
+                            }
+                            Button {
+                                session.activeSheet = .addReminder(defaultTitle: nil, defaultDate: nil, defaultNote: nil)
+                            } label: {
+                                Label("Add bill or reminder", systemImage: "calendar.badge.plus")
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.body.weight(.semibold))
+                        }
+                        .accessibilityLabel("Add payment, receipt, or reminder")
                     }
-                    .accessibilityLabel("Add payment")
                 }
             }
             .refreshable {
@@ -244,17 +275,75 @@ struct NowView: View {
         }
     }
 
+    // MARK: - Daily Review Inbox banner
+
+    private func reviewInboxBanner(count: Int) -> some View {
+        Button {
+            session.activeSheet = .reviewInbox
+        } label: {
+            FinanceCard(padding: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    if !dynamicTypeSize.isAccessibilitySize {
+                        IconMedallion(symbol: "tray.and.arrow.down.fill", tint: Theme.accent, size: 36)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text("Review")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Theme.ink)
+                            QuietTag("\(count)", tone: .accent)
+                        }
+                        Text("Confirm pending notices and uncategorized items in 10 seconds")
+                            .font(.caption)
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 6)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Theme.accent)
+                }
+                .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
     // MARK: - Until payday
 
     @ViewBuilder
-    private func paydaySection(screen: NowScreenModel) -> some View {
+    private func paydaySection(screen: NowScreenModel, scrollProxy: ScrollViewProxy) -> some View {
         if let payday = screen.payday {
             PaydayHeroCard(
                 payday: payday,
                 breakdown: screen.paydayBreakdown,
                 spent: screen.spentSincePayday,
                 lastPayday: screen.lastPayday,
-                pendingCount: screen.pendingSincePayday
+                pendingCount: screen.pendingSincePayday,
+                onTapBills: {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        scrollProxy.scrollTo("comingUp", anchor: .top)
+                    }
+                },
+                onTapDayToDay: {
+                    if let start = screen.lastPayday {
+                        session.openPayments(
+                            layer: .dayToDay,
+                            dateRange: start...session.today,
+                            dateRangeLabel: "Since \(DayText.short(start))"
+                        )
+                    } else {
+                        session.openPayments(month: String(session.today.prefix(7)), layer: .dayToDay)
+                    }
+                },
+                onTapRunway: {
+                    session.activeSheet = .runway
+                },
+                onTogglePrivacy: {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        session.privacyMasked.toggle()
+                    }
+                }
             )
         } else {
             FinanceCard {
@@ -301,14 +390,18 @@ struct NowView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(preview) { row in
-                        watchRow(row, currentMonth: data.planSummary.currentMonth)
+                        watchRow(
+                            row,
+                            currentMonth: data.planSummary.currentMonth,
+                            pace: screen.activePeriodPace
+                        )
                     }
                 }
             }
         }
     }
 
-    private func watchRow(_ row: PlanRow, currentMonth: String) -> some View {
+    private func watchRow(_ row: PlanRow, currentMonth: String, pace: Double?) -> some View {
         let target = row.entry.target ?? 0
         let ratio = row.currentMonthProgress ?? 0
         let pct = Int((ratio * 100).rounded())
@@ -317,7 +410,7 @@ struct NowView: View {
             : (row.isNearCapCurrentMonth ? Theme.warn : Theme.good)
 
         return Button {
-            session.openPayments(month: currentMonth, category: row.entry.category)
+            session.activeSheet = .categoryDetail(name: row.entry.category, periodID: currentMonth)
         } label: {
             HStack(alignment: .center, spacing: 12) {
                 if !dynamicTypeSize.isAccessibilitySize {
@@ -330,7 +423,7 @@ struct NowView: View {
                             Text(row.entry.category)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
-                            Text("\(Money.yen(row.currentMonthSpent)) / \(Money.yen(target)) · \(pct)%")
+                            Text("\(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked)) / \(MaskedMoney.yen(target, masked: privacyMasked)) · \(pct)%")
                                 .font(.caption.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink2)
@@ -342,17 +435,17 @@ struct NowView: View {
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
                             Spacer(minLength: 8)
-                            Text("\(Money.yen(row.currentMonthSpent))")
+                            Text(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked))
                                 .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink)
-                            Text("/ \(Money.yen(target))")
+                            Text("/ \(MaskedMoney.yen(target, masked: privacyMasked))")
                                 .font(.caption)
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.muted)
                         }
                     }
-                    ProgressMeter(ratio: ratio, tint: tint, height: 6)
+                    ProgressMeter(ratio: ratio, tint: tint, height: 6, paceRatio: pace)
                 }
             }
             .contentShape(Rectangle())
@@ -635,7 +728,13 @@ struct NowView: View {
                                 HairlineDivider()
                                     .padding(.vertical, 12)
                             }
-                            debtRow(debt)
+                            Button {
+                                session.activeSheet = .debtDetail(debt)
+                            } label: {
+                                debtRow(debt)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -798,7 +897,13 @@ struct NowView: View {
                                 HairlineDivider()
                                     .padding(.vertical, 10)
                             }
-                            subscriptionRow(item)
+                            Button {
+                                session.activeSheet = .subscriptionDetail(item)
+                            } label: {
+                                subscriptionRow(item)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -833,8 +938,14 @@ struct NowView: View {
                                     HairlineDivider()
                                         .padding(.vertical, 10)
                                 }
-                                subscriptionRow(item)
-                                    .opacity(0.62)
+                                Button {
+                                    session.activeSheet = .subscriptionDetail(item)
+                                } label: {
+                                    subscriptionRow(item)
+                                        .opacity(0.62)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -914,12 +1025,17 @@ struct NowView: View {
 
 struct PaydayHeroCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
 
     let payday: PaydayView
     let breakdown: PaydayBreakdown?
     let spent: Int?
     let lastPayday: String?
     let pendingCount: Int
+    var onTapBills: () -> Void = {}
+    var onTapDayToDay: () -> Void = {}
+    var onTapRunway: () -> Void = {}
+    var onTogglePrivacy: () -> Void = {}
 
     private var cycleProgress: Double {
         let totalDays: Int = {
@@ -941,7 +1057,7 @@ struct PaydayHeroCard: View {
         if let b = breakdown, b.paidBillsCount > 0 || b.remainingBillsCount > 0 {
             var parts: [String] = []
             if b.paidBillsCount > 0 { parts.append("\(b.paidBillsCount) paid") }
-            if b.remainingBillsCount > 0 { parts.append("\(b.remainingBillsCount) left · \(Money.yen(b.remainingBillsSum))") }
+            if b.remainingBillsCount > 0 { parts.append("\(b.remainingBillsCount) left · \(MaskedMoney.yen(b.remainingBillsSum, masked: privacyMasked))") }
             return parts.joined(separator: " · ")
         }
         let count = payday.outs.count
@@ -951,43 +1067,49 @@ struct PaydayHeroCard: View {
     var body: some View {
         HeroVaultCard(accentTint: payday.left < 0 ? Theme.heroCoral : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 16) {
-                // Header + Sculpted Cycle Ring
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 10) {
-                        SectionLabel("Until payday", symbol: "calendar", color: Theme.heroInkMuted)
-                        HeroMoneyText(
-                            amount: payday.left,
-                            color: payday.left < 0 ? Theme.heroCoral : Theme.heroInk
-                        )
-                        QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .hero)
-                        Text("To \(DayText.long(payday.next.date)) · left after scheduled bills")
-                            .font(.footnote)
-                            .foregroundStyle(Theme.heroInkMuted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 6) {
+                // Header + Sculpted Cycle Ring (long-press hero balance toggles train privacy mask)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 10) {
                             SectionLabel("Until payday", symbol: "calendar", color: Theme.heroInkMuted)
                             HeroMoneyText(
                                 amount: payday.left,
                                 color: payday.left < 0 ? Theme.heroCoral : Theme.heroInk
                             )
-                            Text("To \(DayText.long(payday.next.date)) · after bills")
+                            QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .hero)
+                            Text("To \(DayText.long(payday.next.date)) · left after scheduled bills")
                                 .font(.footnote)
                                 .foregroundStyle(Theme.heroInkMuted)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Spacer(minLength: 8)
-                        CycleRingView(
-                            progress: cycleProgress,
-                            valueText: payday.daysToPayday == 0 ? "0" : "\(payday.daysToPayday)",
-                            unitText: payday.daysToPayday == 1 ? "day" : "days",
-                            fillColor: payday.left < 0 ? Theme.heroCoral : Theme.heroAccent,
-                            size: 62,
-                            lineWidth: 4.5
-                        )
+                    } else {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                SectionLabel("Until payday", symbol: "calendar", color: Theme.heroInkMuted)
+                                HeroMoneyText(
+                                    amount: payday.left,
+                                    color: payday.left < 0 ? Theme.heroCoral : Theme.heroInk
+                                )
+                                Text("To \(DayText.long(payday.next.date)) · after bills")
+                                    .font(.footnote)
+                                    .foregroundStyle(Theme.heroInkMuted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            CycleRingView(
+                                progress: cycleProgress,
+                                valueText: payday.daysToPayday == 0 ? "0" : "\(payday.daysToPayday)",
+                                unitText: payday.daysToPayday == 1 ? "day" : "days",
+                                fillColor: payday.left < 0 ? Theme.heroCoral : Theme.heroAccent,
+                                size: 62,
+                                lineWidth: 4.5
+                            )
+                        }
                     }
+                }
+                .contentShape(Rectangle())
+                .onLongPressGesture {
+                    onTogglePrivacy()
                 }
 
                 // Sculpted translucent allocation bar
@@ -998,16 +1120,16 @@ struct PaydayHeroCard: View {
                     onHeroSurface: true
                 )
 
-                // Frosted 2-up key tiles: Money in & Bills until payday
+                // Frosted 2-up key tiles: Money in & tappable Bills until payday
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
                         moneyInTile
-                        billsTile
+                        Button(action: onTapBills) { billsTile }.buttonStyle(.plain)
                     }
                 } else {
                     HStack(alignment: .top, spacing: 10) {
                         moneyInTile
-                        billsTile
+                        Button(action: onTapBills) { billsTile }.buttonStyle(.plain)
                     }
                 }
 
@@ -1018,13 +1140,13 @@ struct PaydayHeroCard: View {
                                 Text("Borrowing planned")
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(Theme.heroInkMuted)
-                                Text("Left if borrowed: \(Money.yen(payday.leftIfBorrowed))")
+                                Text("Left if borrowed: \(MaskedMoney.yen(payday.leftIfBorrowed, masked: privacyMasked))")
                                     .font(.caption2)
                                     .monospacedDigit()
                                     .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
                             }
                             Spacer(minLength: 8)
-                            Text(Money.signed(payday.borrowedSum))
+                            Text(MaskedMoney.signed(payday.borrowedSum, masked: privacyMasked))
                                 .font(.subheadline.weight(.bold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.heroCoral)
@@ -1032,89 +1154,124 @@ struct PaydayHeroCard: View {
                     }
                 }
 
-                // Day-to-day since payday & estimated remaining strip
+                // Tappable Day-to-day since payday strip -> jumps directly into filtered Payments
                 if let breakdown, let lastPayday {
-                    FrostedMetricTile {
-                        if dynamicTypeSize.isAccessibilitySize {
-                            VStack(alignment: .leading, spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Day-to-day since \(DayText.short(lastPayday))")
-                                        .font(.caption)
-                                        .foregroundStyle(Theme.heroInkMuted)
-                                    Text(Money.yen(breakdown.dayToDaySpentSincePayday))
-                                        .font(.subheadline.weight(.bold))
-                                        .monospacedDigit()
-                                        .foregroundStyle(Theme.heroInk)
-                                }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Estimated remaining")
-                                        .font(.caption)
-                                        .foregroundStyle(Theme.heroInkMuted)
-                                    Text(Money.yen(breakdown.estimatedRemainingDiscretionary))
-                                        .font(.subheadline.weight(.bold))
-                                        .monospacedDigit()
-                                        .foregroundStyle(
-                                            breakdown.estimatedRemainingDiscretionary < 0
-                                                ? Theme.heroCoral
-                                                : Theme.heroAccent
-                                        )
-                                }
-                                FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
-                                    QuietTag("Estimate", tone: .hero)
-                                    if pendingCount > 0 {
-                                        QuietTag("\(pendingCount) pending", tone: .hero)
-                                    }
-                                }
-                            }
-                        } else {
-                            HStack(alignment: .center, spacing: 10) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("Day-to-day since \(DayText.short(lastPayday))")
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(Theme.heroInkMuted)
-                                    HStack(spacing: 6) {
-                                        Text(Money.yen(breakdown.dayToDaySpentSincePayday))
+                    Button(action: onTapDayToDay) {
+                        FrostedMetricTile {
+                            if dynamicTypeSize.isAccessibilitySize {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Day-to-day since \(DayText.short(lastPayday))")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.heroInkMuted)
+                                        Text(MaskedMoney.yen(breakdown.dayToDaySpentSincePayday, masked: privacyMasked))
                                             .font(.subheadline.weight(.bold))
                                             .monospacedDigit()
                                             .foregroundStyle(Theme.heroInk)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Estimated remaining")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.heroInkMuted)
+                                        Text(MaskedMoney.yen(breakdown.estimatedRemainingDiscretionary, masked: privacyMasked))
+                                            .font(.subheadline.weight(.bold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(
+                                                breakdown.estimatedRemainingDiscretionary < 0
+                                                    ? Theme.heroCoral
+                                                    : Theme.heroAccent
+                                            )
+                                    }
+                                    FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
+                                        QuietTag("Estimate", tone: .hero)
                                         if pendingCount > 0 {
-                                            Text("· \(pendingCount) pending")
-                                                .font(.caption2)
-                                                .foregroundStyle(Theme.heroAccent)
+                                            QuietTag("\(pendingCount) pending", tone: .hero)
                                         }
                                     }
                                 }
-                                Spacer(minLength: 8)
-                                VStack(alignment: .trailing, spacing: 2) {
-                                    Text("Est. left")
-                                        .font(.caption2.weight(.medium))
-                                        .foregroundStyle(Theme.heroInkMuted)
-                                    Text(Money.yen(breakdown.estimatedRemainingDiscretionary))
-                                        .font(.subheadline.weight(.bold))
-                                        .monospacedDigit()
-                                        .foregroundStyle(
-                                            breakdown.estimatedRemainingDiscretionary < 0
-                                                ? Theme.heroCoral
-                                                : Theme.heroAccent
-                                        )
+                            } else {
+                                HStack(alignment: .center, spacing: 10) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        HStack(spacing: 4) {
+                                            Text("Day-to-day since \(DayText.short(lastPayday))")
+                                                .font(.caption2.weight(.medium))
+                                                .foregroundStyle(Theme.heroInkMuted)
+                                            Image(systemName: "chevron.right")
+                                                .font(.system(size: 8.5, weight: .bold))
+                                                .foregroundStyle(Theme.heroInkMuted.opacity(0.75))
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text(MaskedMoney.yen(breakdown.dayToDaySpentSincePayday, masked: privacyMasked))
+                                                .font(.subheadline.weight(.bold))
+                                                .monospacedDigit()
+                                                .foregroundStyle(Theme.heroInk)
+                                            if pendingCount > 0 {
+                                                Text("· \(pendingCount) pending")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(Theme.heroAccent)
+                                            }
+                                        }
+                                    }
+                                    Spacer(minLength: 8)
+                                    VStack(alignment: .trailing, spacing: 2) {
+                                        Text("Est. left")
+                                            .font(.caption2.weight(.medium))
+                                            .foregroundStyle(Theme.heroInkMuted)
+                                        Text(MaskedMoney.yen(breakdown.estimatedRemainingDiscretionary, masked: privacyMasked))
+                                            .font(.subheadline.weight(.bold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(
+                                                breakdown.estimatedRemainingDiscretionary < 0
+                                                    ? Theme.heroCoral
+                                                    : Theme.heroAccent
+                                            )
+                                    }
                                 }
                             }
                         }
                     }
+                    .buttonStyle(.plain)
                 } else if let spent, let lastPayday {
-                    FrostedMetricTile {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("Spent since \(DayText.short(lastPayday))")
-                                .font(.caption)
-                                .foregroundStyle(Theme.heroInkMuted)
-                            Spacer()
-                            Text(Money.yen(spent))
-                                .font(.subheadline.weight(.bold))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.heroInk)
+                    Button(action: onTapDayToDay) {
+                        FrostedMetricTile {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("Spent since \(DayText.short(lastPayday))")
+                                    .font(.caption)
+                                    .foregroundStyle(Theme.heroInkMuted)
+                                Spacer()
+                                Text(MaskedMoney.yen(spent, masked: privacyMasked))
+                                    .font(.subheadline.weight(.bold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.heroInk)
+                            }
                         }
                     }
+                    .buttonStyle(.plain)
                 }
+
+                // 90-Day Cash-Flow Runway & What-If Simulator entry pill
+                Button(action: onTapRunway) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "chart.xyaxis.line")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.heroAccent)
+                        Text("90-day runway & What-If simulator")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Theme.heroInk)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Theme.heroAccent)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Theme.heroAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.innerRadius, style: .continuous)
+                            .strokeBorder(Theme.heroAccent.opacity(0.26), lineWidth: 0.6)
+                    )
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -1124,7 +1281,7 @@ struct PaydayHeroCard: View {
             Text("Money in")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.heroInkMuted)
-            Text(Money.signed(payday.inSum))
+            Text(MaskedMoney.signed(payday.inSum, masked: privacyMasked))
                 .font(.subheadline.weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(Theme.heroAccent)
@@ -1141,10 +1298,16 @@ struct PaydayHeroCard: View {
 
     private var billsTile: some View {
         FrostedMetricTile {
-            Text("Bills until payday")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(Theme.heroInkMuted)
-            Text(Money.signed(-payday.outSum))
+            HStack(spacing: 4) {
+                Text("Bills until payday")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Theme.heroInkMuted)
+                Spacer(minLength: 2)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(Theme.heroInkMuted.opacity(0.75))
+            }
+            Text(MaskedMoney.signed(-payday.outSum, masked: privacyMasked))
                 .font(.subheadline.weight(.bold))
                 .monospacedDigit()
                 .foregroundStyle(Theme.heroInk)
