@@ -72,10 +72,17 @@ struct ReviewInboxSheet: View {
     private var headerCard: some View {
         HeroVaultCard(accentTint: items.isEmpty ? Theme.heroAccent : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    SectionLabel("Daily triage", symbol: "tray.full.fill", color: Theme.heroInkMuted)
-                    Spacer()
-                    QuietTag(items.isEmpty ? "Clear" : "\(items.count) left", tone: .hero)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SectionLabel("Daily triage", symbol: "tray.full.fill", color: Theme.heroInkMuted)
+                        QuietTag(items.isEmpty ? "Clear" : "\(items.count) left", tone: .hero)
+                    }
+                } else {
+                    HStack {
+                        SectionLabel("Daily triage", symbol: "tray.full.fill", color: Theme.heroInkMuted)
+                        Spacer()
+                        QuietTag(items.isEmpty ? "Clear" : "\(items.count) left", tone: .hero)
+                    }
                 }
                 Text(items.isEmpty ? "Ledger is clean" : "\(items.count) \(items.count == 1 ? "item" : "items") to check")
                     .font(.title2.weight(.bold))

@@ -6,6 +6,7 @@ import UIKit
 /// High-accuracy AI Vision + On-Device Apple Vision receipt, paper slip, and batch screenshot importer.
 struct ReceiptScanSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
@@ -158,12 +159,22 @@ struct ReceiptScanSheet: View {
     }
 
     private var captureHeroCard: some View {
-        HeroVaultCard {
+        let engineBadge = session.isDemo
+            ? "Claude · Sonnet"
+            : (hasConfiguredAIKey ? config.provider.displayName : "On-device OCR")
+        return HeroVaultCard {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    SectionLabel("Receipt & slip intake", symbol: "doc.text.viewfinder", color: Theme.heroInkMuted)
-                    Spacer()
-                    QuietTag(hasConfiguredAIKey ? config.provider.displayName : "On-device OCR", tone: .hero)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SectionLabel("Receipt & slip intake", symbol: "doc.text.viewfinder", color: Theme.heroInkMuted)
+                        QuietTag(engineBadge, tone: .hero)
+                    }
+                } else {
+                    HStack {
+                        SectionLabel("Receipt & slip intake", symbol: "doc.text.viewfinder", color: Theme.heroInkMuted)
+                        Spacer()
+                        QuietTag(engineBadge, tone: .hero)
+                    }
                 }
 
                 Text("Snap paper receipts, utility slips, or screenshots")

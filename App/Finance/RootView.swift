@@ -38,7 +38,11 @@ struct RootView: View {
                 case .targets:
                     if let data = session.resolvedData(from: model) {
                         NavigationStack {
-                            WhereToCutView(plan: data.planSummary, isPresentedModally: true)
+                            WhereToCutView(
+                                plan: data.planSummary,
+                                isPresentedModally: true,
+                                activePace: data.currentPeriod(for: .calendarMonth, today: session.today)?.paceProgress(on: session.today)
+                            )
                         }
                     } else {
                         NoDataView()

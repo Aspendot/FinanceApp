@@ -91,14 +91,25 @@ struct CashFlowRunwayView: View {
 
         return HeroVaultCard(accentTint: hasDip ? Theme.heroCoral : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    SectionLabel(
-                        activePoint.map { DayText.short($0.date) } ?? "Projected in 90 days",
-                        symbol: "chart.xyaxis.line",
-                        color: Theme.heroInkMuted
-                    )
-                    Spacer()
-                    QuietTag("Estimate", tone: .hero)
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 6) {
+                        SectionLabel(
+                            activePoint.map { DayText.short($0.date) } ?? "Projected in 90 days",
+                            symbol: "chart.xyaxis.line",
+                            color: Theme.heroInkMuted
+                        )
+                        QuietTag("Estimate", tone: .hero)
+                    }
+                } else {
+                    HStack {
+                        SectionLabel(
+                            activePoint.map { DayText.short($0.date) } ?? "Projected in 90 days",
+                            symbol: "chart.xyaxis.line",
+                            color: Theme.heroInkMuted
+                        )
+                        Spacer()
+                        QuietTag("Estimate", tone: .hero)
+                    }
                 }
 
                 HeroMoneyText(

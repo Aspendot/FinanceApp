@@ -87,7 +87,7 @@ struct WhereToCutView: View {
                 HStack {
                     SectionLabel("Active targets", symbol: "target")
                     Spacer()
-                    Text("Tap to open Payments")
+                    Text("Tap to edit cap")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                 }
