@@ -218,9 +218,9 @@ struct SpendingInsightsTests {
 
         #expect(breakdown.paidBillsSum == 82000)
         #expect(breakdown.remainingBillsSum == 9800)
-        // Excludes April Rent (82,000) from day-to-day spent since payday.
-        #expect(breakdown.dayToDaySpentSincePayday == 5500 + 12000 + 16500 + 1200 + 2400 + 2400)
-        #expect(breakdown.totalSpentSincePayday == breakdown.dayToDaySpentSincePayday + 82000)
+        // Excludes April Rent (82,000) and Subscriptions (5,500 + 1,200) so Day-to-day reconciles with Payments.
+        #expect(breakdown.dayToDaySpentSincePayday == 12000 + 16500 + 2400 + 2400)
+        #expect(breakdown.totalSpentSincePayday == breakdown.dayToDaySpentSincePayday + 5500 + 1200 + 82000)
         #expect(breakdown.estimatedRemainingDiscretionary == payday.left - breakdown.dayToDaySpentSincePayday)
     }
 }

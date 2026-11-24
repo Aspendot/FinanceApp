@@ -133,7 +133,10 @@ struct NowView: View {
                 if let bill = selectedBill {
                     let isPhoneChecked = session.resolvedData(from: model)?.phoneCheckedBillKeys
                         .contains(BillCheckoff.key(for: bill)) ?? false
-                    if bill.done != true || isPhoneChecked {
+                    let matchingReminder = model.localModifications.customReminders.first {
+                        BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: bill)
+                    }
+                    if bill.event != true && (bill.done != true || isPhoneChecked) {
                         Button(isPhoneChecked ? "Mark unpaid" : "Mark paid on phone") {
                             let target = bill
                             selectedBill = nil
@@ -141,10 +144,19 @@ struct NowView: View {
                             Task { await model.toggleBillCheckoff(for: target) }
                         }
                     }
-                    Button("Search past payments") {
-                        let query = bill.item.split(separator: " ").first.map(String.init) ?? bill.item
-                        selectedBill = nil
-                        session.openPayments(month: nil, category: nil, query: query)
+                    if bill.event != true {
+                        Button("Search past payments") {
+                            let query = bill.item.split(separator: " ").first.map(String.init) ?? bill.item
+                            selectedBill = nil
+                            session.openPayments(month: nil, category: nil, query: query)
+                        }
+                    }
+                    if let reminder = matchingReminder {
+                        Button("Delete reminder", role: .destructive) {
+                            selectedBill = nil
+                            guard !session.isDemo else { return }
+                            Task { try? await model.removeCustomReminder(id: reminder.id) }
+                        }
                     }
                     Button("Cancel", role: .cancel) {
                         selectedBill = nil
@@ -152,8 +164,9 @@ struct NowView: View {
                 }
             } message: {
                 if let bill = selectedBill {
-                    let amt = bill.amount == 0 ? "" : Money.payment(bill.amount) + " · "
-                    Text(amt + DayText.long(bill.date) + (bill.note.map { "\n\($0)" } ?? ""))
+                    let amt = bill.amount == 0 ? "" : MaskedMoney.payment(bill.amount, masked: privacyMasked) + " · "
+                    let noteText = bill.note.map { "\n\(MaskedMoney.redactText($0, masked: privacyMasked))" } ?? ""
+                    Text(amt + DayText.long(bill.date) + noteText)
                 }
             }
         }
@@ -213,20 +226,20 @@ struct NowView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if dynamicTypeSize.isAccessibilitySize {
                         QuietTag(alert.badge, tone: tone)
-                        Text(alert.title)
+                        Text(MaskedMoney.redactText(alert.title, masked: privacyMasked))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Theme.ink)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             QuietTag(alert.badge, tone: tone)
-                            Text(alert.title)
+                            Text(MaskedMoney.redactText(alert.title, masked: privacyMasked))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    Text(alert.detail)
+                    Text(MaskedMoney.redactText(alert.detail, masked: privacyMasked))
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -327,9 +340,11 @@ struct NowView: View {
                 },
                 onTapDayToDay: {
                     if let start = screen.lastPayday {
+                        let cycleEnd = JST.addingDays(-1, to: payday.next.date) ?? session.today
+                        let upperBound = max(start, cycleEnd)
                         session.openPayments(
                             layer: .dayToDay,
-                            dateRange: start...session.today,
+                            dateRange: start...upperBound,
                             dateRangeLabel: "Since \(DayText.short(start))"
                         )
                     } else {
@@ -494,7 +509,10 @@ struct NowView: View {
                             day: day,
                             phoneCheckedBillKeys: screen.phoneCheckedBillKeys,
                             onSelectEntry: { entry in
-                                if entry.event != true {
+                                let isCustomReminder = model.localModifications.customReminders.contains {
+                                    BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: entry)
+                                }
+                                if entry.event != true || isCustomReminder {
                                     selectedBill = entry
                                 }
                             }
@@ -593,7 +611,7 @@ struct NowView: View {
                     LedgerRow(
                         title: "Pending spending",
                         detail: nil,
-                        value: Money.yen(screen.pendingSpendingTotal),
+                        value: MaskedMoney.yen(screen.pendingSpendingTotal, masked: privacyMasked),
                         accessibilityValue: FinanceFormat.yenAccessibility(screen.pendingSpendingTotal),
                         valueColor: Theme.ink,
                         emphasized: true
@@ -627,7 +645,7 @@ struct NowView: View {
     }
 
     private func pendingPreviewRow(_ item: BudgetItem, counted: Bool) -> some View {
-        let amountText = Money.payment(item.amount)
+        let amountText = MaskedMoney.payment(item.amount, masked: privacyMasked)
         let amountColor = item.amount < 0 ? Theme.good : Theme.ink
 
         return Group {
@@ -789,7 +807,7 @@ struct NowView: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(Money.yen(debt.balance))
+                    Text(MaskedMoney.yen(debt.balance, masked: privacyMasked))
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.bad)
@@ -803,7 +821,7 @@ struct NowView: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                     Spacer(minLength: 8)
-                    Text(Money.yen(debt.balance))
+                    Text(MaskedMoney.yen(debt.balance, masked: privacyMasked))
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.bad)
@@ -816,7 +834,7 @@ struct NowView: View {
                 ProgressMeter(ratio: ratio, tint: Theme.bad, height: 6)
 
                 HStack {
-                    Text("\(pct)% of \(Money.yen(limit)) limit used")
+                    Text("\(pct)% of \(MaskedMoney.yen(limit, masked: privacyMasked)) limit used")
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(Theme.muted)
@@ -826,7 +844,7 @@ struct NowView: View {
             }
 
             if let lines = debt.lines, !lines.isEmpty {
-                Text(lines.joined(separator: " · "))
+                Text(MaskedMoney.redactText(lines.joined(separator: " · "), masked: privacyMasked))
                     .font(.caption)
                     .foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -858,7 +876,7 @@ struct NowView: View {
                     SectionLabel("Subscriptions", symbol: "repeat")
                     Spacer(minLength: 8)
                     if summary.monthlySavings > 0 {
-                        QuietTag("Saves \(Money.yen(summary.monthlySavings))/mo", tone: .good)
+                        QuietTag("Saves \(MaskedMoney.yen(summary.monthlySavings, masked: privacyMasked))/mo", tone: .good)
                     }
                 }
 
@@ -866,7 +884,7 @@ struct NowView: View {
                     if dynamicTypeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: 2) {
                             MetricMoneyText(amount: summary.runningMonthlyTotal, color: Theme.ink)
-                            Text("per month · \(summary.runningCount) running · \(Money.yen(summary.runningAnnualTotal))/yr")
+                            Text("per month · \(summary.runningCount) running · \(MaskedMoney.yen(summary.runningAnnualTotal, masked: privacyMasked))/yr")
                                 .font(.footnote)
                                 .foregroundStyle(Theme.muted)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -878,7 +896,7 @@ struct NowView: View {
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(Theme.muted)
                             Spacer(minLength: 8)
-                            Text("\(summary.runningCount) active · \(Money.yen(summary.runningAnnualTotal))/yr")
+                            Text("\(summary.runningCount) active · \(MaskedMoney.yen(summary.runningAnnualTotal, masked: privacyMasked))/yr")
                                 .font(.caption)
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.muted)
@@ -963,7 +981,7 @@ struct NowView: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(Money.yen(sub.monthly))
+                    Text(MaskedMoney.yen(sub.monthly, masked: privacyMasked))
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
                         .foregroundStyle(Theme.ink)
@@ -994,7 +1012,7 @@ struct NowView: View {
                                 .foregroundStyle(Theme.ink)
                                 .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 8)
-                            Text(Money.yen(sub.monthly))
+                            Text(MaskedMoney.yen(sub.monthly, masked: privacyMasked))
                                 .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.ink)
@@ -1324,6 +1342,7 @@ struct PaydayHeroCard: View {
 
 struct SplitBar: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
 
     let bills: Int
     let left: Int
@@ -1399,7 +1418,7 @@ struct SplitBar: View {
                             .fill(part.color)
                             .frame(width: 7, height: 7)
                             .accessibilityHidden(true)
-                        Text("\(part.id) \(Money.yen(part.amount))")
+                        Text("\(part.id) \(MaskedMoney.yen(part.amount, masked: privacyMasked))")
                             .font(.caption.weight(.medium))
                             .monospacedDigit()
                             .foregroundStyle(onHeroSurface ? Theme.heroInkMuted : Theme.muted)
@@ -1499,6 +1518,7 @@ struct LedgerRow: View {
 struct ComingUpDayRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.privacyMasked) private var privacyMasked
     let day: NowScreenModel.TimelineDay
     let phoneCheckedBillKeys: Set<String>
     let onSelectEntry: (TimelineEntry) -> Void
@@ -1642,7 +1662,7 @@ struct ComingUpDayRow: View {
         let isEvent = entry.event == true
         let moneyIn = entry.amount < 0 && entry.borrowed != true
         let isBorrowed = entry.borrowed == true
-        let amountText = (isEvent || entry.amount == 0) ? "" : Money.payment(entry.amount)
+        let amountText = (isEvent || entry.amount == 0) ? "" : MaskedMoney.payment(entry.amount, masked: privacyMasked)
         let amountColor: Color = {
             if isBorrowed { return Theme.bad }
             if moneyIn { return Theme.good }
@@ -1684,7 +1704,7 @@ struct ComingUpDayRow: View {
                             .allowsTightening(true)
                     }
                     if let note = entry.note, !note.isEmpty {
-                        Text(note)
+                        Text(MaskedMoney.redactText(note, masked: privacyMasked))
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1716,7 +1736,7 @@ struct ComingUpDayRow: View {
                         }
                     }
                     if let note = entry.note, !note.isEmpty {
-                        Text(note)
+                        Text(MaskedMoney.redactText(note, masked: privacyMasked))
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)

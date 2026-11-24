@@ -17,6 +17,7 @@ struct AskFinanceSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
@@ -225,20 +226,20 @@ struct AskFinanceSheet: View {
             FinanceCard {
                 VStack(alignment: .leading, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(turn.answer.headline)
+                        Text(MaskedMoney.redactText(turn.answer.headline, masked: privacyMasked))
                             .font(.system(size: 28, weight: .bold, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(Theme.ink)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text(turn.answer.subtitle)
+                        Text(MaskedMoney.redactText(turn.answer.subtitle, masked: privacyMasked))
                             .font(.footnote)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
                     if let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
-                        Text(summaryNote)
+                        Text(MaskedMoney.redactText(summaryNote, masked: privacyMasked))
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)
                             .padding(10)
@@ -258,13 +259,13 @@ struct AskFinanceSheet: View {
                                             .foregroundStyle(Theme.ink)
                                             .fixedSize(horizontal: false, vertical: true)
                                         if let detail = row.detail, !detail.isEmpty {
-                                            Text(detail)
+                                            Text(MaskedMoney.redactText(detail, masked: privacyMasked))
                                                 .font(.caption)
                                                 .foregroundStyle(Theme.muted)
                                         }
                                     }
                                     Spacer(minLength: 8)
-                                    Text(row.value)
+                                    Text(MaskedMoney.redactText(row.value, masked: privacyMasked))
                                         .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.ink)
@@ -275,7 +276,7 @@ struct AskFinanceSheet: View {
                     }
 
                     if let note = turn.answer.note, !note.isEmpty {
-                        Text(note)
+                        Text(MaskedMoney.redactText(note, masked: privacyMasked))
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)

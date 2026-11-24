@@ -11,6 +11,7 @@ struct SubscriptionDetailSheet: View {
 
     let subscription: SubscriptionItem
     @State private var inspectedPayment: InspectedPayment?
+    @State private var showingAddReminder = false
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
@@ -25,7 +26,9 @@ struct SubscriptionDetailSheet: View {
                             for: subscription,
                             allItems: data.allItems,
                             months: data.months,
-                            today: session.today
+                            today: session.today,
+                            config: data.bundle.layerConfig,
+                            layers: data.bundle.layers
                         )
                         heroCard(history: history)
                         historySparklineCard(history: history)
@@ -50,6 +53,14 @@ struct SubscriptionDetailSheet: View {
                 if let data = activeData {
                     PaymentDetailSheet(item: inspected.item, data: data)
                 }
+            }
+            .sheet(isPresented: $showingAddReminder) {
+                let nextDate = JST.addingDays(14, to: session.today) ?? session.today
+                AddReminderSheet(
+                    defaultTitle: "Review or cancel \(subscription.entry.name)",
+                    defaultDate: nextDate,
+                    defaultNote: "\(Money.yen(subscription.entry.monthly))/mo via \(subscription.entry.via ?? "card")"
+                )
             }
         }
     }
@@ -139,12 +150,7 @@ struct SubscriptionDetailSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel("Actions", symbol: "bolt.fill")
                 PrimaryActionButton(title: "Set cancel / review reminder") {
-                    let nextMonthDate = JST.addingDays(14, to: session.today) ?? session.today
-                    session.activeSheet = .addReminder(
-                        defaultTitle: "Review or cancel \(subscription.entry.name)",
-                        defaultDate: nextMonthDate,
-                        defaultNote: "\(Money.yen(subscription.entry.monthly))/mo via \(subscription.entry.via ?? "card")"
-                    )
+                    showingAddReminder = true
                 }
                 Button {
                     let token = subscription.entry.name.split(separator: " ").first.map(String.init) ?? subscription.entry.name
@@ -226,6 +232,7 @@ struct DebtDetailSheet: View {
     @State private var editingBalance = false
     @State private var balanceInput = ""
     @State private var inspectedPayment: InspectedPayment?
+    @State private var showingPayoffCalculator = false
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
@@ -273,6 +280,9 @@ struct DebtDetailSheet: View {
                 if let data = activeData {
                     PaymentDetailSheet(item: inspected.item, data: data)
                 }
+            }
+            .sheet(isPresented: $showingPayoffCalculator) {
+                DebtPayoffSheet()
             }
         }
     }
@@ -420,7 +430,7 @@ struct DebtDetailSheet: View {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel("Tools", symbol: "slider.horizontal.3")
                 PrimaryActionButton(title: "Open payoff calculator") {
-                    session.activeSheet = .debtPayoff
+                    showingPayoffCalculator = true
                 }
                 Button {
                     let query = debt.name.split(separator: " ").first.map(String.init) ?? debt.name

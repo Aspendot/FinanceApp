@@ -37,11 +37,27 @@ struct RootView: View {
                     DebtPayoffSheet()
                 case .targets:
                     if let data = session.resolvedData(from: model) {
+                        let mode = session.periodMode
+                        let periods = data.periods(for: mode)
+                        let totals = data.totals(for: mode)
+                        let selectedID = (mode == .payCycle ? session.monthsSelectedCycleID : session.monthsSelectedMonth)
+                            ?? periods.last?.id ?? ""
+                        let partialID = periods.last(where: { $0.isInProgress })?.id
+                        let resolvedPlanSummary = PlanSummary.compute(
+                            plan: data.effectivePlan,
+                            planWindow: mode == .calendarMonth ? data.bundle.planWindow : nil,
+                            totalsByMonth: totals,
+                            selectedMonth: selectedID,
+                            currentMonth: periods.last?.id ?? selectedID,
+                            inProgressMonth: partialID
+                        )
+                        let pace = periods.first(where: { $0.id == selectedID })?.paceProgress(on: session.today)
+                            ?? data.currentPeriod(for: mode, today: session.today)?.paceProgress(on: session.today)
                         NavigationStack {
                             WhereToCutView(
-                                plan: data.planSummary,
+                                plan: resolvedPlanSummary,
                                 isPresentedModally: true,
-                                activePace: data.currentPeriod(for: .calendarMonth, today: session.today)?.paceProgress(on: session.today)
+                                activePace: pace
                             )
                         }
                     } else {

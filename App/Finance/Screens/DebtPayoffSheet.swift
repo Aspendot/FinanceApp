@@ -4,6 +4,7 @@ import SwiftUI
 /// Interactive arithmetic payoff calculator for tracked debts (transparent loan math, no investment advice).
 struct DebtPayoffSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
@@ -95,7 +96,7 @@ struct DebtPayoffSheet: View {
                     QuietTag("Estimate", tone: .hero)
                 }
                 HeroMoneyText(amount: debt.balance, color: Theme.heroInk)
-                Text("Monthly interest at \(String(format: "%.1f", annualRate))% is about \(Money.yen(comparison.baseline.firstMonthInterest)) right now.")
+                Text("Monthly interest at \(String(format: "%.1f", annualRate))% is about \(MaskedMoney.yen(comparison.baseline.firstMonthInterest, masked: privacyMasked)) right now.")
                     .font(.footnote)
                     .foregroundStyle(Theme.heroInkMuted)
                     .fixedSize(horizontal: false, vertical: true)
@@ -130,7 +131,7 @@ struct DebtPayoffSheet: View {
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)
                         Spacer()
-                        Text(Money.yen(Int(monthlyPayment.rounded())))
+                        Text(MaskedMoney.yen(Int(monthlyPayment.rounded()), masked: privacyMasked))
                             .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(Theme.ink)
@@ -145,7 +146,7 @@ struct DebtPayoffSheet: View {
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)
                         Spacer()
-                        Text("+\(Money.yen(Int(extraPayment.rounded())))")
+                        Text("+\(MaskedMoney.yen(Int(extraPayment.rounded()), masked: privacyMasked))")
                             .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
                             .foregroundStyle(Theme.good)
@@ -166,14 +167,14 @@ struct DebtPayoffSheet: View {
                    let baseInterest = comparison.baseline.totalInterest
                 {
                     LedgerRow(
-                        title: "At \(Money.yen(comparison.baseline.monthlyPayment))/mo",
-                        detail: comparison.baseline.payoffMonth.map { "Paid off around \(DayText.month($0)) · interest \(Money.yen(baseInterest))" },
+                        title: "At \(MaskedMoney.yen(comparison.baseline.monthlyPayment, masked: privacyMasked))/mo",
+                        detail: comparison.baseline.payoffMonth.map { "Paid off around \(DayText.month($0)) · interest \(MaskedMoney.yen(baseInterest, masked: privacyMasked))" },
                         value: "\(baseMonths) mo",
                         accessibilityValue: "\(baseMonths) months",
                         valueColor: Theme.ink
                     )
                 } else {
-                    Text("At \(Money.yen(comparison.baseline.monthlyPayment))/mo, payment does not exceed monthly interest (\(Money.yen(comparison.baseline.firstMonthInterest))).")
+                    Text("At \(MaskedMoney.yen(comparison.baseline.monthlyPayment, masked: privacyMasked))/mo, payment does not exceed monthly interest (\(MaskedMoney.yen(comparison.baseline.firstMonthInterest, masked: privacyMasked))).")
                         .font(.footnote)
                         .foregroundStyle(Theme.bad)
                         .fixedSize(horizontal: false, vertical: true)
@@ -185,8 +186,8 @@ struct DebtPayoffSheet: View {
                        let accInterest = comparison.accelerated.totalInterest
                     {
                         LedgerRow(
-                            title: "With +\(Money.yen(Int(extraPayment.rounded())))/mo (\(Money.yen(comparison.accelerated.monthlyPayment))/mo)",
-                            detail: comparison.accelerated.payoffMonth.map { "Paid off around \(DayText.month($0)) · interest \(Money.yen(accInterest))" },
+                            title: "With +\(MaskedMoney.yen(Int(extraPayment.rounded()), masked: privacyMasked))/mo (\(MaskedMoney.yen(comparison.accelerated.monthlyPayment, masked: privacyMasked))/mo)",
+                            detail: comparison.accelerated.payoffMonth.map { "Paid off around \(DayText.month($0)) · interest \(MaskedMoney.yen(accInterest, masked: privacyMasked))" },
                             value: "\(accMonths) mo",
                             accessibilityValue: "\(accMonths) months",
                             valueColor: Theme.good,
@@ -208,7 +209,7 @@ struct DebtPayoffSheet: View {
                                     Text("Interest saved")
                                         .font(.caption2.weight(.medium))
                                         .foregroundStyle(Theme.muted)
-                                    Text(Money.yen(interestSaved))
+                                    Text(MaskedMoney.yen(interestSaved, masked: privacyMasked))
                                         .font(.headline.weight(.bold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.good)

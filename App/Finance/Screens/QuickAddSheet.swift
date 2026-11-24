@@ -151,7 +151,16 @@ struct QuickAddSheet: View {
                         }
                     }
 
-                    Picker("Category", selection: $selectedCategory) {
+                    Picker("Category", selection: Binding(
+                        get: { selectedCategory },
+                        set: { newCategory in
+                            selectedCategory = newCategory
+                            categoryManuallyPicked = true
+                            if let match = categoryOptions.first(where: { $0.category == newCategory }) {
+                                selectedGroup = match.group
+                            }
+                        }
+                    )) {
                         ForEach(categoryOptions, id: \.category) { option in
                             Text(option.category).tag(option.category)
                         }
@@ -161,12 +170,6 @@ struct QuickAddSheet: View {
                     }
                     .font(.subheadline)
                     .foregroundStyle(Theme.ink)
-                    .onChange(of: selectedCategory) { _, newCategory in
-                        categoryManuallyPicked = true
-                        if let match = categoryOptions.first(where: { $0.category == newCategory }) {
-                            selectedGroup = match.group
-                        }
-                    }
 
                     Picker("Source", selection: $source) {
                         ForEach(sourceOptions, id: \.self) { option in

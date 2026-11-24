@@ -413,7 +413,11 @@ public enum SpendingInsights {
         )
     }
 
-    /// Computes paid vs remaining bills and non-bill day-to-day spend since the last payday.
+    /// Computes paid vs remaining bills and Day-to-day spending since the last payday.
+    ///
+    /// Strictly counts the `Day-to-day` layer within `[lastPayday, payday.next.date)` so tapping
+    /// the Payday hero strip into Payments (`layer: .dayToDay`) reconciles to the exact yen and
+    /// never double-counts subscriptions already on the scheduled timeline.
     public static func paydayBreakdown(
         payday: PaydayView,
         lastPayday: String?,
@@ -427,15 +431,15 @@ public enum SpendingInsights {
         let expectedIn = payday.ins.filter { $0.done != true }
 
         let keys = layers.count >= 4 ? Array(layers.prefix(4).map(\.key)) : LayerConfig.defaultLayerKeys
-        let scheduledLayers: Set<String> = [keys[0], keys[1]] // Rent and Bills & taxes
+        let dayToDayLayer = keys[3]
 
         var dayToDaySpent = 0
         var totalSpent = 0
         if let start = lastPayday {
-            for item in items where item.date >= start {
+            for item in items where item.date >= start && item.date < payday.next.date {
                 guard let layer = config.resolvedLayer(for: item, layers: layers) else { continue }
                 totalSpent += item.amount
-                if !scheduledLayers.contains(layer) {
+                if layer == dayToDayLayer {
                     dayToDaySpent += item.amount
                 }
             }
@@ -700,20 +704,18 @@ public enum SpendingInsights {
                 $0.date >= cutoffDay && $0.amount > 0 && config.resolvedLayer(for: $0, layers: bundle.layers) != nil
             }
             for sub in offSubs {
-                let token = primarySubscriptionToken(sub.entry.name)
-                guard token.count >= 4 else { continue }
                 if let hit = recentCharges.first(where: { item in
-                    let m = TextFold.key(item.merchant)
-                    guard m.contains(token) else { return false }
-                    // Avoid matching unrelated purchases far from the subscription's monthly cost.
-                    if sub.entry.monthly > 0 {
-                        let ratio = Double(item.amount) / Double(sub.entry.monthly)
-                        return ratio >= 0.4 && ratio <= 2.5
-                    }
-                    return true
+                    SubscriptionHistory.matchesItem(
+                        item,
+                        for: sub.entry,
+                        config: config,
+                        layers: bundle.layers,
+                        allowAnnualMultiplier: false
+                    )
                 }) {
+                    let subKey = TextFold.key(sub.entry.name)
                     alerts.append(FinanceAlert(
-                        id: "resurrected:\(token):\(hit.date):\(hit.amount)",
+                        id: "resurrected:\(subKey):\(hit.date):\(hit.amount)",
                         kind: .cancelledSubscriptionCharge,
                         severity: .urgent,
                         title: "Possible charge on stopped subscription",
@@ -880,12 +882,5 @@ public enum SpendingInsights {
         }
 
         return results.sorted { $0.id < $1.id }
-    }
-
-    private static func primarySubscriptionToken(_ name: String) -> String {
-        // Strip parenthetical qualifiers like "(dating)" or "(Free plan, ...)".
-        let beforeParen = name.split(separator: "(").first.map(String.init) ?? name
-        let firstPart = beforeParen.split(separator: "·").first.map(String.init) ?? beforeParen
-        return TextFold.key(firstPart)
     }
 }

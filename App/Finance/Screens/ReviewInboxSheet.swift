@@ -9,7 +9,7 @@ struct ReviewInboxSheet: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
 
-    @State private var inspectedPayment: InspectedPayment?
+    @State private var inspectedEntry: ReviewQueueItem?
     @State private var demoClearedIDs: Set<String> = []
 
     private var activeData: FinanceData? {
@@ -61,9 +61,11 @@ struct ReviewInboxSheet: View {
                         .fontWeight(.semibold)
                 }
             }
-            .sheet(item: $inspectedPayment) { inspected in
-                if let data = activeData {
-                    PaymentDetailSheet(item: inspected.item, data: data)
+            .sheet(item: $inspectedEntry) { entry in
+                if let data = activeData, let item = entry.item {
+                    PaymentDetailSheet(item: item, data: data) {
+                        markSingleReviewed(entry.id)
+                    }
                 }
             }
         }
@@ -201,7 +203,7 @@ struct ReviewInboxSheet: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    excludeItem(entry: entry, item: item, label: "Work expense")
+                    tagWorkItem(entry: entry, item: item)
                 } label: {
                     Label("Work", systemImage: "briefcase")
                         .font(.caption.weight(.medium))
@@ -213,7 +215,7 @@ struct ReviewInboxSheet: View {
                 .buttonStyle(.plain)
 
                 Button {
-                    inspectedPayment = InspectedPayment(item: item)
+                    inspectedEntry = entry
                 } label: {
                     Text("Edit…")
                         .font(.caption.weight(.medium))
@@ -231,12 +233,12 @@ struct ReviewInboxSheet: View {
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 QuietTag(entry.reason.rawValue, tone: tone)
-                Text(alert.title)
+                Text(MaskedMoney.redactText(alert.title, masked: privacyMasked))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Theme.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text(alert.detail)
+            Text(MaskedMoney.redactText(alert.detail, masked: privacyMasked))
                 .font(.caption)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -306,6 +308,17 @@ struct ReviewInboxSheet: View {
         }
         Task {
             try? await model.excludeAsNonSpending(item: item, categoryLabel: label)
+            await model.markReviewed(keys: [entry.id])
+        }
+    }
+
+    private func tagWorkItem(entry: ReviewQueueItem, item: BudgetItem) {
+        if session.isDemo {
+            withAnimation { _ = demoClearedIDs.insert(entry.id) }
+            return
+        }
+        Task {
+            try? await model.tagAsWorkExpense(item: item)
             await model.markReviewed(keys: [entry.id])
         }
     }

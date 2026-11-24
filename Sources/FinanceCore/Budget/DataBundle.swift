@@ -124,6 +124,9 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
     public var event: Bool?
     public var label: String?
     public var match: TimelineMatch?
+    /// True when this entry represents a regular monthly recurring flow (salary or recurring bill),
+    /// false for one-off items, nil for legacy bundles that omit the field.
+    public var recurring: Bool?
 
     public init(
         date: String,
@@ -137,7 +140,8 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         estimate: Bool? = nil,
         event: Bool? = nil,
         label: String? = nil,
-        match: TimelineMatch? = nil
+        match: TimelineMatch? = nil,
+        recurring: Bool? = nil
     ) {
         self.date = date
         self.item = item
@@ -151,10 +155,11 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         self.event = event
         self.label = label
         self.match = match
+        self.recurring = recurring
     }
 
     private enum CodingKeys: String, CodingKey {
-        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label, match
+        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label, match, recurring
     }
 
     public init(from decoder: Decoder) throws {
@@ -171,6 +176,7 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         event = try c.decodeIfPresent(Bool.self, forKey: .event)
         label = try c.decodeIfPresent(String.self, forKey: .label)
         match = try c.decodeIfPresent(TimelineMatch.self, forKey: .match)
+        recurring = try c.decodeIfPresent(Bool.self, forKey: .recurring)
     }
 }
 
@@ -317,10 +323,33 @@ public struct LayerConfig: Codable, Sendable, Equatable {
     }
 
     func isNotSpending(group: String) -> Bool {
-        notSpendingGroups.contains(group)
+        let lower = group.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return notSpendingGroups.contains(group)
             || group == incomeGroup
             || group == peopleGroup
             || group == debtGroup
+            || lower == "excluded"
+            || lower == "transfers"
+            || lower == "work"
+    }
+
+    /// Non-spending group used when the user excludes a personal item (never lands in a Work group).
+    public var resolvedExcludedGroup: String {
+        if let explicit = notSpendingGroups.first(where: {
+            let l = $0.lowercased()
+            return l == "excluded" || l.contains("transfer")
+        }) {
+            return explicit
+        }
+        return "Excluded"
+    }
+
+    /// Non-spending group used when the user tags a reimbursable work expense.
+    public var resolvedWorkGroup: String {
+        if let explicit = notSpendingGroups.first(where: { $0.lowercased().contains("work") }) {
+            return explicit
+        }
+        return "Work"
     }
 
     public var resolvedIncomeGroup: String? {

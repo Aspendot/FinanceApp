@@ -13,6 +13,11 @@ struct WhereToCutView: View {
     var activePace: Double? = nil
 
     @State private var showSettled = false
+    @State private var inspectedCategory: String?
+
+    private struct SelectedCategoryID: Identifiable {
+        let id: String
+    }
 
     var body: some View {
         ScrollView {
@@ -38,6 +43,12 @@ struct WhereToCutView: View {
                 }
             }
         }
+        .sheet(item: Binding(
+            get: { inspectedCategory.map(SelectedCategoryID.init) },
+            set: { inspectedCategory = $0?.id }
+        )) { selected in
+            CategoryDetailSheet(categoryName: selected.id, periodID: plan.selectedMonth)
+        }
     }
 
     private var summaryCard: some View {
@@ -47,20 +58,20 @@ struct WhereToCutView: View {
 
                 HeroMoneyText(amount: plan.projectedTotal, color: Theme.heroInk)
 
-                Text("Down from \(Money.yen(plan.baselineTotal))/month baseline across active and completed cuts.")
+                Text("Down from \(MaskedMoney.yen(plan.baselineTotal, masked: privacyMasked))/month baseline across active and completed cuts.")
                     .font(.footnote)
                     .foregroundStyle(Theme.heroInkMuted)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
-                        heroStatTile(label: "Already cut", value: "\(Money.yen(plan.alreadyCut))/mo", color: Theme.heroAccent)
-                        heroStatTile(label: "Would save more", value: "\(Money.yen(plan.potentialSavings))/mo", color: Theme.heroInk)
+                        heroStatTile(label: "Already cut", value: "\(MaskedMoney.yen(plan.alreadyCut, masked: privacyMasked))/mo", color: Theme.heroAccent)
+                        heroStatTile(label: "Would save more", value: "\(MaskedMoney.yen(plan.potentialSavings, masked: privacyMasked))/mo", color: Theme.heroInk)
                     }
                 } else {
                     HStack(spacing: 10) {
-                        heroStatTile(label: "Already cut", value: "\(Money.yen(plan.alreadyCut))/mo", color: Theme.heroAccent)
-                        heroStatTile(label: "Would save more", value: "\(Money.yen(plan.potentialSavings))/mo", color: Theme.heroInk)
+                        heroStatTile(label: "Already cut", value: "\(MaskedMoney.yen(plan.alreadyCut, masked: privacyMasked))/mo", color: Theme.heroAccent)
+                        heroStatTile(label: "Would save more", value: "\(MaskedMoney.yen(plan.potentialSavings, masked: privacyMasked))/mo", color: Theme.heroInk)
                     }
                 }
             }
@@ -142,8 +153,7 @@ struct WhereToCutView: View {
 
     private func planRowView(_ row: PlanRow) -> some View {
         Button {
-            if isPresentedModally { dismiss() }
-            session.activeSheet = .categoryDetail(name: row.entry.category, periodID: plan.selectedMonth)
+            inspectedCategory = row.entry.category
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 if dynamicTypeSize.isAccessibilitySize {
@@ -217,14 +227,14 @@ struct WhereToCutView: View {
     private func savingText(_ row: PlanRow) -> some View {
         if let saving = row.monthlySaving {
             if saving > 0 {
-                QuietTag("Saves \(Money.yen(saving))", tone: .good)
+                QuietTag("Saves \(MaskedMoney.yen(saving, masked: privacyMasked))", tone: .good)
             } else if saving < 0 {
-                Text("+\(Money.yen(-saving))")
+                Text("+\(MaskedMoney.yen(-saving, masked: privacyMasked))")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)
             } else {
-                Text("¥0")
+                Text(privacyMasked ? "¥•••" : "¥0")
                     .font(.caption)
                     .monospacedDigit()
                     .foregroundStyle(Theme.muted)

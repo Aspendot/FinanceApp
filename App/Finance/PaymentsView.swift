@@ -13,7 +13,7 @@ struct PaymentsView: View {
     @State private var typeFilter: PaymentTypeFilter = .payments
     @State private var sortOrder: PaymentSortOrder = .newest
     @State private var inspectedPayment: InspectedPayment?
-    @State private var quickRecategorizeItem: BudgetItem?
+    @State private var quickRecategorizePayment: InspectedPayment?
 
     private var activeSelectedID: String? {
         session.periodMode == .payCycle ? session.paymentsCycleID : session.paymentsMonth
@@ -143,40 +143,9 @@ struct PaymentsView: View {
                     PaymentDetailSheet(item: inspected.item, data: data)
                 }
             }
-            .confirmationDialog(
-                quickRecategorizeItem?.merchant ?? "Change category",
-                isPresented: Binding(
-                    get: { quickRecategorizeItem != nil },
-                    set: { if !$0 { quickRecategorizeItem = nil } }
-                ),
-                titleVisibility: .visible
-            ) {
-                if let target = quickRecategorizeItem, let data = session.resolvedData(from: model) {
-                    ForEach(data.availableCategories.prefix(12), id: \.category) { pair in
-                        Button(pair.category) {
-                            let item = target
-                            quickRecategorizeItem = nil
-                            guard !session.isDemo else { return }
-                            Task {
-                                try? await model.setCategoryOverride(
-                                    for: item,
-                                    group: pair.group,
-                                    category: pair.category,
-                                    applyToAllFromMerchant: false
-                                )
-                            }
-                        }
-                    }
-                    Button("More options…") {
-                        let item = target
-                        quickRecategorizeItem = nil
-                        inspectedPayment = InspectedPayment(item: item)
-                    }
-                    Button("Cancel", role: .cancel) { quickRecategorizeItem = nil }
-                }
-            } message: {
-                if let target = quickRecategorizeItem {
-                    Text("\(Money.payment(target.amount)) · Swipe triage updates this payment immediately.")
+            .sheet(item: $quickRecategorizePayment) { inspected in
+                if let data = session.resolvedData(from: model) {
+                    QuickCategoryPickerSheet(item: inspected.item, data: data)
                 }
             }
         }
@@ -218,6 +187,12 @@ struct PaymentsView: View {
             } else {
                 ForEach(screen.sections) { section in
                     Section {
+                        // Non-sticky day header rendered inline so it scrolls cleanly with its porcelain card.
+                        daySectionHeader(section: section)
+                            .listRowInsets(EdgeInsets(top: 10, leading: Theme.screenPadding, bottom: 4, trailing: Theme.screenPadding))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+
                         ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
                             let isFirst = index == 0
                             let isLast = index == section.rows.count - 1
@@ -238,7 +213,7 @@ struct PaymentsView: View {
                             .listRowBackground(Color.clear)
                             .swipeActions(edge: .leading, allowsFullSwipe: true) {
                                 Button {
-                                    quickRecategorizeItem = row.value
+                                    quickRecategorizePayment = InspectedPayment(item: row.value)
                                 } label: {
                                     Label("Category", systemImage: "tag.fill")
                                 }
@@ -255,16 +230,13 @@ struct PaymentsView: View {
 
                                 Button {
                                     guard !session.isDemo else { return }
-                                    Task { try? await model.excludeAsNonSpending(item: row.value, categoryLabel: "Work expense") }
+                                    Task { try? await model.tagAsWorkExpense(item: row.value, categoryLabel: "Work expense") }
                                 } label: {
                                     Label("Work", systemImage: "briefcase.fill")
                                 }
                                 .tint(Color("LayerRent"))
                             }
                         }
-                    } header: {
-                        daySectionHeader(section: section)
-                            .textCase(nil)
                     }
                 }
             }
@@ -783,6 +755,120 @@ struct PaymentsView: View {
         session.paymentsDateRange = nil
         session.paymentsDateRangeLabel = nil
         session.paymentsOnlyUncategorized = false
+    }
+}
+
+/// Searchable, frequency-sorted category picker sheet launched by swipe-right triage in Payments.
+private struct QuickCategoryPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.privacyMasked) private var privacyMasked
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var session: AppSession
+
+    let item: BudgetItem
+    let data: FinanceData
+
+    @State private var searchText = ""
+    @State private var applyToAllMerchant = false
+
+    private var sortedCategories: [(group: String, category: String)] {
+        var counts: [String: Int] = [:]
+        for row in data.allItems where row.amount > 0 {
+            counts[row.category, default: 0] += 1
+        }
+        let ordered = data.availableCategories.sorted { a, b in
+            let ca = counts[a.category, default: 0]
+            let cb = counts[b.category, default: 0]
+            if ca != cb { return ca > cb }
+            return a.category.localizedCaseInsensitiveCompare(b.category) == .orderedAscending
+        }
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return ordered }
+        return ordered.filter {
+            $0.category.localizedCaseInsensitiveContains(q) || $0.group.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    HStack(spacing: 10) {
+                        CategoryBadge(category: item.category, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(item.merchant)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                            Text("\(DayText.short(item.date)) · \(MaskedMoney.payment(item.amount, masked: privacyMasked))")
+                                .font(.caption)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    Toggle("Apply to all payments at this shop", isOn: $applyToAllMerchant)
+                        .font(.subheadline)
+                        .tint(Theme.accent)
+                }
+                .listRowBackground(Theme.surface)
+
+                Section {
+                    ForEach(sortedCategories, id: \.category) { pair in
+                        Button {
+                            select(pair)
+                        } label: {
+                            HStack(spacing: 10) {
+                                CategoryBadge(category: pair.category, size: 28)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(pair.category)
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(Theme.ink)
+                                    Text(pair.group)
+                                        .font(.caption2)
+                                        .foregroundStyle(Theme.muted)
+                                }
+                                Spacer()
+                                if pair.category == item.category && pair.group == item.group {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(Theme.accent)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    SectionLabel("Categories (most used first)")
+                }
+                .listRowBackground(Theme.surface)
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(Theme.page)
+            .searchable(text: $searchText, prompt: "Filter categories")
+            .navigationTitle("Choose category")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func select(_ pair: (group: String, category: String)) {
+        if session.isDemo {
+            dismiss()
+            return
+        }
+        Task {
+            try? await model.setCategoryOverride(
+                for: item,
+                group: pair.group,
+                category: pair.category,
+                applyToAllFromMerchant: applyToAllMerchant
+            )
+            dismiss()
+        }
     }
 }
 
