@@ -450,11 +450,11 @@ struct CashFlowRunwayView: View {
     private func runwayChartAccessibility(forecast: CashFlowSummary) -> String {
         let start = MaskedMoney.accessibility(forecast.startingCashEstimate, masked: privacyMasked)
         let end = MaskedMoney.accessibility(
-            scenario.isBaseline ? forecast.endingBaselineCash : forecast.endingScenarioCash,
+            scenario.isBaseline ? forecast.baselineEndBalance : forecast.scenarioEndBalance,
             masked: privacyMasked
         )
-        let low = forecast.lowestBaselinePoint.map {
-            ", lowest point \(MaskedMoney.accessibility($0.baselineCash, masked: privacyMasked)) on \(DayText.short($0.date))"
+        let low = forecast.baselineLowest.map {
+            ", lowest point \(MaskedMoney.accessibility($0.baselineBalance, masked: privacyMasked)) on \(DayText.short($0.date))"
         } ?? ""
         return "90-day cash flow runway chart. Starting from \(start), projected to \(end)\(low)."
     }
