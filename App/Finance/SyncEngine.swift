@@ -183,7 +183,7 @@ actor SyncEngine {
                         let sourceLabel = bundle.sourceLabels[notice.source.rawValue] ?? notice.source.rawValue
                         let merchant = notice.merchant ?? ""
                         let isDiscreet: Bool = {
-                            guard let categorizer, !merchant.isEmpty else { return false }
+                            guard !merchant.isEmpty else { return false }
                             let classified = categorizer.categorize(
                                 merchant: merchant,
                                 amount: notice.amount ?? 0,
