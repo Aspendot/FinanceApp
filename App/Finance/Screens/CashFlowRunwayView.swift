@@ -50,7 +50,8 @@ struct CashFlowRunwayView: View {
                             config: data.bundle.layerConfig,
                             layers: data.bundle.layers,
                             scenario: scenario,
-                            startingCashOverride: resolvedStartingOverride
+                            startingCashOverride: resolvedStartingOverride,
+                            liveCash: data.liveCash
                         )
                         heroSummaryCard(forecast: forecast)
                         runwayChartCard(forecast: forecast)

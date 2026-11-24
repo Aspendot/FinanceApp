@@ -195,18 +195,57 @@ public struct DebtEntry: Codable, Sendable, Equatable {
     }
 }
 
+/// Confirmed bank account balance snapshot from the PC pipeline, updated live on the phone.
+public struct AccountBalance: Codable, Sendable, Equatable, Hashable {
+    /// Bundle source key for this bank account (e.g. `"mufg_bank"`).
+    public var source: String
+    /// Display name shown in the UI.
+    public var label: String
+    /// Confirmed closing balance in yen inclusive of all transactions on or before `asOf`.
+    public var balance: Int
+    /// Last statement date (`"YYYY-MM-DD"`) reflected in `balance`.
+    public var asOf: String
+    /// Debit card source keys whose unsettled notices immediately draw down this bank account.
+    /// Deferred credit cards billed monthly are omitted so they aren't subtracted twice.
+    public var debitNoticeSources: [String]?
+
+    public init(
+        source: String,
+        label: String,
+        balance: Int,
+        asOf: String,
+        debitNoticeSources: [String]? = nil
+    ) {
+        self.source = source
+        self.label = label
+        self.balance = balance
+        self.asOf = asOf
+        self.debitNoticeSources = debitNoticeSources
+    }
+}
+
 /// One recurring subscription entry in the bundle.
 public struct SubscriptionEntry: Codable, Sendable, Equatable {
     public var name: String
     public var monthly: Int
     public var via: String?
     public var status: String?
+    /// Optional date (`"YYYY-MM-DD"`) when a cancelled/stopped subscription was turned off,
+    /// so charges on or before that date don't raise false resurrected-charge alerts.
+    public var stoppedDate: String?
 
-    public init(name: String, monthly: Int, via: String? = nil, status: String? = nil) {
+    public init(
+        name: String,
+        monthly: Int,
+        via: String? = nil,
+        status: String? = nil,
+        stoppedDate: String? = nil
+    ) {
         self.name = name
         self.monthly = monthly
         self.via = via
         self.status = status
+        self.stoppedDate = stoppedDate
     }
 }
 
@@ -497,6 +536,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
     /// Optional per-source regex rules for extracting reference numbers and merchant
     /// prefixes from bank statement descriptions when matching notices.
     public var statementLineRules: [String: [StatementLineRule]]?
+    /// Optional confirmed bank account balance snapshots used to compute live cash until payday.
+    public var accountBalances: [AccountBalance]?
 
     public init(
         format: String = DataBundle.supportedFormat,
@@ -517,7 +558,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
         rules: RuleSet = RuleSet(),
         discreetCategories: [String]? = nil,
         noticeSourceMatches: [String: [String]]? = nil,
-        statementLineRules: [String: [StatementLineRule]]? = nil
+        statementLineRules: [String: [StatementLineRule]]? = nil,
+        accountBalances: [AccountBalance]? = nil
     ) {
         self.format = format
         self.generatedAt = generatedAt
@@ -538,12 +580,13 @@ public struct DataBundle: Codable, Sendable, Equatable {
         self.discreetCategories = discreetCategories
         self.noticeSourceMatches = noticeSourceMatches
         self.statementLineRules = statementLineRules
+        self.accountBalances = accountBalances
     }
 
     private enum CodingKeys: String, CodingKey {
         case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
         case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
-        case discreetCategories, noticeSourceMatches, statementLineRules
+        case discreetCategories, noticeSourceMatches, statementLineRules, accountBalances
     }
 
     public init(from decoder: Decoder) throws {
@@ -571,6 +614,7 @@ public struct DataBundle: Codable, Sendable, Equatable {
         discreetCategories = try c.decodeIfPresent([String].self, forKey: .discreetCategories)
         noticeSourceMatches = try c.decodeIfPresent([String: [String]].self, forKey: .noticeSourceMatches)
         statementLineRules = try c.decodeIfPresent([String: [StatementLineRule]].self, forKey: .statementLineRules)
+        accountBalances = try c.decodeIfPresent([AccountBalance].self, forKey: .accountBalances)
     }
 
     /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.

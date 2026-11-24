@@ -184,9 +184,11 @@ struct HeroVaultCard<Content: View>: View {
 
 /// Frosted translucent inset well designed for key figures inside `HeroVaultCard`.
 struct FrostedMetricTile<Content: View>: View {
+    private let fillHeight: Bool
     private let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(fillHeight: Bool = false, @ViewBuilder content: () -> Content) {
+        self.fillHeight = fillHeight
         self.content = content()
     }
 
@@ -197,7 +199,7 @@ struct FrostedMetricTile<Content: View>: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: fillHeight ? .infinity : nil, alignment: .topLeading)
         .background(Color.white.opacity(0.075), in: shape)
         .overlay(
             shape.strokeBorder(Color.white.opacity(0.10), lineWidth: 0.6)

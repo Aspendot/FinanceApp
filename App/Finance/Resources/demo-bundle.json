@@ -14,6 +14,9 @@
     "merpay": "Sample Wallet",
     "apple": "Sample App Store"
   },
+  "accountBalances": [
+    { "source": "sample_bank", "label": "Sample Bank", "balance": 168000, "asOf": "2026-04-12", "debitNoticeSources": ["mufg_debit", "docomo_debit"] }
+  ],
   "layers": [
     { "key": "Rent", "color": "#2a78d6" },
     { "key": "Bills & taxes", "color": "#eb6834" },
@@ -147,8 +150,8 @@
     { "name": "そらクラウド", "monthly": 1300, "via": "Sample App Store", "status": "Check" },
     { "name": "サンプル音楽", "monthly": 1080, "via": "Sample App Store", "status": "Keep" },
     { "name": "サンプル新聞", "monthly": 980, "via": "Sample Bank Card", "status": "Review" },
-    { "name": "サンプル動画プラン", "monthly": 1980, "via": "Sample App Store", "status": "Cancelled" },
-    { "name": "サンプル旧ジム", "monthly": 3500, "via": "Sample Bank Card", "status": "Stopped" }
+    { "name": "サンプル動画プラン", "monthly": 1980, "via": "Sample App Store", "status": "Cancelled", "stoppedDate": "2026-03-15" },
+    { "name": "サンプル旧ジム", "monthly": 3500, "via": "Sample Bank Card", "status": "Stopped", "stoppedDate": "2026-03-15" }
   ],
   "plan": [
     { "category": "Dining", "now": 16800, "target": 10000, "status": "Cut", "note": "Keep weekday lunches at home" },
