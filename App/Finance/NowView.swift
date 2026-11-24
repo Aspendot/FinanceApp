@@ -1800,6 +1800,7 @@ struct ComingUpDayRow: View {
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(dateColor)
                             .fixedSize(horizontal: false, vertical: true)
+                            .opacity(isDayHeaderDimmed ? 0.62 : 1.0)
                         if day.isToday {
                             QuietTag("Today", tone: .accent)
                         }
@@ -1813,6 +1814,7 @@ struct ComingUpDayRow: View {
             } else {
                 HStack(alignment: .top, spacing: 14) {
                     calendarTile
+                        .opacity(isDayHeaderDimmed ? 0.62 : 1.0)
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -1854,14 +1856,20 @@ struct ComingUpDayRow: View {
                 }
             }
         )
-        .opacity(hasOverdueUnpaidBill ? 1.0 : (day.isPast && !day.isToday ? 0.62 : 1.0))
     }
 
-    private var hasOverdueUnpaidBill: Bool {
-        day.isPast && !day.isToday && day.entries.contains { row in
-            let entry = row.value
-            return entry.done != true && entry.event != true && entry.borrowed != true && entry.cardBilled != true && entry.amount > 0
+    /// Dim a past day's date tile only when every entry on that day is settled (nothing overdue or open).
+    private var isDayHeaderDimmed: Bool {
+        guard day.isPast && !day.isToday else { return false }
+        return !day.entries.contains { row in
+            !isEntryDimmed(row.value)
         }
+    }
+
+    private func isEntryDimmed(_ entry: TimelineEntry) -> Bool {
+        if entry.done == true { return true }
+        if entry.event == true && day.isPast && !day.isToday { return true }
+        return false
     }
 
     private var calendarTile: some View {
@@ -2025,6 +2033,7 @@ struct ComingUpDayRow: View {
                     onSelectEntry(row.value)
                 } label: {
                     timelineEntryRow(row.value, remainingBalance: row.remainingBalance)
+                        .opacity(isEntryDimmed(row.value) ? 0.56 : 1.0)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
