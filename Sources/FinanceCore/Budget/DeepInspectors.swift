@@ -107,7 +107,7 @@ public struct SubscriptionHistory: Sendable, Equatable {
     }
 
     /// Matches a ledger `BudgetItem` to a `SubscriptionEntry` using folded vendor tokens,
-    /// parenthetical billing aliases (e.g. `(Anthropic)`, `(billed by KDDI)`), Japanese card
+    /// parenthetical billing aliases (e.g. `(SampleCorp)`, `(billed by Carrier)`), Japanese card
     /// descriptor synonyms, and tighter amount bounds so retail orders don't pollute subscription views.
     static func matchesItem(
         _ item: BudgetItem,
@@ -130,7 +130,7 @@ public struct SubscriptionHistory: Sendable, Equatable {
         let tokenHit = tokens.contains { token in
             guard !token.isEmpty else { return false }
             if Self.containsToken(token, in: foldedMerchant) { return true }
-            // Japanese bank debit rows often truncate ASCII descriptors to 8 chars (e.g. "ANTHROPI", "PONTAPAS").
+            // Japanese bank debit rows often truncate ASCII descriptors to 7-8 chars (e.g. "SAMPLECO").
             if token.count >= 7, token.allSatisfy(\.isASCII) {
                 let truncated = String(token.prefix(7))
                 if foldedMerchant.contains(truncated) { return true }
@@ -272,6 +272,8 @@ public struct DebtMonthlyFlow: Identifiable, Sendable, Equatable {
 public struct DebtHistory: Sendable, Equatable {
     public var debt: DebtEntry
     public var annualRatePercent: Double
+    /// True when the rate came from the debt's statement notes rather than the default 15% assumption.
+    public var hasExplicitRate: Bool
     public var estimatedMonthlyInterest: Int
     public var estimatedAnnualInterest: Int
     public var monthlyFlows: [DebtMonthlyFlow]
@@ -283,6 +285,7 @@ public struct DebtHistory: Sendable, Equatable {
     public init(
         debt: DebtEntry,
         annualRatePercent: Double,
+        hasExplicitRate: Bool = true,
         estimatedMonthlyInterest: Int,
         estimatedAnnualInterest: Int,
         monthlyFlows: [DebtMonthlyFlow],
@@ -293,6 +296,7 @@ public struct DebtHistory: Sendable, Equatable {
     ) {
         self.debt = debt
         self.annualRatePercent = annualRatePercent
+        self.hasExplicitRate = hasExplicitRate
         self.estimatedMonthlyInterest = estimatedMonthlyInterest
         self.estimatedAnnualInterest = estimatedAnnualInterest
         self.monthlyFlows = monthlyFlows
@@ -309,7 +313,8 @@ public struct DebtHistory: Sendable, Equatable {
         months: [String],
         today: String
     ) -> DebtHistory {
-        let rate = SpendingInsights.extractAnnualRate(from: debt.lines) ?? 15.0
+        let parsedRate = SpendingInsights.extractAnnualRate(from: debt.lines)
+        let rate = parsedRate ?? 15.0
         let monthlyInt = Int((Double(debt.balance) * rate / 100.0 / 12.0).rounded())
         let annualInt = Int((Double(debt.balance) * rate / 100.0).rounded())
 
@@ -351,6 +356,7 @@ public struct DebtHistory: Sendable, Equatable {
         return DebtHistory(
             debt: debt,
             annualRatePercent: rate,
+            hasExplicitRate: parsedRate != nil,
             estimatedMonthlyInterest: monthlyInt,
             estimatedAnnualInterest: annualInt,
             monthlyFlows: flows,

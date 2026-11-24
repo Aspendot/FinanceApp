@@ -37,6 +37,8 @@ struct AskFinanceSheet: View {
             totalsByMonth: data.totalsByMonth,
             timeline: data.timeline,
             payday: data.payday,
+            liveCash: data.liveCash,
+            effectiveDebts: data.effectiveDebts,
             planSummary: data.planSummary,
             subscriptionSummary: data.subscriptionSummary,
             today: session.today
@@ -47,8 +49,8 @@ struct AskFinanceSheet: View {
         NavigationStack {
             VStack(spacing: 0) {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+                    ScrollView(.vertical) {
+                        LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                             if let ctx = queryContext {
                                 if turns.isEmpty {
                                     introCard(context: ctx)
@@ -63,9 +65,10 @@ struct AskFinanceSheet: View {
                                 NoDataView()
                             }
                         }
-                        .padding(.horizontal, Theme.screenPadding)
-                        .padding(.vertical, 12)
+                        .verticalScrollPage()
                     }
+                    .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                    .scrollDismissesKeyboard(.interactively)
                     .onChange(of: turns.count) { _, _ in
                         if let lastID = turns.last?.id {
                             withAnimation(.easeOut(duration: 0.2)) {
@@ -238,7 +241,7 @@ struct AskFinanceSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
+                    if !privacyMasked, let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
                         Text(MaskedMoney.redactText(summaryNote, masked: privacyMasked))
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)

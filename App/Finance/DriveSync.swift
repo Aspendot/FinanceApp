@@ -196,9 +196,11 @@ enum DriveSync {
     static func saveKey(_ key: DriveSyncKey) throws {
         try KeychainDriveKeyStore().save(key)
         var state = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
-        // Force a fresh check with the newly paired key if a file was previously skipped.
+        // Force both a fresh bundle check and re-encryption of phone edits under the new key.
         state.lastImportedMD5 = nil
+        state.lastPushedEditsHash = nil
         state.lastErrorMessage = nil
+        state.lastPushErrorMessage = nil
         try? DriveSyncStore.saveState(state)
     }
 

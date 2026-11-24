@@ -37,7 +37,9 @@ enum PaymentNotifications {
         let amount = Money.payment(alert.amount)
         if alert.isDecline == true {
             let amountLabel = alert.amount == 0 ? "Payment declined" : "Declined · \(amount)"
-            content.title = hasShop ? "\(amountLabel) · \(alert.merchant)" : "\(amountLabel) · \(alert.sourceLabel)"
+            content.title = (alert.isDiscreet || !hasShop)
+                ? "\(amountLabel) · \(alert.sourceLabel)"
+                : "\(amountLabel) · \(alert.merchant)"
             content.body = "\(alert.sourceLabel) · payment could not go through"
             return request(id: "decline-\(alert.messageID)", content: content)
         }
@@ -104,6 +106,8 @@ actor SyncEngine {
     private static let defaultMoneyForwardLookbackDays = 30
 
     private var inFlight = false
+    private var pushInFlight = false
+    private var sessionGeneration: UInt64 = 0
 
     private enum RaceOutcome<T: Sendable>: Sendable {
         case finished(Result<T, any Error>)
@@ -177,12 +181,24 @@ actor SyncEngine {
                 if prefs.declineAlertsEnabled {
                     for notice in freshNotices where notice.kind == .decline && queuedIDs.insert(notice.messageID).inserted {
                         let sourceLabel = bundle.sourceLabels[notice.source.rawValue] ?? notice.source.rawValue
+                        let merchant = notice.merchant ?? ""
+                        let isDiscreet: Bool = {
+                            guard !merchant.isEmpty else { return false }
+                            let classified = categorizer.categorize(
+                                merchant: merchant,
+                                amount: notice.amount ?? 0,
+                                date: notice.day
+                            )
+                            return discreetCategories.contains(
+                                classified.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                            )
+                        }()
                         nextState.alertQueue.append(PendingPaymentAlert(
                             messageID: notice.messageID,
                             amount: notice.amount ?? 0,
-                            merchant: notice.merchant ?? "",
+                            merchant: isDiscreet ? "" : merchant,
                             sourceLabel: sourceLabel,
-                            isDiscreet: false,
+                            isDiscreet: isDiscreet,
                             isConfirmed: false,
                             isDecline: true
                         ))
@@ -350,7 +366,15 @@ actor SyncEngine {
     }
 
     /// Uploads encrypted `phone-edits.fnb` to Google Drive immediately when Drive sync is paired.
+    /// Serialized against concurrent pushes and gated on `sessionGeneration` so sign-out cannot be undone.
     func pushLocalModificationsNow(force: Bool = false) async -> Result<DriveSync.PushOutcome, any Error> {
+        guard !pushInFlight, !inFlight else {
+            return .success(.unchanged)
+        }
+        pushInFlight = true
+        defer { pushInFlight = false }
+        let generation = sessionGeneration
+
         guard let clientID = GmailSync.clientID else {
             return .failure(GoogleDriveClientError.notSignedIn)
         }
@@ -381,6 +405,12 @@ actor SyncEngine {
                 force: force,
                 now: Date()
             )
+            // If the user signed out while this push was suspended, re-clear state rather than resurrecting it.
+            if sessionGeneration != generation {
+                try? DriveSyncStore.clearState()
+                try? KeychainTokenStore().clear()
+                return .failure(GoogleDriveClientError.notSignedIn)
+            }
             return .success(outcome)
         } catch {
             return .failure(error)
@@ -391,6 +421,7 @@ actor SyncEngine {
     func clearForSignOut() async throws {
         guard !inFlight else { throw GmailSync.SyncProblem.busy }
         inFlight = true
+        sessionGeneration &+= 1
         defer { inFlight = false }
         try KeychainTokenStore().clear()
         FinanceData.publishWidget(.placeholder, force: true)

@@ -87,7 +87,8 @@ enum AppleReceiptParser {
             return .quarantined("Apple: invoice without a subtotal and tax")
         }
         let footer = lines.firstIndex { $0.hasPrefix("You can view") } ?? lines.count
-        guard let paid = lines[taxLine.index + 1 ..< footer].reversed().lazy.compactMap({ Yen.parse($0) }).first,
+        guard taxLine.index + 1 < footer,
+              let paid = lines[taxLine.index + 1 ..< footer].reversed().lazy.compactMap({ Yen.parse($0) }).first,
               paid == subtotal + tax
         else {
             return .quarantined("Apple: invoice amounts do not agree")

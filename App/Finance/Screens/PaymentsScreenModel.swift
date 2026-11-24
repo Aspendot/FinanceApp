@@ -44,6 +44,12 @@ struct PaymentsScreenModel: Sendable {
         let count: Int
     }
 
+    struct LayerSlice: Identifiable, Sendable {
+        var id: SpendingLayer { layer }
+        let layer: SpendingLayer
+        let sum: Int
+    }
+
     let periodMode: BudgetPeriodMode
     let periods: [BudgetPeriod]
     let selectedPeriod: BudgetPeriod?
@@ -52,6 +58,7 @@ struct PaymentsScreenModel: Sendable {
     let categories: [CategoryOption]
     let sources: [String]
     let sections: [DaySection]
+    let layerSlices: [LayerSlice]
     let totalRows: Int
     let spendingRowCount: Int
     let excludedRowCount: Int
@@ -169,11 +176,16 @@ struct PaymentsScreenModel: Sendable {
                 return false
             }
             if !trimmedQuery.isEmpty {
-                let haystack = item.merchant + " " + item.category + " " + item.source
-                if haystack.localizedCaseInsensitiveContains(trimmedQuery) {
+                if item.merchant.localizedCaseInsensitiveContains(trimmedQuery)
+                    || item.category.localizedCaseInsensitiveContains(trimmedQuery)
+                    || item.source.localizedCaseInsensitiveContains(trimmedQuery)
+                {
                     return true
                 }
-                if !foldedQuery.isEmpty && TextFold.key(haystack).contains(foldedQuery) {
+                if !foldedQuery.isEmpty,
+                   let folded = data.foldedSearchByRowID[row.id],
+                   folded.contains(foldedQuery)
+                {
                     return true
                 }
                 return false
@@ -186,9 +198,26 @@ struct PaymentsScreenModel: Sendable {
         self.spendingRowCount = spendingRows.count
         self.excludedRowCount = filtered.filter { data.layer(of: $0.value) == nil && $0.value.group != incomeGroup }.count
         self.countedSpending = spendingRows.reduce(0) { $0 + $1.value.amount }
-        self.incomeTotal = -filtered.filter { $0.value.group == incomeGroup }.reduce(0) { $0 + $1.value.amount }
+        let incomeRows = filtered.filter { $0.value.group == incomeGroup }
+        self.incomeTotal = -incomeRows.reduce(0) { $0 + $1.value.amount }
         self.pendingCount = filtered.filter { $0.value.isPending }.count
         self.manualCount = filtered.filter { data.isLocalItem($0.value) }.count
+
+        if typeFilter == .income {
+            self.layerSlices = []
+        } else {
+            var totals: [SpendingLayer: Int] = [:]
+            for row in spendingRows where row.value.amount > 0 {
+                if let layerKey = data.layer(of: row.value) {
+                    let layer = SpendingLayer.resolve(key: layerKey, bundleLayers: bundleLayers)
+                    totals[layer, default: 0] += row.value.amount
+                }
+            }
+            self.layerSlices = SpendingLayer.allCases.compactMap { layer in
+                let val = totals[layer, default: 0]
+                return val > 0 ? LayerSlice(layer: layer, sum: val) : nil
+            }
+        }
 
         if sortOrder == .largest {
             let sortedByAmount = filtered.sorted {

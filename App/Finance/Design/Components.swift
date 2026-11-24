@@ -13,7 +13,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Formats yen figures cleanly while respecting the 1-tap Train Privacy Mask.
+/// Formats yen figures cleanly while respecting the 1-tap Train Privacy Mask (visual & VoiceOver).
 enum MaskedMoney {
     static func yen(_ value: Int, masked: Bool) -> String {
         masked ? "¥•••,•••" : Money.yen(value)
@@ -29,18 +29,54 @@ enum MaskedMoney {
         return value < 0 ? "−¥•••,•••" : "+¥•••,•••"
     }
 
-    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
+    static func accessibility(_ value: Int, signed: Bool = false, masked: Bool) -> String {
+        masked ? "Hidden amount" : FinanceFormat.yenAccessibility(value, signed: signed)
+    }
 
-    /// Redacts any inline yen figures inside alert or Q&A strings when privacy mode is active.
+    static func paymentAccessibility(_ value: Int, masked: Bool) -> String {
+        masked ? "Hidden amount" : FinanceFormat.paymentAccessibility(value)
+    }
+
+    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
+    private static let wordYenPattern = try? NSRegularExpression(pattern: #"\b[0-9][0-9,]*\s*(?:yen|JPY|円)\b"#, options: [.caseInsensitive])
+
+    /// Redacts any inline yen figures inside alert, note, or Q&A strings when privacy mode is active.
     static func redactText(_ text: String, masked: Bool) -> String {
-        guard masked, let regex = yenPattern else { return text }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "¥•••,•••")
+        guard masked else { return text }
+        var out = text
+        if let regex = yenPattern {
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
+        }
+        if let regex = wordYenPattern {
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
+        }
+        return out
     }
 }
 
-/// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature,
-/// fine hairline border, specular dark-mode rim, and whisper-soft ambient depth.
+/// Reference-type single-slot memoization box held in `@State` so SwiftUI views build heavy derived
+/// screen models at most ONCE per unique input key without triggering a second `.onChange` render pass.
+@MainActor
+final class ScreenModelCache<Key: Equatable, Value> {
+    private var key: Key?
+    private var value: Value?
+
+    func get(for newKey: Key, build: () -> Value) -> Value {
+        if let key, key == newKey, let value {
+            return value
+        }
+        let built = build()
+        self.key = newKey
+        self.value = built
+        return built
+    }
+}
+
+/// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature
+/// and fine hairline / specular rim. Shadows stay reserved for `HeroVaultCard` to preserve
+/// visual hierarchy and fast scroll frame pacing.
 struct FinanceCard<Content: View>: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
@@ -78,25 +114,9 @@ struct FinanceCard<Content: View>: View {
                         lineWidth: 0.75
                     )
                 } else {
-                    shape.strokeBorder(Theme.line.opacity(0.75), lineWidth: hairline)
+                    shape.strokeBorder(Theme.line.opacity(0.82), lineWidth: hairline)
                 }
             }
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.black.opacity(0.32)
-                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.055),
-            radius: colorScheme == .dark ? 12 : 16,
-            x: 0,
-            y: colorScheme == .dark ? 6 : 6
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.clear
-                : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.03),
-            radius: 2,
-            x: 0,
-            y: 1
         )
     }
 }
@@ -127,28 +147,40 @@ struct HeroVaultCard<Content: View>: View {
         }
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
+        .background {
             ZStack {
-                LinearGradient(
-                    colors: [Theme.heroTop, Theme.heroMid, Theme.heroBottom],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                RadialGradient(
-                    colors: [accentTint.opacity(0.22), Color.clear],
-                    center: .topTrailing,
-                    startRadius: 8,
-                    endRadius: 240
-                )
-                RadialGradient(
-                    colors: [Color.white.opacity(0.05), Color.clear],
-                    center: .topLeading,
-                    startRadius: 2,
-                    endRadius: 160
-                )
+                shape
+                    .fill(Theme.heroBottom)
+                    .shadow(
+                        color: colorScheme == .dark
+                            ? Color.black.opacity(0.45)
+                            : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.22),
+                        radius: 16,
+                        x: 0,
+                        y: 8
+                    )
+                ZStack {
+                    LinearGradient(
+                        colors: [Theme.heroTop, Theme.heroMid, Theme.heroBottom],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    RadialGradient(
+                        colors: [accentTint.opacity(0.22), Color.clear],
+                        center: .topTrailing,
+                        startRadius: 8,
+                        endRadius: 240
+                    )
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.05), Color.clear],
+                        center: .topLeading,
+                        startRadius: 2,
+                        endRadius: 160
+                    )
+                }
+                .clipShape(shape)
             }
-            .clipShape(shape)
-        )
+        }
         .overlay(
             shape.strokeBorder(
                 LinearGradient(
@@ -162,22 +194,6 @@ struct HeroVaultCard<Content: View>: View {
                 ),
                 lineWidth: 0.9
             )
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.black.opacity(0.50)
-                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.24),
-            radius: 22,
-            x: 0,
-            y: 12
-        )
-        .shadow(
-            color: colorScheme == .dark
-                ? Color.clear
-                : Color(red: 0.03, green: 0.13, blue: 0.09).opacity(0.08),
-            radius: 4,
-            x: 0,
-            y: 2
         )
     }
 }
@@ -449,6 +465,7 @@ struct ProgressMeter: View {
                 }
             }
             .frame(maxHeight: .infinity, alignment: .center)
+            .clipped()
         }
         .frame(height: hasNotch ? height + 6 : height)
         .accessibilityHidden(true)
@@ -507,7 +524,7 @@ struct QuietTag: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(foreground)
             .lineLimit(1)
-            .minimumScaleFactor(isAccessibility ? 0.5 : 1.0)
+            .minimumScaleFactor(isAccessibility ? 0.8 : 1.0)
             .allowsTightening(isAccessibility)
             .padding(.horizontal, isAccessibility ? 12 : 9)
             .padding(.vertical, isAccessibility ? 4 : 3.5)
@@ -524,7 +541,7 @@ struct QuietTag: View {
         case .accent: return Theme.accent
         case .good: return Theme.good
         case .bad: return Theme.bad
-        case .warn: return Theme.warn
+        case .warn: return Theme.warnText
         case .info: return Color("LayerRent")
         case .hero: return Theme.heroAccent
         }
@@ -570,15 +587,18 @@ struct FilterChip: View {
                 .foregroundStyle(selectedForeground)
                 .padding(.horizontal, 15)
                 .padding(.vertical, 8.5)
-                .background(
-                    Group {
-                        if isSelected {
-                            Capsule().fill(Theme.accent)
-                        } else {
-                            Capsule().fill(Theme.surface)
-                        }
-                    }
-                )
+                .background {
+                    Capsule()
+                        .fill(isSelected ? Theme.accent : Theme.surface)
+                        .shadow(
+                            color: isSelected
+                                ? Theme.accent.opacity(colorScheme == .dark ? 0.24 : 0.20)
+                                : Color.clear,
+                            radius: 6,
+                            x: 0,
+                            y: 2
+                        )
+                }
                 .overlay(
                     Capsule().strokeBorder(
                         isSelected
@@ -586,14 +606,6 @@ struct FilterChip: View {
                             : Theme.line.opacity(colorScheme == .dark ? 0.9 : 0.8),
                         lineWidth: isSelected ? 0.6 : (1.0 / max(displayScale, 1))
                     )
-                )
-                .shadow(
-                    color: isSelected
-                        ? Theme.accent.opacity(colorScheme == .dark ? 0.28 : 0.24)
-                        : Color.black.opacity(colorScheme == .dark ? 0.16 : 0.03),
-                    radius: isSelected ? 7 : 4,
-                    x: 0,
-                    y: isSelected ? 3 : 1
                 )
                 .frame(minHeight: Theme.minTouchTarget)
                 .contentShape(Rectangle())
@@ -715,22 +727,25 @@ struct PrimaryActionButton: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, minHeight: Theme.minTouchTarget)
-                .background(background, in: shape)
+                .background {
+                    shape
+                        .fill(background)
+                        .shadow(
+                            color: isEnabled ? Theme.accent.opacity(colorScheme == .dark ? 0.22 : 0.20) : .clear,
+                            radius: 7,
+                            x: 0,
+                            y: 3
+                        )
+                }
                 .overlay(
                     shape.strokeBorder(
                         isEnabled ? Color.white.opacity(0.16) : Color.clear,
                         lineWidth: 0.6
                     )
                 )
-                .shadow(
-                    color: isEnabled ? Theme.accent.opacity(colorScheme == .dark ? 0.24 : 0.22) : .clear,
-                    radius: 8,
-                    x: 0,
-                    y: 4
-                )
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileCardButtonStyle())
     }
 
     private var foreground: Color {
@@ -828,10 +843,32 @@ struct StateCard: View {
                         .frame(minHeight: Theme.minTouchTarget, alignment: .leading)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileCardButtonStyle())
                     .padding(.top, 2)
                 }
             }
         }
+    }
+}
+
+/// Subtle, responsive tactile press feedback for interactive cards and hero tiles.
+struct TactileCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .opacity(configuration.isPressed ? 0.92 : 1.0)
+            .animation(.easeOut(duration: 0.13), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Constrains vertical `ScrollView` page content strictly to the viewport width
+    /// so no inner view can ever widen `contentSize.width` or enable horizontal scrolling.
+    func verticalScrollPage() -> some View {
+        self
+            .padding(.horizontal, Theme.screenPadding)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .containerRelativeFrame(.horizontal)
     }
 }

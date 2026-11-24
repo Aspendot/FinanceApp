@@ -19,6 +19,14 @@ struct NotificationPreferences: Codable, Equatable, Sendable {
 /// Atomic file-protected storage for phone-local manual entries, CSV imports,
 /// category overrides, bill checkoffs and notification preferences.
 enum LocalDataStore {
+    enum StoreError: Error, LocalizedError {
+        case unreadableModifications
+
+        var errorDescription: String? {
+            "Saved phone edits could not be read. A backup copy was kept so your changes are not overwritten."
+        }
+    }
+
     private static let lock = NSLock()
 
     private static var dataDirectory: URL {
@@ -47,10 +55,27 @@ enum LocalDataStore {
         try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
+    private static func loadModificationsLockedStrict() throws -> LocalModifications {
+        guard FileManager.default.fileExists(atPath: modificationsURL.path) else {
+            return LocalModifications()
+        }
+        do {
+            let data = try Data(contentsOf: modificationsURL)
+            return try JSONDecoder().decode(LocalModifications.self, from: data)
+        } catch {
+            // Preserve the unreadable file so subsequent edits never silently wipe it.
+            let stamp = Int(Date().timeIntervalSince1970)
+            let backupURL = dataDirectory.appendingPathComponent("local-modifications.corrupt-\(stamp).json")
+            try? FileManager.default.copyItem(at: modificationsURL, to: backupURL)
+            throw StoreError.unreadableModifications
+        }
+    }
+
     static func loadModifications() -> LocalModifications {
         lock.lock()
         defer { lock.unlock() }
-        guard let data = try? Data(contentsOf: modificationsURL),
+        guard FileManager.default.fileExists(atPath: modificationsURL.path),
+              let data = try? Data(contentsOf: modificationsURL),
               let decoded = try? JSONDecoder().decode(LocalModifications.self, from: data)
         else {
             return LocalModifications()
@@ -65,6 +90,22 @@ enum LocalDataStore {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(mods)
         try writeProtected(data, to: modificationsURL)
+    }
+
+    /// Atomically reads, transforms, and writes `LocalModifications` under one lock so concurrent
+    /// in-app saves and Shortcuts/AppIntents mutations cannot clobber each other or overwrite corrupt data.
+    @discardableResult
+    static func mutateModifications(_ transform: (inout LocalModifications) -> Void) throws -> LocalModifications {
+        lock.lock()
+        defer { lock.unlock() }
+        var mods = try loadModificationsLockedStrict()
+        transform(&mods)
+        mods.updatedAt = Date()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data = try encoder.encode(mods)
+        try writeProtected(data, to: modificationsURL)
+        return mods
     }
 
     static func loadNotificationPreferences() -> NotificationPreferences {
@@ -154,7 +195,7 @@ enum LocalBackupCodec {
         }
     }
 
-    /// Iterated HMAC-SHA256 stretching + HKDF to produce a 256-bit AES key without extra dependencies.
+    /// PBKDF2-HMAC-SHA256 key stretching (120,000 iterations) to produce a 256-bit AES key without extra dependencies.
     private static func deriveKey(passphrase: String, salt: Data) -> SymmetricKey {
         let pwData = Data(passphrase.utf8)
         let macKey = SymmetricKey(data: pwData)

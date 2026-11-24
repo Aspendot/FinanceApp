@@ -218,7 +218,10 @@ enum ReceiptScannerService {
                     engineLabel: "Apple Vision (on-device)",
                     fallbackNote: "AI returned no structured rows; fell back to on-device OCR."
                 )
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 // Network or quota error -> fall back cleanly to offline Apple Vision OCR.
                 if let fallback = try? await runAppleVisionOCR(
                     jpegData: jpegData,

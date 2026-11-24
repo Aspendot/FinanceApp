@@ -14,6 +14,7 @@ struct ReceiptScanSheet: View {
     @State private var showingCamera = false
     @State private var previewImage: UIImage?
     @State private var scanning = false
+    @State private var scanTask: Task<Void, Never>?
     @State private var engineLabel: String?
     @State private var noteMessage: String?
     @State private var errorMessage: String?
@@ -68,8 +69,8 @@ struct ReceiptScanSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     captureHeroCard
 
                     if let previewImage {
@@ -118,15 +119,20 @@ struct ReceiptScanSheet: View {
                         draftsReviewSection
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle("Scan receipt or slip")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel") {
+                        scanTask?.cancel()
+                        scanTask = nil
+                        dismiss()
+                    }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(saving ? "Saving…" : "Save (\(selectedDrafts.count))") {
@@ -136,10 +142,16 @@ struct ReceiptScanSheet: View {
                     .disabled(saving || selectedDrafts.isEmpty)
                 }
             }
+            .onDisappear {
+                scanTask?.cancel()
+                scanTask = nil
+            }
             .onChange(of: selectedPhoto) { _, item in
                 guard let item else { return }
-                Task {
+                scanTask?.cancel()
+                scanTask = Task {
                     if let data = try? await item.loadTransferable(type: Data.self),
+                       !Task.isCancelled,
                        let image = UIImage(data: data)
                     {
                         await runScan(on: image)
@@ -150,7 +162,8 @@ struct ReceiptScanSheet: View {
                 CameraPickerView { image in
                     showingCamera = false
                     if let image {
-                        Task { await runScan(on: image) }
+                        scanTask?.cancel()
+                        scanTask = Task { await runScan(on: image) }
                     }
                 }
                 .ignoresSafeArea()

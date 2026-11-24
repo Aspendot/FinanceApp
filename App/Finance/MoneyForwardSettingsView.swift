@@ -172,6 +172,7 @@ struct MoneyForwardSettingsView: View {
                     } else {
                         ForEach(mappableAccounts) { account in
                             Picker(account.displayName, selection: mappingBinding(for: account.id)) {
+                                Text("Inherit / Default").tag("__inherit__")
                                 Text("Ignore").tag("")
                                 ForEach(sortedBundleSources, id: \.key) { source in
                                     Text(source.label).tag(source.key)
@@ -264,13 +265,17 @@ struct MoneyForwardSettingsView: View {
     private func mappingBinding(for accountID: String) -> Binding<String> {
         Binding(
             get: {
-                let key = model.moneyForwardState.accountMapping[accountID] ?? ""
-                return sortedBundleSources.contains { $0.key == key } ? key : ""
+                guard let key = model.moneyForwardState.accountMapping[accountID] else {
+                    return "__inherit__"
+                }
+                if key.isEmpty { return "" }
+                return sortedBundleSources.contains { $0.key == key } ? key : "__inherit__"
             },
             set: { newValue in
+                let stored: String? = (newValue == "__inherit__") ? nil : newValue
                 Task {
                     do {
-                        try await MoneyForwardSync.setMapping(accountID: accountID, sourceKey: newValue)
+                        try await MoneyForwardSync.setMapping(accountID: accountID, sourceKey: stored)
                         await model.reload()
                     } catch {
                         feedback = error.localizedDescription

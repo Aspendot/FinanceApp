@@ -57,6 +57,8 @@ public enum FinanceQueryEngine {
         public var totalsByMonth: [String: MonthTotals]
         public var timeline: [TimelineEntry]
         public var payday: PaydayView?
+        public var liveCash: LiveCashSummary?
+        public var effectiveDebts: [DebtEntry]?
         public var planSummary: PlanSummary
         public var subscriptionSummary: SubscriptionSummary
         public var today: String
@@ -67,6 +69,8 @@ public enum FinanceQueryEngine {
             totalsByMonth: [String: MonthTotals],
             timeline: [TimelineEntry],
             payday: PaydayView?,
+            liveCash: LiveCashSummary? = nil,
+            effectiveDebts: [DebtEntry]? = nil,
             planSummary: PlanSummary,
             subscriptionSummary: SubscriptionSummary,
             today: String
@@ -76,6 +80,8 @@ public enum FinanceQueryEngine {
             self.totalsByMonth = totalsByMonth
             self.timeline = timeline
             self.payday = payday
+            self.liveCash = liveCash
+            self.effectiveDebts = effectiveDebts
             self.planSummary = planSummary
             self.subscriptionSummary = subscriptionSummary
             self.today = today
@@ -116,37 +122,48 @@ public enum FinanceQueryEngine {
         let sortedMonths = context.totalsByMonth.keys.sorted()
         let currentMonth = sortedMonths.last ?? String(context.today.prefix(7))
         let resolvedMonths = extractMonths(from: lower, availableMonths: sortedMonths, today: context.today)
-        let isAllTime = lower.contains("all time") || lower.contains("all-time") || lower.contains("ever")
-            || lower.contains("overall") || lower.contains("this year") || lower.contains("all months")
+        let isAllTime = lower.contains("all time") || lower.contains("all-time") || containsWord("ever", in: lower)
+            || containsWord("overall", in: lower) || lower.contains("all months")
         let targetMonth: String? = isAllTime ? nil : (resolvedMonths.first ?? nil)
 
         // 1. Compare two months.
-        if (lower.contains("compare") || lower.contains(" vs ") || lower.contains("versus")),
+        if (containsWord("compare", in: lower) || lower.contains(" vs ") || containsWord("versus", in: lower)),
            resolvedMonths.count >= 2
         {
             return compareMonthsAnswer(m1: resolvedMonths[0], m2: resolvedMonths[1], context: context)
         }
 
         // 2. Payday / remaining cash / unpaid bills.
-        if lower.contains("payday") || lower.contains("left until") || lower.contains("remaining") && lower.contains("bill") {
+        if lower.contains("payday") || lower.contains("left until") || (containsWord("remaining", in: lower) && containsWord("bill", in: lower)) {
             return paydayAnswer(context: context)
         }
-        if lower.contains("bill") && (lower.contains("unpaid") || lower.contains("due") || lower.contains("left") || lower.contains("coming") || lower.contains("upcoming") || lower.contains("next")) {
+        if (containsWord("bill", in: lower) || containsWord("bills", in: lower))
+            && (lower.contains("unpaid") || containsWord("due", in: lower) || containsWord("left", in: lower)
+                || lower.contains("coming") || lower.contains("upcoming") || containsWord("next", in: lower))
+        {
             return upcomingBillsAnswer(context: context)
         }
 
         // 3. Debt.
-        if lower.contains("debt") || lower.contains("owe") || lower.contains("loan") || lower.contains("revolving") {
+        if containsWord("debt", in: lower) || containsWord("debts", in: lower)
+            || containsWord("owe", in: lower) || containsWord("owed", in: lower)
+            || containsWord("loan", in: lower) || containsWord("loans", in: lower)
+            || lower.contains("revolving")
+        {
             return debtAnswer(context: context)
         }
 
         // 4. Subscriptions.
-        if lower.contains("subscription") || lower.contains("subs") || lower.contains("recurring") {
+        if lower.contains("subscription") || containsWord("subs", in: lower) || lower.contains("recurring") {
             return subscriptionsAnswer(context: context)
         }
 
         // 5. Cut targets / budget plan.
-        if lower.contains("target") || lower.contains("cut") || lower.contains("budget") || lower.contains("plan") || lower.contains("cap") {
+        if containsWord("target", in: lower) || containsWord("targets", in: lower)
+            || containsWord("cut", in: lower) || containsWord("cuts", in: lower)
+            || containsWord("budget", in: lower) || containsWord("plan", in: lower)
+            || containsWord("cap", in: lower) || containsWord("caps", in: lower)
+        {
             return targetsAnswer(context: context)
         }
 
@@ -212,6 +229,12 @@ public enum FinanceQueryEngine {
         return helpAnswer(context: context)
     }
 
+    private static func containsWord(_ word: String, in lowerText: String) -> Bool {
+        let pattern = "(?<![a-z0-9])" + NSRegularExpression.escapedPattern(for: word) + "(?![a-z0-9])"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return lowerText.contains(word) }
+        return regex.firstMatch(in: lowerText, range: NSRange(lowerText.startIndex..<lowerText.endIndex, in: lowerText)) != nil
+    }
+
     // MARK: - Specific answer builders
 
     private static func paydayAnswer(context: Context) -> QueryAnswer {
@@ -230,6 +253,39 @@ public enum FinanceQueryEngine {
             config: context.bundle.layerConfig,
             layers: context.bundle.layers
         )
+        if let live = context.liveCash {
+            var rows = [
+                QueryAnswerRow(label: "Estimated cash in banks", value: formatYen(live.estimatedBankCash)),
+                QueryAnswerRow(
+                    label: "Unpaid bills left",
+                    value: formatYen(live.remainingBillsSum),
+                    detail: "\(live.remainingBillsCount) left"
+                ),
+            ]
+            if live.phoneCheckedBillsSum > 0 {
+                rows.append(QueryAnswerRow(
+                    label: "Marked paid on phone",
+                    value: formatYen(live.phoneCheckedBillsSum),
+                    detail: "Awaiting bank debit"
+                ))
+            }
+            if live.remainingInflowsSum > 0 {
+                rows.append(QueryAnswerRow(label: "Expected inflows", value: signedYen(live.remainingInflowsSum)))
+            }
+            rows.append(QueryAnswerRow(label: "Day-to-day spent since payday", value: formatYen(breakdown.dayToDaySpentSincePayday)))
+            rows.append(QueryAnswerRow(label: "Cycle budget (income − bills)", value: formatYen(payday.left)))
+            if live.openBorrowedSum > 0 {
+                rows.append(QueryAnswerRow(label: "Left if credit room used", value: formatYen(live.cashLeftIfBorrowed)))
+            }
+            return QueryAnswer(
+                headline: formatYen(live.cashLeftUntilPayday),
+                subtitle: "Bank cash after unpaid bills · \(payday.daysToPayday) days to \(payday.next.date)",
+                rows: rows,
+                note: live.isEstimate ? "Estimate based on latest confirmed bank balances, post-balance bank rows, and unsettled debit notices." : nil,
+                actionTitle: "Open Now",
+                action: .openNow
+            )
+        }
         var rows = [
             QueryAnswerRow(label: "Money in", value: signedYen(payday.inSum)),
             QueryAnswerRow(label: "Bills paid", value: formatYen(breakdown.paidBillsSum), detail: "\(breakdown.paidBillsCount) paid"),
@@ -275,8 +331,9 @@ public enum FinanceQueryEngine {
     }
 
     private static func debtAnswer(context: Context) -> QueryAnswer {
-        let total = context.bundle.debts.reduce(0) { $0 + $1.balance }
-        let rows = context.bundle.debts.map { debt -> QueryAnswerRow in
+        let debts = context.effectiveDebts ?? context.bundle.debts
+        let total = debts.reduce(0) { $0 + $1.balance }
+        let rows = debts.map { debt -> QueryAnswerRow in
             let detail: String?
             if let limit = debt.limit, limit > 0 {
                 let pct = Int((Double(debt.balance) / Double(limit) * 100).rounded())
@@ -288,9 +345,9 @@ public enum FinanceQueryEngine {
         }
         return QueryAnswer(
             headline: formatYen(total),
-            subtitle: context.bundle.debts.isEmpty ? "No debts recorded." : "Total owed across \(context.bundle.debts.count) accounts",
+            subtitle: debts.isEmpty ? "No debts recorded." : "Total owed across \(debts.count) accounts",
             rows: rows,
-            note: "Balances come from the latest statement snapshot.",
+            note: "Balances reflect the latest statement snapshot and any updates made on this phone.",
             actionTitle: "Open Now",
             action: .openNow
         )

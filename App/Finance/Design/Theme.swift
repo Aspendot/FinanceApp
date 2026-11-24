@@ -21,8 +21,17 @@ enum Theme {
     static let badWash = Color("BadWash")
     static let track = Color("Track")
 
-    /// Warm burnished amber for approaching limits and cautionary indicators.
+    /// Warm burnished amber for bars, badges, and cautionary fills.
     static let warn = Color("LayerDayToDay")
+
+    /// High-contrast warning text token (WCAG AA compliant >= 4.5:1 on both light porcelain and dark obsidian surfaces).
+    static let warnText = Color(
+        UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.96, green: 0.76, blue: 0.34, alpha: 1.0)
+                : UIColor(red: 0.56, green: 0.34, blue: 0.02, alpha: 1.0)
+        }
+    )
 
     /// Soft recessed interior container matching the warm alabaster / obsidian palette.
     static let well = Color("Track")
@@ -147,32 +156,17 @@ enum FinanceFormat {
 
     /// Short month chip label such as "Apr", or "Nov '25" when spanning years.
     static func monthChip(_ month: String, includeYear: Bool) -> String {
-        guard let date = DayText.date(month + "-01") else { return month }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.dateFormat = includeYear ? "MMM ''yy" : "MMM"
-        return formatter.string(from: date)
+        DayText.formatFixed(month + "-01", dateFormat: includeYear ? "MMM ''yy" : "MMM")
     }
 
     /// Short month axis label ("Nov", "Dec", "Jan") for compact chart axes.
     static func chartMonth(_ month: String) -> String {
-        guard let date = DayText.date(month + "-01") else { return month }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.dateFormat = "MMM"
-        return formatter.string(from: date)
+        DayText.formatFixed(month + "-01", dateFormat: "MMM")
     }
 
     /// Day section header in Payments, e.g. "TUE, APR 14".
     static func dayHeader(_ day: String) -> String {
-        guard let date = DayText.date(day) else { return day }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US")
-        formatter.timeZone = JST.timeZone
-        formatter.setLocalizedDateFormatFromTemplate("EEEMMMd")
-        return formatter.string(from: date).uppercased()
+        DayText.format(day, template: "EEEMMMd").uppercased()
     }
 
     /// "11 days" / "1 day" / "Today" copy for countdown chips.

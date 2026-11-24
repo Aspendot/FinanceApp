@@ -216,8 +216,11 @@ public enum Matcher {
                 let bestSet = Set(best)
                 let rivals = Set(best.flatMap { rowBest[$0]?.notices ?? [] })
                 let group = openNotices.filter { rivals.contains($0.messageID) && !done.contains($0.messageID) }
-                let rowsInSet = best.compactMap { rowByID[$0] }
-                if best.count > 1, Set(rowsInSet.map(signature)).count == 1, Set(group.map(signature)).count == 1,
+                let rowsInSet = best.compactMap { openRows.contains($0) ? rowByID[$0] : nil }
+                if best.count > 1,
+                   rowsInSet.count == best.count,
+                   Set(rowsInSet.map(signature)).count == 1,
+                   Set(group.map(signature)).count == 1,
                    group.allSatisfy({ Set(bestRows[$0.messageID] ?? []) == bestSet }) {
                     for (g, row) in zip(group.sorted { $0.messageID < $1.messageID }, rowsInSet.sorted { $0.id < $1.id }) {
                         report.pairs.append(pair(g, row, .interchangeable))
@@ -352,7 +355,7 @@ public enum Matcher {
 }
 
 extension JST {
-    /// Days since 1970-01-01 for "YYYY-MM-DD", by pure arithmetic.
+    /// Days since 1970-01-01 for "YYYY-MM-DD", by pure arithmetic. Returns `nil` for impossible calendar dates.
     public static func dayNumber(_ text: String) -> Int? {
         let p = text.split(separator: "-", omittingEmptySubsequences: false)
         guard p.count == 3, p[0].count == 4, p[1].count == 2, p[2].count == 2,
@@ -364,6 +367,8 @@ extension JST {
         let yoe = yy - era * 400
         let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1
         let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-        return era * 146_097 + doe - 719_468
+        let z = era * 146_097 + doe - 719_468
+        guard JST.day(fromDayNumber: z) == text else { return nil }
+        return z
     }
 }

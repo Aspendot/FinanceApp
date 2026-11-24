@@ -122,14 +122,20 @@ public enum PayPayCSVParser {
             }
 
             let source = (isPayment && isCardMethod(method)) ? "PayPay Card" : "PayPay"
+            let displayMerchant = merchant.isEmpty ? type : merchant
+            let fp = "\(date)|\(source)|\(net)|\(TextFold.key(displayMerchant))"
+
             let externalKey = txID.isEmpty ? nil : "paypay:\(txID)"
             if let externalKey, !seenExternalIDs.insert(externalKey).inserted {
+                // Consume one slot in the fingerprint pool so a distinct new transaction ID on the same day
+                // with the same merchant and amount is not falsely suppressed by this already-imported row.
+                if let remaining = existingPool[fp], remaining > 0 {
+                    existingPool[fp] = remaining - 1
+                }
                 skippedDuplicates += 1
                 continue
             }
 
-            let displayMerchant = merchant.isEmpty ? type : merchant
-            let fp = "\(date)|\(source)|\(net)|\(TextFold.key(displayMerchant))"
             if let remaining = existingPool[fp], remaining > 0 {
                 existingPool[fp] = remaining - 1
                 skippedDuplicates += 1
@@ -195,57 +201,65 @@ public enum PayPayCSVParser {
         return Int(cleaned) ?? 0
     }
 
-    /// Minimal RFC 4180 CSV parser supporting quoted fields, embedded commas and CRLF/LF newlines.
+    /// Minimal RFC 4180 CSV parser supporting quoted fields, embedded commas and CRLF/LF/CR newlines.
+    ///
+    /// Iterates `UnicodeScalar`s rather than Swift `Character`s because Swift treats `"\r\n"` as a single
+    /// extended grapheme cluster that would not equal `"\r"` or `"\n"`.
     static func parseRFC4180(_ text: String) -> [[String]] {
         var rows: [[String]] = []
         var row: [String] = []
-        var field = ""
+        var field = String.UnicodeScalarView()
         var inQuotes = false
-        let chars = Array(text)
+        let scalars = Array(text.unicodeScalars)
         var i = 0
 
-        while i < chars.count {
-            let c = chars[i]
+        let quote: UnicodeScalar = "\""
+        let comma: UnicodeScalar = ","
+        let cr: UnicodeScalar = "\r"
+        let lf: UnicodeScalar = "\n"
+
+        while i < scalars.count {
+            let s = scalars[i]
             if inQuotes {
-                if c == "\"" {
-                    if i + 1 < chars.count && chars[i + 1] == "\"" {
-                        field.append("\"")
+                if s == quote {
+                    if i + 1 < scalars.count && scalars[i + 1] == quote {
+                        field.append(quote)
                         i += 2
                         continue
                     } else {
                         inQuotes = false
                     }
                 } else {
-                    field.append(c)
+                    field.append(s)
                 }
             } else {
-                if c == "\"" && field.isEmpty {
+                if s == quote && field.isEmpty {
                     inQuotes = true
-                } else if c == "," {
-                    row.append(field)
-                    field = ""
-                } else if c == "\r" {
-                    row.append(field)
-                    field = ""
+                } else if s == comma {
+                    row.append(String(field))
+                    field.removeAll(keepingCapacity: true)
+                } else if s == cr {
+                    row.append(String(field))
+                    field.removeAll(keepingCapacity: true)
                     rows.append(row)
                     row = []
-                    if i + 1 < chars.count && chars[i + 1] == "\n" {
+                    if i + 1 < scalars.count && scalars[i + 1] == lf {
                         i += 1
                     }
-                } else if c == "\n" {
-                    row.append(field)
-                    field = ""
+                } else if s == lf {
+                    row.append(String(field))
+                    field.removeAll(keepingCapacity: true)
                     rows.append(row)
                     row = []
                 } else {
-                    field.append(c)
+                    field.append(s)
                 }
             }
             i += 1
         }
 
         if !field.isEmpty || !row.isEmpty {
-            row.append(field)
+            row.append(String(field))
             rows.append(row)
         }
         return rows

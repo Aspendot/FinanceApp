@@ -157,11 +157,13 @@ public enum PayCycleBuilder {
             paydays.append(day)
         }
 
-        guard !paydays.isEmpty else { return [] }
+        let validPaydays = paydays.filter { JST.dayNumber($0) != nil }
+        guard !validPaydays.isEmpty else { return [] }
+        paydays = validPaydays
 
         // Typical payday day-of-month for synthesizing boundary starts/ends.
-        let paydayDaysOfMonth = paydays.compactMap { Int($0.suffix(2)) }.sorted()
-        let typicalDay = paydayDaysOfMonth[paydayDaysOfMonth.count / 2]
+        let paydayDaysOfMonth = paydays.compactMap { Int($0.suffix(2)) }.filter { (1...31).contains($0) }.sorted()
+        let typicalDay = paydayDaysOfMonth.isEmpty ? 25 : paydayDaysOfMonth[paydayDaysOfMonth.count / 2]
 
         // If items exist before the first discovered payday, prepend one opening cycle.
         let earliestItemDate = items.map(\.date).min()

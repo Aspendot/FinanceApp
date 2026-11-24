@@ -6,6 +6,8 @@ import WidgetKit
 /// transactions after each source's statement cutoff, remaining pending Gmail notices,
 /// and phone-local additions/overrides.
 struct FinanceData: Sendable {
+    /// Stable per-snapshot identity so SwiftUI views can cheaply cache derived screen models.
+    let id = UUID()
     let bundle: DataBundle
     /// All recent notices kept for detail lookups (timestamps, foreign amounts, split parts) and decline alerts.
     let notices: [Notice]
@@ -50,6 +52,8 @@ struct FinanceData: Sendable {
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
     /// All items (including Income) sorted newest first for all-time search and Income filtering.
     let allRowsSorted: [NumberedRow<BudgetItem>]
+    /// Pre-folded search haystacks aligned 1-to-1 with `allRowsSorted` so typing in search does zero `TextFold.key` work.
+    let foldedSearchByRowID: [NumberedRow<BudgetItem>.ID: String]
     let subscriptionSummary: SubscriptionSummary
     /// Bundle plan rows with phone target overrides applied.
     let effectivePlan: [PlanEntry]
@@ -154,12 +158,40 @@ struct FinanceData: Sendable {
         self.timeline = checked.timeline
         self.phoneCheckedBillKeys = checked.phoneCheckedKeys
 
-        let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
-        let activePayday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
-        self.payday = activePayday
-        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
         let start = checked.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
         self.lastPayday = start
+
+        let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
+        let activePayday: PaydayView? = {
+            if let upcoming, upcoming.daysToPayday >= 0 {
+                return upcoming
+            }
+            // Payday rollover fallback: if the scheduled payday passed before a new PC bundle arrives,
+            // synthesize an estimated next payday one month out so Now and the widget never go blank.
+            let anchor = start ?? upcoming?.next.date
+            guard let anchor,
+                  let synthesizedDate = PayCycleBuilder.shiftMonth(anchor, by: 1),
+                  synthesizedDate >= today
+            else { return nil }
+            let syntheticNext = FinanceCore.TimelineEntry(
+                date: synthesizedDate,
+                item: "Next payday",
+                amount: 0,
+                note: "Waiting for updated schedule",
+                payday: true,
+                next: true,
+                estimate: true,
+                recurring: true
+            )
+            let extended = checked.timeline.map { entry -> FinanceCore.TimelineEntry in
+                var copy = entry
+                copy.next = nil
+                return copy
+            } + [syntheticNext]
+            return PaydayView.compute(timeline: extended, today: today)
+        }()
+        self.payday = activePayday
+        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
         self.spentSincePayday = start.map {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
         }
@@ -175,10 +207,11 @@ struct FinanceData: Sendable {
         self.liveCash = LiveCashSummary.compute(
             accountBalances: bundle.accountBalances ?? [],
             sourceLabels: bundle.sourceLabels,
-            bankRows: layered.bankRows,
+            bankRows: layered.allBankRows,
             pendingItems: layered.pendingItems,
             payday: activePayday,
-            phoneCheckedBillKeys: checked.phoneCheckedKeys
+            phoneCheckedBillKeys: checked.phoneCheckedKeys,
+            lastPayday: start
         )
         self.pendingSincePayday = start.map { day in
             layered.pendingItems.filter {
@@ -191,7 +224,15 @@ struct FinanceData: Sendable {
 
         let incomeGroup = config.resolvedIncomeGroup ?? "Income"
         let sortedAll = items.sorted { ($0.date, $0.amount, $0.merchant) > ($1.date, $1.amount, $1.merchant) }
-        self.allRowsSorted = NumberedRow.make(from: sortedAll)
+        let numberedAll = NumberedRow.make(from: sortedAll)
+        self.allRowsSorted = numberedAll
+        var searchMap: [NumberedRow<BudgetItem>.ID: String] = [:]
+        searchMap.reserveCapacity(numberedAll.count)
+        for row in numberedAll {
+            let item = row.value
+            searchMap[row.id] = TextFold.key(item.merchant + " " + item.category + " " + item.source)
+        }
+        self.foldedSearchByRowID = searchMap
 
         let payments = sortedAll.filter { $0.group != incomeGroup }
         self.paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
@@ -393,6 +434,7 @@ struct FinanceData: Sendable {
             updatedAt: Date(),
             compactValue: FinanceFormat.compactYen(heroLeft),
             daysToPayday: p.daysToPayday,
+            paydayDate: p.next.date,
             cycleProgress: cycleProgress,
             billsSum: heroBills,
             leftSum: heroLeft,
@@ -407,6 +449,12 @@ struct FinanceData: Sendable {
            current.title == snapshot.title,
            current.value == snapshot.value,
            current.detail == snapshot.detail,
+           current.daysToPayday == snapshot.daysToPayday,
+           current.paydayDate == snapshot.paydayDate,
+           current.cycleProgress == snapshot.cycleProgress,
+           current.billsSum == snapshot.billsSum,
+           current.leftSum == snapshot.leftSum,
+           current.borrowedSum == snapshot.borrowedSum,
            current.upcomingBills == snapshot.upcomingBills
         {
             return
@@ -469,7 +517,8 @@ enum Money {
     }
 }
 
-/// Japan-time calendar days as text, in English.
+/// Japan-time calendar days as text, in English, with thread-safe cached formatters
+/// and memoized outputs so scrolling never allocates `DateFormatter`s per frame.
 enum DayText {
     static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -477,19 +526,89 @@ enum DayText {
         return calendar
     }()
 
+    private static let lock = NSLock()
+    private nonisolated(unsafe) static var templateFormatters: [String: DateFormatter] = [:]
+    private nonisolated(unsafe) static var fixedFormatters: [String: DateFormatter] = [:]
+    private nonisolated(unsafe) static var parsedDates: [String: Date] = [:]
+    private nonisolated(unsafe) static var formattedStrings: [String: String] = [:]
+
     static func date(_ day: String) -> Date? {
+        lock.lock()
+        if let cached = parsedDates[day] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         let p = day.split(separator: "-").compactMap { Int($0) }
         guard p.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: p[0], month: p[1], day: p[2]))
+        guard let d = calendar.date(from: DateComponents(year: p[0], month: p[1], day: p[2])) else { return nil }
+
+        lock.lock()
+        if parsedDates.count > 1_024 { parsedDates.removeAll(keepingCapacity: true) }
+        parsedDates[day] = d
+        lock.unlock()
+        return d
     }
 
     static func format(_ day: String, template: String) -> String {
+        let cacheKey = "t|\(template)|\(day)"
+        lock.lock()
+        if let cached = formattedStrings[cacheKey] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
         guard let d = date(day) else { return day }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US")
-        f.timeZone = JST.timeZone
-        f.setLocalizedDateFormatFromTemplate(template)
-        return f.string(from: d)
+
+        lock.lock()
+        let f: DateFormatter
+        if let existing = templateFormatters[template] {
+            f = existing
+        } else {
+            let created = DateFormatter()
+            created.locale = Locale(identifier: "en_US")
+            created.timeZone = JST.timeZone
+            created.setLocalizedDateFormatFromTemplate(template)
+            templateFormatters[template] = created
+            f = created
+        }
+        let result = f.string(from: d)
+        if formattedStrings.count > 2_048 { formattedStrings.removeAll(keepingCapacity: true) }
+        formattedStrings[cacheKey] = result
+        lock.unlock()
+        return result
+    }
+
+    static func formatFixed(_ day: String, dateFormat: String) -> String {
+        let cacheKey = "f|\(dateFormat)|\(day)"
+        lock.lock()
+        if let cached = formattedStrings[cacheKey] {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        guard let d = date(day) else { return day }
+
+        lock.lock()
+        let f: DateFormatter
+        if let existing = fixedFormatters[dateFormat] {
+            f = existing
+        } else {
+            let created = DateFormatter()
+            created.locale = Locale(identifier: "en_US")
+            created.timeZone = JST.timeZone
+            created.dateFormat = dateFormat
+            fixedFormatters[dateFormat] = created
+            f = created
+        }
+        let result = f.string(from: d)
+        if formattedStrings.count > 2_048 { formattedStrings.removeAll(keepingCapacity: true) }
+        formattedStrings[cacheKey] = result
+        lock.unlock()
+        return result
     }
 
     static func long(_ day: String) -> String { format(day, template: "EEEEMMMMd") }

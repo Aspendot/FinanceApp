@@ -171,8 +171,8 @@ public enum CashFlowForecast {
             return 0
         }()
 
-        // Detect deferred-bill card sources (e.g. Merpay, PayPay Card) whose monthly lump-sum bill is
-        // already on the timeline so we don't double-count both their daily purchases AND their monthly bill.
+        // Detect deferred-bill card sources (credit cards whose monthly lump-sum bill is already on the
+        // timeline) so we do not double-count both their daily purchases and their monthly bill.
         let timelineBillTitles: [String] = timeline
             .filter { $0.event != true && $0.borrowed != true && $0.amount > 0 }
             .map { TextFold.key($0.item) }
@@ -238,7 +238,7 @@ public enum CashFlowForecast {
                 {
                     return false
                 }
-                // Skip subscriptions already represented directly as a bill on the timeline (e.g. Rakuten Mobile, BIGLOBE光).
+                // Skip subscriptions already represented directly as a bill on the timeline.
                 let tokens = SubscriptionHistory.searchTokens(for: sub.entry.name)
                 if timelineBillTitles.contains(where: { title in tokens.contains(where: { title.contains($0) }) }) {
                     return false
@@ -247,34 +247,49 @@ public enum CashFlowForecast {
             }
             .reduce(0) { $0 + $1.entry.monthly }
 
-        // 3. Collect explicit unpaid upcoming timeline events inside [today, endDate],
+        // 3. Collect explicit unpaid timeline events (including overdue unpaid bills reserved on day 0),
         //    plus extrapolate monthly recurring salary & bills for months 2 and 3.
         var eventsByDate: [String: [CashFlowEvent]] = [:]
         var explicitByMonthDir: [String: [String]] = [:]
-        var existingKeys = Set<String>()
+        var existingExplicitIDs = Set<String>()
+        var existingProjectedKeys = Set<String>()
 
         func addEvent(_ event: CashFlowEvent) {
             guard event.date >= today, event.date <= endDate else { return }
             let ym = String(event.date.prefix(7))
             let dir = event.amount < 0 ? "in" : "out"
             let foldedTitle = TextFold.key(event.title)
-            let dedupe = "\(ym)|\(foldedTitle)|\(dir)"
-            guard existingKeys.insert(dedupe).inserted else { return }
             if event.isProjectedRepeat {
+                let dedupe = "\(ym)|\(foldedTitle)|\(dir)"
+                guard existingProjectedKeys.insert(dedupe).inserted else { return }
                 let explicitTitles = explicitByMonthDir["\(ym)|\(dir)"] ?? []
                 if explicitTitles.contains(where: { $0 == foldedTitle || $0.hasPrefix(foldedTitle) || foldedTitle.hasPrefix($0) }) {
                     return
                 }
             } else {
+                guard existingExplicitIDs.insert(event.id).inserted else { return }
                 explicitByMonthDir["\(ym)|\(dir)", default: []].append(foldedTitle)
             }
             eventsByDate[event.date, default: []].append(event)
         }
 
-        // Explicit future/today entries from timeline.
+        // Explicit future/today entries from timeline, plus overdue unpaid bills reserved on day 0.
         for (idx, entry) in timeline.enumerated() {
             guard entry.done != true, entry.event != true, entry.borrowed != true, entry.amount != 0 else { continue }
-            guard entry.date >= today, entry.date <= endDate else { continue }
+            if entry.date < today {
+                // Reserve overdue unpaid outflows on day 0 so Runway stays consistent with Now.
+                guard entry.amount > 0 else { continue }
+                addEvent(CashFlowEvent(
+                    id: "overdue:\(idx):\(entry.date):\(entry.item)",
+                    date: today,
+                    title: "\(entry.item) (overdue)",
+                    amount: entry.amount,
+                    isEstimate: entry.estimate == true,
+                    isProjectedRepeat: false
+                ))
+                continue
+            }
+            guard entry.date <= endDate else { continue }
             addEvent(CashFlowEvent(
                 id: "tl:\(idx):\(entry.date):\(entry.item)",
                 date: entry.date,
@@ -286,9 +301,9 @@ public enum CashFlowForecast {
         }
 
         // Recurring templates from the timeline (payday salary + regular monthly bills) projected +1..+3 months.
-        // Never blindly repeats one-off bills (loans paid back, quarterly taxes, bonuses, custom one-off reminders).
+        // Never blindly repeats one-off bills (loans, quarterly taxes, bonuses, custom one-off reminders).
         let hasExplicitRecurringFlags = timeline.contains { $0.recurring != nil }
-        let oneOffKeywords = ["bonus", "賞与", "resident tax", "住民税", "pay back", "manager", "cashback", "refund", "ポチっと", "flight", "hotel"]
+        let oneOffKeywords = ["bonus", "賞与", "resident tax", "住民税", "pay back", "cashback", "refund", "flight", "hotel"]
 
         let recurringTemplates: [TimelineEntry] = {
             var latestByTitle: [String: TimelineEntry] = [:]
@@ -340,8 +355,10 @@ public enum CashFlowForecast {
             .reduce(0) { $0 + $1.entry.monthly }
 
         let dailyBaselineSubs = Double(baselineMonthlySubs) / 30.0
+        let maxTrim = baselineDailyBurn > 0 ? baselineDailyBurn * 30 : Int.max
+        let effectiveDayToDaySavings = min(max(0, scenario.monthlyDayToDaySavings), maxTrim)
         let monthlyScenarioNetSaving = cancelledSubsMonthly
-            + max(0, scenario.monthlyDayToDaySavings)
+            + effectiveDayToDaySavings
             - max(0, scenario.extraMonthlyDebtPayment)
         let dailyScenarioDelta = Double(monthlyScenarioNetSaving) / 30.0
 

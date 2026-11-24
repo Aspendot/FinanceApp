@@ -182,6 +182,8 @@ public struct LocalModifications: Codable, Sendable, Equatable {
     public var reviewedItemKeys: Set<String>
     /// Fingerprints (`date|source|amount|foldedMerchant`) of previously-synced local entries deleted on the phone.
     public var deletedEntryFingerprints: Set<String>
+    /// Exact deletion counts per fingerprint so deleting one of two identical same-day entries only hides one.
+    public var deletedEntryFingerprintCounts: [String: Int]
     /// Last modification timestamp for two-way Drive sync.
     public var updatedAt: Date?
 
@@ -197,6 +199,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         customReminders: [CustomReminder] = [],
         reviewedItemKeys: Set<String> = [],
         deletedEntryFingerprints: Set<String> = [],
+        deletedEntryFingerprintCounts: [String: Int] = [:],
         updatedAt: Date? = nil
     ) {
         self.version = version
@@ -210,12 +213,14 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         self.customReminders = customReminders
         self.reviewedItemKeys = reviewedItemKeys
         self.deletedEntryFingerprints = deletedEntryFingerprints
+        self.deletedEntryFingerprintCounts = deletedEntryFingerprintCounts
         self.updatedAt = updatedAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case version, manualEntries, importedEntries, categoryOverrides, billCheckoffs, dismissedAlertIDs
-        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys, deletedEntryFingerprints, updatedAt
+        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys
+        case deletedEntryFingerprints, deletedEntryFingerprintCounts, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -231,6 +236,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         customReminders = try c.decodeIfPresent([CustomReminder].self, forKey: .customReminders) ?? []
         reviewedItemKeys = try c.decodeIfPresent(Set<String>.self, forKey: .reviewedItemKeys) ?? []
         deletedEntryFingerprints = try c.decodeIfPresent(Set<String>.self, forKey: .deletedEntryFingerprints) ?? []
+        deletedEntryFingerprintCounts = try c.decodeIfPresent([String: Int].self, forKey: .deletedEntryFingerprintCounts) ?? [:]
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
 
@@ -245,6 +251,7 @@ public struct LocalModifications: Codable, Sendable, Equatable {
             && customReminders.isEmpty
             && reviewedItemKeys.isEmpty
             && deletedEntryFingerprints.isEmpty
+            && deletedEntryFingerprintCounts.isEmpty
     }
 }
 
@@ -272,14 +279,32 @@ public enum LocalDataApplier {
         config: LayerConfig,
         layers: [LayerDefinition]
     ) -> AppliedItems {
-        let deleted = modifications.deletedEntryFingerprints
-        let filteredBase: [BudgetItem] = deleted.isEmpty
-            ? baseItems
-            : baseItems.filter { !deleted.contains(CategoryOverride.transactionFingerprint(for: $0)) }
+        // Build per-fingerprint deletion counts so deleting 1 of 2 identical same-day local entries
+        // never hides the second copy, and never filters out live pending email notices.
+        var deleteBudget: [String: Int] = modifications.deletedEntryFingerprintCounts.filter { $0.value > 0 }
+        for fp in modifications.deletedEntryFingerprints where deleteBudget[fp] == nil {
+            deleteBudget[fp] = 1
+        }
 
-        // Count base items by (date, source, amount, foldedMerchant) so round-tripped entries never double-count.
+        let filteredBase: [BudgetItem]
+        if deleteBudget.isEmpty {
+            filteredBase = baseItems
+        } else {
+            var remainingDeletes = deleteBudget
+            filteredBase = baseItems.filter { item in
+                guard !item.isPending else { return true }
+                let fp = CategoryOverride.transactionFingerprint(for: item)
+                if let count = remainingDeletes[fp], count > 0 {
+                    remainingDeletes[fp] = count - 1
+                    return false
+                }
+                return true
+            }
+        }
+
+        // Count confirmed base items by (date, source, amount, foldedMerchant) so round-tripped entries never double-count.
         var basePool: [String: Int] = [:]
-        for item in filteredBase {
+        for item in filteredBase where !item.isPending {
             let fp = CategoryOverride.transactionFingerprint(for: item)
             basePool[fp, default: 0] += 1
         }
@@ -292,21 +317,25 @@ public enum LocalDataApplier {
         for entry in modifications.manualEntries {
             let item = entry.asBudgetItem(config: config, layers: layers)
             let fp = CategoryOverride.transactionFingerprint(for: item)
-            if deleted.contains(fp) { continue }
-            localKeys.insert(fp)
-            entryByFP[fp] = entry.id
             if let remaining = basePool[fp], remaining > 0 {
                 basePool[fp] = remaining - 1
                 superseded += 1
+                // Keep manual cash/receipt entries deletable even after PC bundle absorption,
+                // without marking live bank or pending rows from other sources as phone-local.
+                if entry.source.caseInsensitiveCompare("Cash") == .orderedSame {
+                    localKeys.insert(fp)
+                    if entryByFP[fp] == nil { entryByFP[fp] = entry.id }
+                }
                 continue
             }
             localItems.append(item)
+            localKeys.insert(fp)
+            if entryByFP[fp] == nil { entryByFP[fp] = entry.id }
         }
 
         for entry in modifications.importedEntries {
             let item = entry.asBudgetItem(config: config, layers: layers)
             let fp = CategoryOverride.transactionFingerprint(for: item)
-            if deleted.contains(fp) { continue }
             if let remaining = basePool[fp], remaining > 0 {
                 basePool[fp] = remaining - 1
                 superseded += 1
@@ -314,7 +343,7 @@ public enum LocalDataApplier {
             }
             localItems.append(item)
             localKeys.insert(fp)
-            entryByFP[fp] = entry.id
+            if entryByFP[fp] == nil { entryByFP[fp] = entry.id }
         }
 
         let combined = filteredBase + localItems

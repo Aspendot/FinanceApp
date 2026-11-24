@@ -109,9 +109,9 @@ struct LogPaymentIntent: AppIntent {
             origin: .manual
         )
 
-        var mods = LocalDataStore.loadModifications()
-        mods.manualEntries.insert(entry, at: 0)
-        try LocalDataStore.saveModifications(mods)
+        try LocalDataStore.mutateModifications { mods in
+            mods.manualEntries.insert(entry, at: 0)
+        }
         try? await SyncEngine.shared.publishCurrentWidget()
         NotificationCenter.default.post(name: .backgroundGmailSyncUpdated, object: nil)
 
@@ -126,7 +126,7 @@ struct PaydaySummaryIntent: AppIntent {
         "Reports how much is left until payday, how many days remain, and the next scheduled bill."
     )
     static let supportedModes: IntentModes = .background
-    static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+    static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let notices = GmailSync.recentNotices()
@@ -136,8 +136,12 @@ struct PaydaySummaryIntent: AppIntent {
         guard let payday = data.payday else {
             return .result(dialog: IntentDialog("No upcoming payday is in the current schedule."))
         }
+        let leftAmount = data.liveCash?.cashLeftUntilPayday
+            ?? data.paydayBreakdown?.estimatedRemainingDiscretionary
+            ?? payday.left
+        let leftLabel = data.liveCash != nil ? "bank cash left after unpaid bills" : "estimated left after bills"
         var parts = [
-            "\(Money.yen(payday.left)) left after bills, \(FinanceFormat.daysLabel(payday.daysToPayday)) until payday"
+            "\(Money.yen(leftAmount)) \(leftLabel), \(FinanceFormat.daysLabel(payday.daysToPayday)) until payday"
         ]
         if let breakdown = data.paydayBreakdown, breakdown.dayToDaySpentSincePayday > 0 {
             parts.append("day-to-day spent \(Money.yen(breakdown.dayToDaySpentSincePayday))")

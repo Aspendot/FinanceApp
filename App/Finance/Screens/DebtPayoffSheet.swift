@@ -32,8 +32,8 @@ struct DebtPayoffSheet: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let debt = currentDebt {
                         if debts.count > 1 {
                             ScrollView(.horizontal, showsIndicators: false) {
@@ -68,9 +68,9 @@ struct DebtPayoffSheet: View {
                         )
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
             .navigationTitle("Payoff calculator")
             .navigationBarTitleDisplayMode(.inline)

@@ -20,8 +20,8 @@ struct WhereToCutView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                 summaryCard
                 if !plan.active.isEmpty {
                     activeTargetsCard
@@ -30,9 +30,9 @@ struct WhereToCutView: View {
                     settledTargetsCard
                 }
             }
-            .padding(.horizontal, Theme.screenPadding)
-            .padding(.vertical, 12)
+            .verticalScrollPage()
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .background(Theme.page)
         .navigationTitle("Where to cut")
         .navigationBarTitleDisplayMode(.inline)

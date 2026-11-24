@@ -42,6 +42,8 @@ targets:
       path: Finance/Info.plist
       properties:
         CFBundleDisplayName: Finance
+        # Enable full 120Hz ProMotion display pacing on supported iPhones.
+        CADisableMinimumFrameDurationOnPhone: true
         # XcodeGen writes 1.0 and 1 unless told otherwise; SideStore checks both against its source.
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)

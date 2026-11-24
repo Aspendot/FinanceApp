@@ -170,11 +170,12 @@ public enum TimelineReconciler {
             }
         }
 
-        // After a roll the finished cycle's entries no longer belong to the plan: PaydayView sums everything
-        // before `next`, and the data file's own pre-payday items (money that arrived just before payday)
-        // must only count in the cycle the PC built them for.
+        // After a roll the finished cycle's settled entries and prior inflows no longer belong to the new cycle,
+        // while unpaid overdue bills must remain visible and reserved until settled or explicitly checked off.
         if let start = newCycleStart {
-            return result.filter { $0.date >= start }
+            return result.filter { entry in
+                entry.date >= start || (entry.done != true && entry.amount > 0 && entry.event != true && entry.borrowed != true)
+            }
         }
         return result
     }

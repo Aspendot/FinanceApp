@@ -7,6 +7,7 @@ import WidgetKit
 /// after SideStore has signed the app. Each row shows the latest result.
 struct SpikeView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @State private var groupResult = SharedStore.groupID.map { "App Group: \($0)" } ?? "No App Group available"
     @State private var faceIDResult = "Not tried yet"
@@ -149,7 +150,7 @@ struct SpikeView: View {
                                     Text("\(n.day) · \(n.source.rawValue) · \(n.kind.rawValue)").font(.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(n.amount.map { ($0 < 0 ? "+¥" : "¥") + $0.magnitude.formatted() } ?? "–")
+                                Text(n.amount.map { MaskedMoney.payment($0, masked: privacyMasked) } ?? "–")
                                     .font(.subheadline.monospacedDigit())
                             }
                         }

@@ -14,16 +14,17 @@ struct CashFlowRunwayView: View {
     @State private var extraDebtPayment: Double = 0
     @State private var monthlyTrim: Double = 0
     @State private var scrubbedDayIndex: Int? = nil
-    @AppStorage("runwayStartingCashOverride") private var storedStartingCash: Int = -1
+    @State private var startingCashOverride: Int? = nil
     @State private var editingStartingCash = false
     @State private var startingCashInput = ""
+    @State private var forecastCache = ScreenModelCache<String, CashFlowSummary>()
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
     }
 
     private var resolvedStartingOverride: Int? {
-        (!session.isDemo && storedStartingCash >= 0) ? storedStartingCash : nil
+        session.isDemo ? nil : startingCashOverride
     }
 
     private var scenario: WhatIfScenario {
@@ -34,25 +35,37 @@ struct CashFlowRunwayView: View {
         )
     }
 
+    private var forecastCacheKey: String {
+        guard let data = activeData else { return "" }
+        let subsKey = cancelledSubIDs.sorted().joined(separator: ",")
+        return "\(data.id.uuidString)|\(session.today)|\(resolvedStartingOverride.map(String.init) ?? "auto")|\(subsKey)|\(Int(extraDebtPayment.rounded()))|\(Int(monthlyTrim.rounded()))"
+    }
+
+    private func resolvedForecast(for data: FinanceData) -> CashFlowSummary {
+        forecastCache.get(for: forecastCacheKey) {
+            CashFlowForecast.project(
+                today: session.today,
+                days: 90,
+                payday: data.payday,
+                paydayBreakdown: data.paydayBreakdown,
+                timeline: data.timeline,
+                allItems: data.allItems,
+                subscriptionSummary: data.subscriptionSummary,
+                config: data.bundle.layerConfig,
+                layers: data.bundle.layers,
+                scenario: scenario,
+                startingCashOverride: resolvedStartingOverride,
+                liveCash: data.liveCash
+            )
+        }
+    }
+
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
+            ScrollView(.vertical) {
+                LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
                     if let data = activeData {
-                        let forecast = CashFlowForecast.project(
-                            today: session.today,
-                            days: 90,
-                            payday: data.payday,
-                            paydayBreakdown: data.paydayBreakdown,
-                            timeline: data.timeline,
-                            allItems: data.allItems,
-                            subscriptionSummary: data.subscriptionSummary,
-                            config: data.bundle.layerConfig,
-                            layers: data.bundle.layers,
-                            scenario: scenario,
-                            startingCashOverride: resolvedStartingOverride,
-                            liveCash: data.liveCash
-                        )
+                        let forecast = resolvedForecast(for: data)
                         heroSummaryCard(forecast: forecast)
                         runwayChartCard(forecast: forecast)
                         whatIfControlsCard(data: data, forecast: forecast)
@@ -61,9 +74,10 @@ struct CashFlowRunwayView: View {
                         NoDataView()
                     }
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
+                .verticalScrollPage()
             }
+            .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.page)
             .navigationTitle("90-day runway")
             .navigationBarTitleDisplayMode(.inline)
@@ -169,8 +183,8 @@ struct CashFlowRunwayView: View {
                                 .foregroundStyle(Theme.heroInk)
                             Button("Set") {
                                 let clean = startingCashInput.replacingOccurrences(of: ",", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                                if let val = Int(clean), val >= 0 {
-                                    storedStartingCash = val
+                                if let val = Int(clean) {
+                                    startingCashOverride = val
                                 }
                                 editingStartingCash = false
                             }
@@ -184,7 +198,7 @@ struct CashFlowRunwayView: View {
                         HStack(spacing: 14) {
                             if resolvedStartingOverride != nil {
                                 Button("Reset to estimate") {
-                                    storedStartingCash = -1
+                                    startingCashOverride = nil
                                     editingStartingCash = false
                                 }
                                 .font(.caption.weight(.medium))
@@ -203,20 +217,22 @@ struct CashFlowRunwayView: View {
 
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(spacing: 8) {
-                        startingTile(forecast: forecast)
-                        lowestTile(lowest: lowest)
+                        startingTile(forecast: forecast, fillHeight: false)
+                        lowestTile(lowest: lowest, fillHeight: false)
                     }
                 } else {
-                    HStack(spacing: 10) {
-                        startingTile(forecast: forecast)
-                        lowestTile(lowest: lowest)
+                    Grid(alignment: .topLeading, horizontalSpacing: 10, verticalSpacing: 8) {
+                        GridRow {
+                            startingTile(forecast: forecast, fillHeight: true)
+                            lowestTile(lowest: lowest, fillHeight: true)
+                        }
                     }
                 }
             }
         }
     }
 
-    private func startingTile(forecast: CashFlowSummary) -> some View {
+    private func startingTile(forecast: CashFlowSummary, fillHeight: Bool) -> some View {
         Button {
             guard !session.isDemo else { return }
             startingCashInput = String(max(0, forecast.startingCashEstimate))
@@ -224,7 +240,7 @@ struct CashFlowRunwayView: View {
                 editingStartingCash.toggle()
             }
         } label: {
-            FrostedMetricTile {
+            FrostedMetricTile(fillHeight: fillHeight) {
                 HStack(spacing: 4) {
                     Text(resolvedStartingOverride != nil ? "Bank cash set" : "Est. cash today")
                         .font(.caption2.weight(.medium))
@@ -246,13 +262,13 @@ struct CashFlowRunwayView: View {
                     .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileCardButtonStyle())
     }
 
-    private func lowestTile(lowest: CashFlowDayPoint?) -> some View {
+    private func lowestTile(lowest: CashFlowDayPoint?, fillHeight: Bool) -> some View {
         let lowVal = lowest?.scenarioBalance ?? 0
         let isLow = lowVal < 20_000
-        return FrostedMetricTile {
+        return FrostedMetricTile(fillHeight: fillHeight) {
             Text("Lowest point")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(Theme.heroInkMuted)
@@ -369,7 +385,7 @@ struct CashFlowRunwayView: View {
                             anchor: value.as(Int.self) == max(1, forecast.points.count - 1) ? .topTrailing : (value.as(Int.self) == 0 ? .topLeading : .top)
                         ) {
                             if let idx = value.as(Int.self), forecast.points.indices.contains(idx) {
-                                Text(DayText.short(forecast.points[idx].date))
+                                Text(DayText.format(forecast.points[idx].date, template: "MMMd"))
                                     .font(.caption2)
                                     .foregroundStyle(Theme.muted)
                             }
@@ -395,9 +411,19 @@ struct CashFlowRunwayView: View {
                         Rectangle()
                             .fill(.clear)
                             .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
+                            .onTapGesture { location in
+                                guard let frame = proxy.plotFrame else { return }
+                                let x = location.x - geo[frame].origin.x
+                                if let idx: Int = proxy.value(atX: x) {
+                                    let clamped = min(max(0, idx), max(0, forecast.points.count - 1))
+                                    scrubbedDayIndex = (scrubbedDayIndex == clamped) ? nil : clamped
+                                }
+                            }
+                            .simultaneousGesture(
+                                DragGesture(minimumDistance: 14)
                                     .onChanged { value in
+                                        // Only scrub on horizontal drags so vertical scrolling over the chart stays effortless.
+                                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
                                         guard let frame = proxy.plotFrame else { return }
                                         let x = value.location.x - geo[frame].origin.x
                                         if let idx: Int = proxy.value(atX: x) {
@@ -415,8 +441,22 @@ struct CashFlowRunwayView: View {
                 }
                 .sensoryFeedback(.selection, trigger: scrubbedDayIndex)
                 .frame(height: 210)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(runwayChartAccessibility(forecast: forecast))
             }
         }
+    }
+
+    private func runwayChartAccessibility(forecast: CashFlowSummary) -> String {
+        let start = MaskedMoney.accessibility(forecast.startingCashEstimate, masked: privacyMasked)
+        let end = MaskedMoney.accessibility(
+            scenario.isBaseline ? forecast.baselineEndBalance : forecast.scenarioEndBalance,
+            masked: privacyMasked
+        )
+        let low = forecast.baselineLowest.map {
+            ", lowest point \(MaskedMoney.accessibility($0.baselineBalance, masked: privacyMasked)) on \(DayText.short($0.date))"
+        } ?? ""
+        return "90-day cash flow runway chart. Starting from \(start), projected to \(end)\(low)."
     }
 
     // MARK: - Interactive What-If Controls
