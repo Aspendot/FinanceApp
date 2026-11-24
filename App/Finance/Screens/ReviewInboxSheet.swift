@@ -289,15 +289,12 @@ struct ReviewInboxSheet: View {
             return
         }
         Task {
-            if item.category != suggestion.category || item.group != suggestion.group {
-                try? await model.setCategoryOverride(
-                    for: item,
-                    group: suggestion.group,
-                    category: suggestion.category,
-                    applyToAllFromMerchant: false
-                )
-            }
-            await model.markReviewed(keys: [entry.id])
+            try? await model.applyCategoryAndMarkReviewed(
+                for: item,
+                group: suggestion.group,
+                category: suggestion.category,
+                reviewKey: entry.id
+            )
         }
     }
 
@@ -307,8 +304,13 @@ struct ReviewInboxSheet: View {
             return
         }
         Task {
-            try? await model.excludeAsNonSpending(item: item, categoryLabel: label)
-            await model.markReviewed(keys: [entry.id])
+            let excludedGroup = activeData?.bundle.layerConfig.resolvedExcludedGroup ?? "Excluded"
+            try? await model.applyCategoryAndMarkReviewed(
+                for: item,
+                group: excludedGroup,
+                category: label,
+                reviewKey: entry.id
+            )
         }
     }
 
@@ -318,8 +320,13 @@ struct ReviewInboxSheet: View {
             return
         }
         Task {
-            try? await model.tagAsWorkExpense(item: item)
-            await model.markReviewed(keys: [entry.id])
+            let workGroup = activeData?.bundle.layerConfig.resolvedWorkGroup ?? "Work"
+            try? await model.applyCategoryAndMarkReviewed(
+                for: item,
+                group: workGroup,
+                category: "Work expense",
+                reviewKey: entry.id
+            )
         }
     }
 

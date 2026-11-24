@@ -20,6 +20,8 @@ struct WidgetSnapshot: Codable, Equatable, Sendable {
     var updatedAt: Date
     var compactValue: String? = nil
     var daysToPayday: Int? = nil
+    /// Target payday date (`"YYYY-MM-DD"`) so the widget advances the countdown automatically at JST midnight.
+    var paydayDate: String? = nil
     var cycleProgress: Double? = nil
     var billsSum: Int? = nil
     var leftSum: Int? = nil

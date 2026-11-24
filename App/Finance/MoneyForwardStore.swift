@@ -296,15 +296,16 @@ enum MoneyForwardSync {
         }
     }
 
-    /// Saves a single account-to-source mapping entry (`nil` or empty = "Ignore").
+    /// Saves a single account-to-source mapping entry:
+    /// - `nil` removes the key (sub-accounts inherit their parent mapping).
+    /// - `""` stores an explicit ignore entry so a sub-account does not fall back to its parent.
     static func setMapping(accountID: String, sourceKey: String?) async throws {
         try await SyncEngine.shared.withSignIn {
             var state = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
-            let trimmed = sourceKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if trimmed.isEmpty {
-                state.accountMapping.removeValue(forKey: accountID)
+            if let sourceKey {
+                state.accountMapping[accountID] = sourceKey.trimmingCharacters(in: .whitespacesAndNewlines)
             } else {
-                state.accountMapping[accountID] = trimmed
+                state.accountMapping.removeValue(forKey: accountID)
             }
             try MoneyForwardStore.saveState(state)
         }

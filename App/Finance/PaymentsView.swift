@@ -12,10 +12,10 @@ struct PaymentsView: View {
     @State private var statusFilter: PaymentStatusFilter = .all
     @State private var typeFilter: PaymentTypeFilter = .payments
     @State private var sortOrder: PaymentSortOrder = .newest
+    @State private var localQuery: String = ""
     @State private var inspectedPayment: InspectedPayment?
     @State private var quickRecategorizePayment: InspectedPayment?
-    @State private var cachedScreenKey: String = ""
-    @State private var cachedScreen: PaymentsScreenModel?
+    @State private var screenCache = ScreenModelCache<String, PaymentsScreenModel>()
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
@@ -44,32 +44,27 @@ struct PaymentsView: View {
             effectiveStatus.rawValue,
             typeFilter.rawValue,
             sortOrder.rawValue,
-            session.paymentsQuery,
+            localQuery,
         ].joined(separator: "|")
     }
 
-    private func computeScreen(for data: FinanceData) -> PaymentsScreenModel {
-        PaymentsScreenModel(
-            data: data,
-            periodMode: session.periodMode,
-            selectedPeriodID: activeSelectedID,
-            allPeriods: session.paymentsAllMonths,
-            category: session.paymentsCategory,
-            source: session.paymentsSource,
-            layerFilter: session.paymentsLayer,
-            dateRange: session.paymentsDateRange,
-            statusFilter: effectiveStatus,
-            typeFilter: typeFilter,
-            sortOrder: sortOrder,
-            query: session.paymentsQuery
-        )
-    }
-
     private func resolvedScreen(for data: FinanceData) -> PaymentsScreenModel {
-        if cachedScreenKey == screenCacheKey, let cachedScreen {
-            return cachedScreen
+        screenCache.get(for: screenCacheKey) {
+            PaymentsScreenModel(
+                data: data,
+                periodMode: session.periodMode,
+                selectedPeriodID: activeSelectedID,
+                allPeriods: session.paymentsAllMonths,
+                category: session.paymentsCategory,
+                source: session.paymentsSource,
+                layerFilter: session.paymentsLayer,
+                dateRange: session.paymentsDateRange,
+                statusFilter: effectiveStatus,
+                typeFilter: typeFilter,
+                sortOrder: sortOrder,
+                query: localQuery
+            )
         }
-        return computeScreen(for: data)
     }
 
     private var hasExtraFilters: Bool {
@@ -134,18 +129,16 @@ struct PaymentsView: View {
                     .background(Theme.page)
                 }
             }
-            .searchable(text: $session.paymentsQuery, prompt: "Merchant, category or card")
+            .searchable(text: $localQuery, prompt: "Merchant, category or card")
             .navigationTitle("Payments")
             .sensoryFeedback(.selection, trigger: session.periodMode)
-            .onChange(of: screenCacheKey, initial: true) { _, newKey in
-                guard let data = activeData, !newKey.isEmpty else {
-                    cachedScreen = nil
-                    cachedScreenKey = ""
-                    return
-                }
-                if cachedScreenKey != newKey || cachedScreen == nil {
-                    cachedScreen = computeScreen(for: data)
-                    cachedScreenKey = newKey
+            .onChange(of: session.paymentsRouteRevision, initial: true) { _, _ in
+                // Sync programmatic drill-downs and reset local kind/status filters so valid routes never open empty.
+                localQuery = session.paymentsQuery
+                if session.paymentsRouteRevision > 0 {
+                    typeFilter = .payments
+                    statusFilter = .all
+                    sortOrder = .newest
                 }
             }
             .toolbar {
@@ -659,29 +652,14 @@ struct PaymentsView: View {
             if screen.excludedRowCount > 0 {
                 parts.append("\(screen.excludedRowCount) excluded")
             }
-            if screen.spendingRowCount > 1 && (!session.paymentsQuery.isEmpty || screen.allPeriods) {
+            if screen.spendingRowCount > 1 && (!localQuery.isEmpty || screen.allPeriods) {
                 let avg = Int((Double(screen.countedSpending) / Double(screen.spendingRowCount)).rounded())
                 parts.append("avg \(MaskedMoney.yen(avg, masked: privacyMasked))")
             }
             return parts.joined(separator: " · ")
         }()
 
-        let layerSlices: [(layer: SpendingLayer, sum: Int)] = {
-            guard typeFilter != .income else { return [] }
-            var totals: [SpendingLayer: Int] = [:]
-            for sec in screen.sections {
-                for row in sec.rows {
-                    let item = row.value
-                    guard item.amount > 0, let layerKey = data.layer(of: item) else { continue }
-                    let layer = SpendingLayer.resolve(key: layerKey, bundleLayers: data.bundle.layers)
-                    totals[layer, default: 0] += item.amount
-                }
-            }
-            return SpendingLayer.allCases.compactMap { layer in
-                let val = totals[layer, default: 0]
-                return val > 0 ? (layer, val) : nil
-            }
-        }()
+        let layerSlices = screen.layerSlices
 
         return FinanceCard {
             VStack(alignment: .leading, spacing: 10) {
@@ -723,13 +701,18 @@ struct PaymentsView: View {
                     GeometryReader { geo in
                         let gap: CGFloat = layerSlices.count > 1 ? 2.5 : 0
                         let usable = max(0, geo.size.width - gap * CGFloat(max(0, layerSlices.count - 1)))
+                        let rawWidths = layerSlices.map { max(6, usable * CGFloat($0.sum) / CGFloat(total)) }
+                        let rawSum = rawWidths.reduce(0, +)
+                        let scale = rawSum > usable && rawSum > 0 ? usable / rawSum : 1.0
                         HStack(spacing: gap) {
-                            ForEach(layerSlices, id: \.layer) { slice in
+                            ForEach(Array(layerSlices.enumerated()), id: \.element.id) { idx, slice in
                                 Capsule()
                                     .fill(slice.layer.color)
-                                    .frame(width: max(6, usable * CGFloat(slice.sum) / CGFloat(total)))
+                                    .frame(width: max(0, rawWidths[idx] * scale))
                             }
                         }
+                        .frame(width: geo.size.width, alignment: .leading)
+                        .clipped()
                     }
                     .frame(height: 5.5)
                     .padding(.top, 2)
@@ -752,6 +735,7 @@ struct PaymentsView: View {
         ) {
             if session.paymentsAllMonths {
                 resetAllFilters()
+                localQuery = ""
                 session.paymentsQuery = ""
                 selectCategory(nil)
             } else {

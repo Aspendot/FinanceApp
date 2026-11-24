@@ -13,7 +13,7 @@ extension EnvironmentValues {
     }
 }
 
-/// Formats yen figures cleanly while respecting the 1-tap Train Privacy Mask.
+/// Formats yen figures cleanly while respecting the 1-tap Train Privacy Mask (visual & VoiceOver).
 enum MaskedMoney {
     static func yen(_ value: Int, masked: Bool) -> String {
         masked ? "¥•••,•••" : Money.yen(value)
@@ -29,18 +29,54 @@ enum MaskedMoney {
         return value < 0 ? "−¥•••,•••" : "+¥•••,•••"
     }
 
-    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
+    static func accessibility(_ value: Int, signed: Bool = false, masked: Bool) -> String {
+        masked ? "Hidden amount" : FinanceFormat.yenAccessibility(value, signed: signed)
+    }
 
-    /// Redacts any inline yen figures inside alert or Q&A strings when privacy mode is active.
+    static func paymentAccessibility(_ value: Int, masked: Bool) -> String {
+        masked ? "Hidden amount" : FinanceFormat.paymentAccessibility(value)
+    }
+
+    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
+    private static let wordYenPattern = try? NSRegularExpression(pattern: #"\b[0-9][0-9,]*\s*(?:yen|JPY|円)\b"#, options: [.caseInsensitive])
+
+    /// Redacts any inline yen figures inside alert, note, or Q&A strings when privacy mode is active.
     static func redactText(_ text: String, masked: Bool) -> String {
-        guard masked, let regex = yenPattern else { return text }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "¥•••,•••")
+        guard masked else { return text }
+        var out = text
+        if let regex = yenPattern {
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
+        }
+        if let regex = wordYenPattern {
+            let range = NSRange(out.startIndex..<out.endIndex, in: out)
+            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
+        }
+        return out
     }
 }
 
-/// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature,
-/// fine hairline border, specular dark-mode rim, and whisper-soft ambient depth.
+/// Reference-type single-slot memoization box held in `@State` so SwiftUI views build heavy derived
+/// screen models at most ONCE per unique input key without triggering a second `.onChange` render pass.
+@MainActor
+final class ScreenModelCache<Key: Equatable, Value> {
+    private var key: Key?
+    private var value: Value?
+
+    func get(for newKey: Key, build: () -> Value) -> Value {
+        if let key, key == newKey, let value {
+            return value
+        }
+        let built = build()
+        self.key = newKey
+        self.value = built
+        return built
+    }
+}
+
+/// Elevated porcelain (light) or satin obsidian (dark) card with continuous 20 pt curvature
+/// and fine hairline / specular rim. Shadows stay reserved for `HeroVaultCard` to preserve
+/// visual hierarchy and fast scroll frame pacing.
 struct FinanceCard<Content: View>: View {
     @Environment(\.displayScale) private var displayScale
     @Environment(\.colorScheme) private var colorScheme
@@ -61,18 +97,7 @@ struct FinanceCard<Content: View>: View {
         }
         .padding(padding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            shape
-                .fill(Theme.surface)
-                .shadow(
-                    color: colorScheme == .dark
-                        ? Color.black.opacity(0.28)
-                        : Color(red: 0.06, green: 0.11, blue: 0.09).opacity(0.06),
-                    radius: colorScheme == .dark ? 10 : 12,
-                    x: 0,
-                    y: 4
-                )
-        }
+        .background(Theme.surface, in: shape)
         .overlay(
             Group {
                 if colorScheme == .dark {
@@ -89,7 +114,7 @@ struct FinanceCard<Content: View>: View {
                         lineWidth: 0.75
                     )
                 } else {
-                    shape.strokeBorder(Theme.line.opacity(0.75), lineWidth: hairline)
+                    shape.strokeBorder(Theme.line.opacity(0.82), lineWidth: hairline)
                 }
             }
         )
@@ -499,7 +524,7 @@ struct QuietTag: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(foreground)
             .lineLimit(1)
-            .minimumScaleFactor(isAccessibility ? 0.5 : 1.0)
+            .minimumScaleFactor(isAccessibility ? 0.8 : 1.0)
             .allowsTightening(isAccessibility)
             .padding(.horizontal, isAccessibility ? 12 : 9)
             .padding(.vertical, isAccessibility ? 4 : 3.5)
@@ -516,7 +541,7 @@ struct QuietTag: View {
         case .accent: return Theme.accent
         case .good: return Theme.good
         case .bad: return Theme.bad
-        case .warn: return Theme.warn
+        case .warn: return Theme.warnText
         case .info: return Color("LayerRent")
         case .hero: return Theme.heroAccent
         }

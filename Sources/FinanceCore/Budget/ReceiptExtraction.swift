@@ -344,7 +344,8 @@ public enum ReceiptExtraction {
     }
 
     private static func extractTotalAmount(from lines: [String]) -> Int? {
-        let totalKeywords = ["合計", "お買上計", "お買上げ計", "領収金額", "お支払", "請求金額", "収納金額", "total", "grand total"]
+        let totalKeywords = ["合計", "お買上計", "お買上げ計", "領収金額", "お支払", "請求金額", "収納金額", "grand total", "total"]
+        let subtotalKeywords = ["小計", "subtotal", "sub-total", "sub total"]
         let skipKeywords = ["お預り", "お預かり", "お釣り", "おつり", "釣銭", "ポイント", "change", "cash tendered"]
         let amountRegex = try? NSRegularExpression(pattern: #"[¥￥]?\s*([1-9][0-9,]{1,8})\s*円?"#)
 
@@ -360,10 +361,11 @@ public enum ReceiptExtraction {
             }
         }
 
-        // Pass 1: look for explicit total lines (or amount on immediately following line).
+        // Pass 1: look for explicit payable total lines (excluding subtotal lines like "Subtotal" / "小計").
         for (idx, line) in lines.enumerated() {
             let lower = line.lowercased()
             if skipKeywords.contains(where: { lower.contains($0) }) { continue }
+            if subtotalKeywords.contains(where: { lower.contains($0) }) { continue }
             if totalKeywords.contains(where: { lower.contains($0) }) {
                 if let val = numbers(in: line).last { return val }
                 if idx + 1 < lines.count, let nextVal = numbers(in: lines[idx + 1]).last {

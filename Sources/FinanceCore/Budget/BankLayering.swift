@@ -37,6 +37,9 @@ public struct BankLayeringResult: Sendable, Equatable {
     /// Confirmed bank rows aligned one-to-one with `bankItems`, keeping each row's raw bank
     /// description for timeline reconciliation even when a Gmail notice supplied `BudgetItem.merchant`.
     public var bankRows: [TimelineReconciler.BankRow]
+    /// All mapped confirmed bank rows regardless of bundle ledger coverage, so balance roll-forwards
+    /// (`LiveCashSummary`) never drop confirmed rows dated between an account's `asOf` and the bundle cutoff.
+    public var allBankRows: [TimelineReconciler.BankRow]
     /// Pending items built from Gmail notices not matched to Money Forward or covered by the bundle.
     public var pendingItems: [BudgetItem]
     /// Gmail message IDs aligned one-to-one with `pendingItems`.
@@ -54,6 +57,7 @@ public struct BankLayeringResult: Sendable, Equatable {
         bankItems: [BudgetItem] = [],
         bankTransactionIDs: [String] = [],
         bankRows: [TimelineReconciler.BankRow] = [],
+        allBankRows: [TimelineReconciler.BankRow] = [],
         pendingItems: [BudgetItem] = [],
         pendingNoticeIDs: [String] = [],
         unmatched: [Notice] = [],
@@ -64,6 +68,7 @@ public struct BankLayeringResult: Sendable, Equatable {
         self.bankItems = bankItems
         self.bankTransactionIDs = bankTransactionIDs
         self.bankRows = bankRows
+        self.allBankRows = allBankRows
         self.pendingItems = pendingItems
         self.pendingNoticeIDs = pendingNoticeIDs
         self.unmatched = unmatched
@@ -244,12 +249,24 @@ public enum BankLayering {
         )
         let matchedNoticeIDs = Set(matchOutput.pairs.map(\.noticeID))
         let candidatesByID = Dictionary(candidates.map { ($0.notice.messageID, $0) }, uniquingKeysWith: { first, _ in first })
-        let merchantByTransaction = Dictionary(uniqueKeysWithValues: matchOutput.pairs.compactMap { pair -> (String, String)? in
-            guard let merchant = candidatesByID[pair.noticeID]?.notice.merchant,
-                  !merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            else { return nil }
-            return (pair.transactionID, merchant)
-        })
+        let merchantByTransaction = Dictionary(
+            matchOutput.pairs.compactMap { pair -> (String, String)? in
+                guard let merchant = candidatesByID[pair.noticeID]?.notice.merchant,
+                      !merchant.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return nil }
+                return (pair.transactionID, merchant)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        let allBankRows = mappedRows.map { row in
+            TimelineReconciler.BankRow(
+                source: row.sourceLabel,
+                date: row.transaction.date,
+                amount: row.transaction.amount,
+                description: row.transaction.description
+            )
+        }
 
         var bankItems: [BudgetItem] = []
         var bankTransactionIDs: [String] = []
@@ -290,6 +307,7 @@ public enum BankLayering {
             bankItems: bankItems,
             bankTransactionIDs: bankTransactionIDs,
             bankRows: bankRows,
+            allBankRows: allBankRows,
             pendingItems: pendingItems,
             pendingNoticeIDs: pending.map { $0.notice.messageID },
             unmatched: unmatched,
@@ -421,8 +439,9 @@ public enum BankLayering {
                 let bestSet = Set(best)
                 let rivals = Set(best.flatMap { rowBest[$0]?.notices ?? [] })
                 let group = openNotices.filter { rivals.contains($0.notice.messageID) && !done.contains($0.notice.messageID) }
-                let rowsInSet = best.compactMap { rowByID[$0] }
+                let rowsInSet = best.compactMap { openRows.contains($0) ? rowByID[$0] : nil }
                 if best.count > 1,
+                   rowsInSet.count == best.count,
                    Set(rowsInSet.map(rowSignature)).count == 1,
                    Set(group.map(noticeSignature)).count == 1,
                    group.allSatisfy({ Set(bestRows[$0.notice.messageID] ?? []) == bestSet })

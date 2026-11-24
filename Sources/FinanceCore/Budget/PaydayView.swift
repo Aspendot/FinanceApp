@@ -207,12 +207,14 @@ public struct LiveCashSummary: Sendable, Equatable {
         bankRows: [TimelineReconciler.BankRow],
         pendingItems: [BudgetItem],
         payday: PaydayView?,
-        phoneCheckedBillKeys: Set<String> = []
+        phoneCheckedBillKeys: Set<String> = [],
+        lastPayday: String? = nil
     ) -> LiveCashSummary? {
         guard !accountBalances.isEmpty else { return nil }
 
         var liveAccounts: [LiveAccountBalance] = []
         var anyPostCoverageRows = false
+        var postBalanceOutflows: [(dayNum: Int, amount: Int)] = []
 
         for account in accountBalances {
             let resolvedLabel = sourceLabels[account.source] ?? account.label
@@ -224,6 +226,11 @@ public struct LiveCashSummary: Sendable, Equatable {
             }
             if !matchingBankRows.isEmpty {
                 anyPostCoverageRows = true
+                for row in matchingBankRows where row.amount > 0 {
+                    if let dayNum = JST.dayNumber(row.date) {
+                        postBalanceOutflows.append((dayNum, row.amount))
+                    }
+                }
             }
             let postDelta = -matchingBankRows.reduce(0) { $0 + $1.amount }
 
@@ -265,14 +272,51 @@ public struct LiveCashSummary: Sendable, Equatable {
         let estimatedTotal = liveAccounts.reduce(0) { $0 + $1.estimatedBalance }
         let totalPendingDebit = liveAccounts.reduce(0) { $0 + $1.pendingDebitOutflow }
 
-        let remainingBills = payday?.outs.filter { $0.done != true } ?? []
+        // Release a phone-only bill checkoff hold once a post-asOf bank outflow of the exact same
+        // positive amount has posted near the bill's date, avoiding double-subtraction.
+        var availablePostOutflows = postBalanceOutflows
+        func consumeMatchingPostOutflow(for entry: TimelineEntry) -> Bool {
+            guard entry.amount > 0, let entryDay = JST.dayNumber(entry.date) else { return false }
+            if let idx = availablePostOutflows.firstIndex(where: {
+                $0.amount == entry.amount && (-2...5).contains($0.dayNum - entryDay)
+            }) {
+                availablePostOutflows.remove(at: idx)
+                return true
+            }
+            return false
+        }
+
+        let remainingBills = (payday?.outs ?? []).filter { entry in
+            guard entry.done != true else { return false }
+            // If an unpaid bill without a match rule already posted as an exact-amount post-asOf bank row,
+            // avoid double-subtracting it from estimated bank cash.
+            if entry.match == nil, consumeMatchingPostOutflow(for: entry) {
+                return false
+            }
+            return true
+        }
         let remainingBillsSum = remainingBills.reduce(0) { $0 + $1.amount }
-        let phoneCheckedBills = payday?.outs.filter {
-            $0.done == true && phoneCheckedBillKeys.contains(BillCheckoff.key(for: $0))
-        } ?? []
+        let phoneCheckedBills = (payday?.outs ?? []).filter { entry in
+            guard entry.done == true, phoneCheckedBillKeys.contains(BillCheckoff.key(for: entry)) else {
+                return false
+            }
+            // Ignore checked-off reminders left over from previous pay cycles.
+            if let lastPayday, entry.date < lastPayday {
+                return false
+            }
+            // Once the debit actually posts after account.asOf, release the temporary phone hold.
+            if consumeMatchingPostOutflow(for: entry) {
+                return false
+            }
+            return true
+        }
         let phoneCheckedSum = phoneCheckedBills.reduce(0) { $0 + $1.amount }
 
-        let remainingInflows = payday?.ins.filter { $0.done != true && $0.borrowed != true } ?? []
+        let remainingInflows = payday?.ins.filter { entry in
+            guard entry.done != true && entry.borrowed != true else { return false }
+            if let lastPayday, entry.date < lastPayday { return false }
+            return true
+        } ?? []
         let remainingInflowsSum = -remainingInflows.reduce(0) { $0 + $1.amount }
 
         let openBorrowed = payday?.borrowed.filter { $0.done != true } ?? []

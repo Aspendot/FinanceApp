@@ -52,6 +52,8 @@ struct FinanceData: Sendable {
     let paymentsByMonth: [String: [NumberedRow<BudgetItem>]]
     /// All items (including Income) sorted newest first for all-time search and Income filtering.
     let allRowsSorted: [NumberedRow<BudgetItem>]
+    /// Pre-folded search haystacks aligned 1-to-1 with `allRowsSorted` so typing in search does zero `TextFold.key` work.
+    let foldedSearchByRowID: [String: String]
     let subscriptionSummary: SubscriptionSummary
     /// Bundle plan rows with phone target overrides applied.
     let effectivePlan: [PlanEntry]
@@ -156,12 +158,40 @@ struct FinanceData: Sendable {
         self.timeline = checked.timeline
         self.phoneCheckedBillKeys = checked.phoneCheckedKeys
 
-        let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
-        let activePayday = upcoming.flatMap { $0.daysToPayday >= 0 ? $0 : nil }
-        self.payday = activePayday
-        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
         let start = checked.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
         self.lastPayday = start
+
+        let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
+        let activePayday: PaydayView? = {
+            if let upcoming, upcoming.daysToPayday >= 0 {
+                return upcoming
+            }
+            // Payday rollover fallback: if the scheduled payday passed before a new PC bundle arrives,
+            // synthesize an estimated next payday one month out so Now and the widget never go blank.
+            let anchor = start ?? upcoming?.next.date
+            guard let anchor,
+                  let synthesizedDate = PayCycleBuilder.shiftMonth(anchor, by: 1),
+                  synthesizedDate >= today
+            else { return nil }
+            let syntheticNext = TimelineEntry(
+                date: synthesizedDate,
+                item: "Next payday",
+                amount: 0,
+                note: "Waiting for updated schedule",
+                payday: true,
+                next: true,
+                estimate: true,
+                recurring: true
+            )
+            let extended = checked.timeline.map { entry -> TimelineEntry in
+                var copy = entry
+                copy.next = nil
+                return copy
+            } + [syntheticNext]
+            return PaydayView.compute(timeline: extended, today: today)
+        }()
+        self.payday = activePayday
+        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
         self.spentSincePayday = start.map {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
         }
@@ -177,10 +207,11 @@ struct FinanceData: Sendable {
         self.liveCash = LiveCashSummary.compute(
             accountBalances: bundle.accountBalances ?? [],
             sourceLabels: bundle.sourceLabels,
-            bankRows: layered.bankRows,
+            bankRows: layered.allBankRows,
             pendingItems: layered.pendingItems,
             payday: activePayday,
-            phoneCheckedBillKeys: checked.phoneCheckedKeys
+            phoneCheckedBillKeys: checked.phoneCheckedKeys,
+            lastPayday: start
         )
         self.pendingSincePayday = start.map { day in
             layered.pendingItems.filter {
@@ -193,7 +224,15 @@ struct FinanceData: Sendable {
 
         let incomeGroup = config.resolvedIncomeGroup ?? "Income"
         let sortedAll = items.sorted { ($0.date, $0.amount, $0.merchant) > ($1.date, $1.amount, $1.merchant) }
-        self.allRowsSorted = NumberedRow.make(from: sortedAll)
+        let numberedAll = NumberedRow.make(from: sortedAll)
+        self.allRowsSorted = numberedAll
+        var searchMap: [String: String] = [:]
+        searchMap.reserveCapacity(numberedAll.count)
+        for row in numberedAll {
+            let item = row.value
+            searchMap[row.id] = TextFold.key(item.merchant + " " + item.category + " " + item.source)
+        }
+        self.foldedSearchByRowID = searchMap
 
         let payments = sortedAll.filter { $0.group != incomeGroup }
         self.paymentsByMonth = Dictionary(grouping: NumberedRow.make(from: payments)) { String($0.value.date.prefix(7)) }
@@ -395,6 +434,7 @@ struct FinanceData: Sendable {
             updatedAt: Date(),
             compactValue: FinanceFormat.compactYen(heroLeft),
             daysToPayday: p.daysToPayday,
+            paydayDate: p.next.date,
             cycleProgress: cycleProgress,
             billsSum: heroBills,
             leftSum: heroLeft,
@@ -409,6 +449,12 @@ struct FinanceData: Sendable {
            current.title == snapshot.title,
            current.value == snapshot.value,
            current.detail == snapshot.detail,
+           current.daysToPayday == snapshot.daysToPayday,
+           current.paydayDate == snapshot.paydayDate,
+           current.cycleProgress == snapshot.cycleProgress,
+           current.billsSum == snapshot.billsSum,
+           current.leftSum == snapshot.leftSum,
+           current.borrowedSum == snapshot.borrowedSum,
            current.upcomingBills == snapshot.upcomingBills
         {
             return

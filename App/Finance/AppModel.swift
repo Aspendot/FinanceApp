@@ -106,10 +106,7 @@ final class AppModel: ObservableObject {
     // MARK: - Local entries, CSV import, overrides, checkoffs, reminders, two-way Drive push
 
     private func persistModificationsAndPush(_ mutate: (inout LocalModifications) -> Void) async throws {
-        var mods = LocalDataStore.loadModifications()
-        mutate(&mods)
-        mods.updatedAt = Date()
-        try LocalDataStore.saveModifications(mods)
+        _ = try LocalDataStore.mutateModifications(mutate)
         await reload()
         scheduleBackgroundPhoneEditsPush()
     }
@@ -144,7 +141,12 @@ final class AppModel: ObservableObject {
         let layers = data?.bundle.layers ?? []
         let fp = CategoryOverride.transactionFingerprint(for: entry.asBudgetItem(config: config, layers: layers))
         try await persistModificationsAndPush { mods in
-            mods.deletedEntryFingerprints.remove(fp)
+            if let existingCount = mods.deletedEntryFingerprintCounts[fp], existingCount > 1 {
+                mods.deletedEntryFingerprintCounts[fp] = existingCount - 1
+            } else {
+                mods.deletedEntryFingerprintCounts.removeValue(forKey: fp)
+                mods.deletedEntryFingerprints.remove(fp)
+            }
             mods.manualEntries.insert(entry, at: 0)
         }
     }
@@ -155,7 +157,14 @@ final class AppModel: ObservableObject {
         let layers = data?.bundle.layers ?? []
         let fps = entries.map { CategoryOverride.transactionFingerprint(for: $0.asBudgetItem(config: config, layers: layers)) }
         try await persistModificationsAndPush { mods in
-            for fp in fps { mods.deletedEntryFingerprints.remove(fp) }
+            for fp in fps {
+                if let existingCount = mods.deletedEntryFingerprintCounts[fp], existingCount > 1 {
+                    mods.deletedEntryFingerprintCounts[fp] = existingCount - 1
+                } else {
+                    mods.deletedEntryFingerprintCounts.removeValue(forKey: fp)
+                    mods.deletedEntryFingerprints.remove(fp)
+                }
+            }
             mods.manualEntries.insert(contentsOf: entries, at: 0)
         }
     }
@@ -167,7 +176,10 @@ final class AppModel: ObservableObject {
             let targets = mods.manualEntries.filter { $0.id == id } + mods.importedEntries.filter { $0.id == id }
             for entry in targets {
                 let fp = CategoryOverride.transactionFingerprint(for: entry.asBudgetItem(config: config, layers: layers))
-                mods.deletedEntryFingerprints.insert(fp)
+                // Record exact deletion count so deleting 1 of 2 identical same-day entries never hides both.
+                let baseCount = mods.deletedEntryFingerprintCounts[fp]
+                    ?? (mods.deletedEntryFingerprints.contains(fp) ? 1 : 0)
+                mods.deletedEntryFingerprintCounts[fp] = baseCount + 1
             }
             mods.manualEntries.removeAll { $0.id == id }
             mods.importedEntries.removeAll { $0.id == id }
@@ -313,6 +325,35 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Atomically applies a category override and marks the review item checked in a single reload + Drive push.
+    func applyCategoryAndMarkReviewed(
+        for item: BudgetItem,
+        group: String,
+        category: String,
+        reviewKey: String
+    ) async throws {
+        let fp = CategoryOverride.transactionFingerprint(for: item)
+        try await persistModificationsAndPush { mods in
+            if item.category != category || item.group != group {
+                mods.categoryOverrides.removeAll {
+                    if case .transaction(let existingFP, _, _, _) = $0.scope { return existingFP == fp }
+                    return false
+                }
+                mods.categoryOverrides.append(CategoryOverride(
+                    scope: .transaction(
+                        fingerprint: fp,
+                        displayMerchant: item.merchant,
+                        date: item.date,
+                        amount: item.amount
+                    ),
+                    group: group,
+                    category: category
+                ))
+            }
+            mods.reviewedItemKeys.insert(reviewKey)
+        }
+    }
+
     func toggleBillCheckoff(for entry: TimelineEntry) async {
         let key = BillCheckoff.key(for: entry)
         try? await persistModificationsAndPush { mods in
@@ -393,7 +434,11 @@ final class AppModel: ObservableObject {
         defer { syncing = false }
 
         let report = await BackgroundAssertion.run(name: "FinanceForegroundSync") {
-            await SyncEngine.shared.run(trigger: .app, minimumInterval: 0, timeLimit: 45)
+            await SyncEngine.shared.run(
+                trigger: .app,
+                minimumInterval: userInitiated ? 0 : 60,
+                timeLimit: 45
+            )
         }
 
         switch report.outcome {

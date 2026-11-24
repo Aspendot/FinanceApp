@@ -49,7 +49,7 @@ struct QuickAddSheet: View {
     }
 
     private var sourceOptions: [String] {
-        var base = ["Cash", "PayPay", "PayPay Card", "Vandle Card"]
+        var base = ["Cash", "PayPay", "PayPay Card"]
         if let existing = activeData?.availableSources {
             for s in existing where !base.contains(s) {
                 base.append(s)

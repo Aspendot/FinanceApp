@@ -63,7 +63,8 @@ jobs:
             build=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
             echo "$plist: $short ($build)"
             if [[ "$GITHUB_REF" == refs/tags/ios-v* ]]; then
-              test "$short" = "${GITHUB_REF_NAME#ios-v}" && test "$build" = "$GITHUB_RUN_NUMBER"
+              test "$short" = "${GITHUB_REF_NAME#ios-v}"
+              test "$build" = "$GITHUB_RUN_NUMBER"
             fi
           done
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
@@ -88,11 +89,16 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: Finance-ipa
-      - name: Create the release
+      - name: Create or update the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" Finance.ipa --verify-tag --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" Finance.ipa --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" Finance.ipa --verify-tag --repo "$GITHUB_REPOSITORY" --title "Finance $TAG" --notes "Unsigned build for SideStore. Install it from the Finance.ipa asset."
+          fi
       - name: Update the SideStore source
         env:
           GH_TOKEN: ${{ github.token }}

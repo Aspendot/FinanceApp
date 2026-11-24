@@ -7,16 +7,24 @@ import UIKit
 struct RootView: View {
     @StateObject private var model = AppModel()
     @StateObject private var session = AppSession()
+    @AppStorage("faceIDLock") private var faceIDLockEnabled = true
     @Environment(\.scenePhase) private var phase
     @State private var csvImportAlertMessage: String?
+    @State private var isUnlocked = false
+
+    private var canPresentProtectedUI: Bool {
+        session.isDemo || !faceIDLockEnabled || isUnlocked
+    }
 
     var body: some View {
         Group {
             if session.isDemo {
-                mainTabs
+                protectedContent
             } else {
-                LockGate {
-                    mainTabs
+                LockGate(unlocked: $isUnlocked, onLock: {
+                    session.activeSheet = nil
+                }) {
+                    protectedContent
                 }
             }
         }
@@ -25,113 +33,61 @@ struct RootView: View {
         .environment(\.privacyMasked, session.privacyMasked)
         .environmentObject(model)
         .environmentObject(session)
-        .sheet(item: $session.activeSheet) { sheet in
-            Group {
-                switch sheet {
-                case .quickAdd:
-                    QuickAddSheet()
-                case .scanReceipt:
-                    ReceiptScanSheet()
-                case .ask:
-                    AskFinanceSheet()
-                case .debtPayoff:
-                    DebtPayoffSheet()
-                case .targets:
-                    if let data = session.resolvedData(from: model) {
-                        let mode = session.periodMode
-                        let periods = data.periods(for: mode)
-                        let totals = data.totals(for: mode)
-                        let selectedID = (mode == .payCycle ? session.monthsSelectedCycleID : session.monthsSelectedMonth)
-                            ?? periods.last?.id ?? ""
-                        let partialID = periods.last(where: { $0.isInProgress })?.id
-                        let resolvedPlanSummary = PlanSummary.compute(
-                            plan: data.effectivePlan,
-                            planWindow: mode == .calendarMonth ? data.bundle.planWindow : nil,
-                            totalsByMonth: totals,
-                            selectedMonth: selectedID,
-                            currentMonth: periods.last?.id ?? selectedID,
-                            inProgressMonth: partialID
-                        )
-                        let pace = periods.first(where: { $0.id == selectedID })?.paceProgress(on: session.today)
-                            ?? data.currentPeriod(for: mode, today: session.today)?.paceProgress(on: session.today)
-                        NavigationStack {
-                            WhereToCutView(
-                                plan: resolvedPlanSummary,
-                                isPresentedModally: true,
-                                activePace: pace
-                            )
-                        }
-                    } else {
-                        NoDataView()
-                    }
-                case .reviewInbox:
-                    ReviewInboxSheet()
-                case .runway:
-                    CashFlowRunwayView()
-                case .addReminder(let title, let date, let note):
-                    AddReminderSheet(defaultTitle: title, defaultDate: date, defaultNote: note)
-                case .subscriptionDetail(let sub):
-                    SubscriptionDetailSheet(subscription: sub)
-                case .debtDetail(let debt):
-                    DebtDetailSheet(debt: debt)
-                case .categoryDetail(let name, let periodID):
-                    CategoryDetailSheet(categoryName: name, periodID: periodID)
-                case .merchantDetail(let name, let periodID):
-                    MerchantDetailSheet(merchantName: name, periodID: periodID)
-                }
-            }
-            .tint(Theme.accent)
-            .preferredColorScheme(session.demoColorScheme)
-            .environment(\.privacyMasked, session.privacyMasked)
-            .environmentObject(model)
-            .environmentObject(session)
-        }
         .onOpenURL { url in
-            if session.handleDeepLink(url) {
-                return
-            }
-            guard !session.isDemo, url.pathExtension.lowercased() == "csv" else { return }
-            Task {
-                do {
-                    let result = try await model.importPayPayCSV(url: url)
-                    csvImportAlertMessage = "Imported \(result.entries.count) payments from \(url.lastPathComponent). Skipped \(result.skippedDuplicates) duplicates."
-                } catch {
-                    csvImportAlertMessage = error.localizedDescription
-                }
+            if canPresentProtectedUI {
+                processIncomingURL(url)
+            } else {
+                session.pendingLockedURL = url
             }
         }
-        .alert(
-            "CSV Import",
-            isPresented: Binding(
-                get: { csvImportAlertMessage != nil },
-                set: { if !$0 { csvImportAlertMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { csvImportAlertMessage = nil }
-        } message: {
-            Text(csvImportAlertMessage ?? "")
+        .onChange(of: canPresentProtectedUI) { _, allowed in
+            guard allowed else { return }
+            if let queued = session.pendingLockedURL {
+                session.pendingLockedURL = nil
+                processIncomingURL(queued)
+            }
+            if !session.isDemo,
+               let action = SharedStore.consumePendingAction(),
+               let url = URL(string: "financeapp://\(action)")
+            {
+                _ = session.handleDeepLink(url)
+            }
         }
         .onChange(of: phase, initial: true) { _, newPhase in
             guard !session.isDemo else { return }
             if newPhase == .background {
+                if faceIDLockEnabled {
+                    session.activeSheet = nil
+                }
                 Task {
                     await BackgroundAssertion.run(name: "FinanceScheduleRefresh") {
                         await BackgroundRefresh.scheduleIfNeeded()
                     }
                 }
             } else if newPhase == .active {
-                if let action = SharedStore.consumePendingAction(),
+                let dayChanged = session.refreshTodayIfNeeded()
+                if canPresentProtectedUI,
+                   let action = SharedStore.consumePendingAction(),
                    let url = URL(string: "financeapp://\(action)")
                 {
-                    session.handleDeepLink(url)
+                    _ = session.handleDeepLink(url)
                 }
                 model.refreshRunLog()
                 Task {
                     await model.checkInbox()
+                    if dayChanged {
+                        await model.reload()
+                    }
                     session.hasCompletedInitialLoad = true
                     guard UIApplication.shared.applicationState == .active else { return }
-                    await model.syncGmail()
+                    await model.syncGmail(userInitiated: false)
                 }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification).receive(on: DispatchQueue.main)) { _ in
+            guard !session.isDemo else { return }
+            if session.refreshTodayIfNeeded() {
+                Task { await model.reload() }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .financePendingControlAction).receive(on: DispatchQueue.main)) { note in
@@ -139,13 +95,108 @@ struct RootView: View {
             let action = (note.object as? String) ?? SharedStore.consumePendingAction()
             if let action, let url = URL(string: "financeapp://\(action)") {
                 _ = SharedStore.consumePendingAction()
-                session.handleDeepLink(url)
+                if canPresentProtectedUI {
+                    _ = session.handleDeepLink(url)
+                } else {
+                    session.pendingLockedURL = url
+                }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .backgroundGmailSyncUpdated).receive(on: DispatchQueue.main)) { _ in
             guard !session.isDemo, phase == .active else { return }
             Task { await model.reload() }
         }
+    }
+
+    private func processIncomingURL(_ url: URL) {
+        if session.handleDeepLink(url) {
+            return
+        }
+        guard !session.isDemo, url.pathExtension.lowercased() == "csv" else { return }
+        Task {
+            do {
+                let result = try await model.importPayPayCSV(url: url)
+                csvImportAlertMessage = "Imported \(result.entries.count) payments from \(url.lastPathComponent). Skipped \(result.skippedDuplicates) duplicates."
+            } catch {
+                csvImportAlertMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private var protectedContent: some View {
+        mainTabs
+            .sheet(item: $session.activeSheet) { sheet in
+                Group {
+                    switch sheet {
+                    case .quickAdd:
+                        QuickAddSheet()
+                    case .scanReceipt:
+                        ReceiptScanSheet()
+                    case .ask:
+                        AskFinanceSheet()
+                    case .debtPayoff:
+                        DebtPayoffSheet()
+                    case .targets:
+                        if let data = session.resolvedData(from: model) {
+                            let mode = session.periodMode
+                            let periods = data.periods(for: mode)
+                            let totals = data.totals(for: mode)
+                            let selectedID = (mode == .payCycle ? session.monthsSelectedCycleID : session.monthsSelectedMonth)
+                                ?? periods.last?.id ?? ""
+                            let partialID = periods.last(where: { $0.isInProgress })?.id
+                            let resolvedPlanSummary = PlanSummary.compute(
+                                plan: data.effectivePlan,
+                                planWindow: mode == .calendarMonth ? data.bundle.planWindow : nil,
+                                totalsByMonth: totals,
+                                selectedMonth: selectedID,
+                                currentMonth: periods.last?.id ?? selectedID,
+                                inProgressMonth: partialID
+                            )
+                            let pace = periods.first(where: { $0.id == selectedID })?.paceProgress(on: session.today)
+                                ?? data.currentPeriod(for: mode, today: session.today)?.paceProgress(on: session.today)
+                            NavigationStack {
+                                WhereToCutView(
+                                    plan: resolvedPlanSummary,
+                                    isPresentedModally: true,
+                                    activePace: pace
+                                )
+                            }
+                        } else {
+                            NoDataView()
+                        }
+                    case .reviewInbox:
+                        ReviewInboxSheet()
+                    case .runway:
+                        CashFlowRunwayView()
+                    case .addReminder(let title, let date, let note):
+                        AddReminderSheet(defaultTitle: title, defaultDate: date, defaultNote: note)
+                    case .subscriptionDetail(let sub):
+                        SubscriptionDetailSheet(subscription: sub)
+                    case .debtDetail(let debt):
+                        DebtDetailSheet(debt: debt)
+                    case .categoryDetail(let name, let periodID):
+                        CategoryDetailSheet(categoryName: name, periodID: periodID)
+                    case .merchantDetail(let name, let periodID):
+                        MerchantDetailSheet(merchantName: name, periodID: periodID)
+                    }
+                }
+                .tint(Theme.accent)
+                .preferredColorScheme(session.demoColorScheme)
+                .environment(\.privacyMasked, session.privacyMasked)
+                .environmentObject(model)
+                .environmentObject(session)
+            }
+            .alert(
+                "CSV Import",
+                isPresented: Binding(
+                    get: { csvImportAlertMessage != nil },
+                    set: { if !$0 { csvImportAlertMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { csvImportAlertMessage = nil }
+            } message: {
+                Text(csvImportAlertMessage ?? "")
+            }
     }
 
     private var mainTabs: some View {
@@ -171,14 +222,21 @@ struct RootView: View {
 struct LockGate<Content: View>: View {
     @AppStorage("faceIDLock") private var enabled = true
     @Environment(\.scenePhase) private var phase
-    @State private var unlocked = false
+    @Binding private var unlocked: Bool
     @State private var message = ""
     @State private var context: LAContext?
     @State private var triedAutomatically = false
     @State private var snapshotCover: UIView?
+    private let onLock: () -> Void
     private let content: Content
 
-    init(@ViewBuilder content: () -> Content) {
+    init(
+        unlocked: Binding<Bool>,
+        onLock: @escaping () -> Void = {},
+        @ViewBuilder content: () -> Content
+    ) {
+        self._unlocked = unlocked
+        self.onLock = onLock
         self.content = content()
     }
 
@@ -247,6 +305,7 @@ struct LockGate<Content: View>: View {
             context?.invalidate()
             context = nil
             message = ""
+            onLock()
             // UIKit may take the switcher snapshot before SwiftUI renders its next frame.
             guard let scene = notification.object as? UIWindowScene,
                   let window = scene.keyWindow ?? scene.windows.first(where: { $0.rootViewController != nil })

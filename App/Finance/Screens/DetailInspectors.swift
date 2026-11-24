@@ -345,7 +345,11 @@ struct DebtDetailSheet: View {
                             .font(.subheadline.weight(.bold))
                             .monospacedDigit()
                             .foregroundStyle(Theme.heroCoral)
-                        Text(String(format: "%.1f%% APR · estimate", history.annualRatePercent))
+                        Text(
+                            history.hasExplicitRate
+                                ? String(format: "%.1f%% APR · estimate", history.annualRatePercent)
+                                : String(format: "Assumed %.0f%% APR (rate not set)", history.annualRatePercent)
+                        )
                             .font(.caption2)
                             .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
                     }
@@ -996,6 +1000,7 @@ struct AddReminderSheet: View {
 /// Line-by-line transparent breakdown showing exactly how `Until payday` is computed from real bank balances.
 struct BankCashBreakdownSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
@@ -1179,32 +1184,62 @@ struct BankCashBreakdownSheet: View {
     }
 
     private func breakdownSubRow(label: String, value: String, color: Color = Theme.muted) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(Theme.muted)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.caption.weight(.medium))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .fixedSize(horizontal: true, vertical: false)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(value)
+                        .font(.caption.weight(.medium))
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(label)
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Text(value)
+                        .font(.caption.weight(.medium))
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
         }
     }
 
     private func breakdownRow(label: String, value: String, color: Color) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(label)
-                .font(.subheadline)
-                .foregroundStyle(Theme.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .fixedSize(horizontal: true, vertical: false)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(label)
+                        .font(.subheadline)
+                        .foregroundStyle(Theme.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Text(value)
+                        .font(.subheadline.weight(.semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(color)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
         }
     }
 }

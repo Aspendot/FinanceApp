@@ -68,7 +68,19 @@ final class AppSession: ObservableObject {
     @Published var selectedTab: AppTab
     @Published var morePath: [MoreDestination]
     @Published var periodMode: BudgetPeriodMode = .calendarMonth
-    @Published var privacyMasked: Bool = false
+    @Published var privacyMasked: Bool {
+        didSet {
+            if !isDemo {
+                UserDefaults.standard.set(privacyMasked, forKey: Self.privacyMaskedKey)
+            }
+        }
+    }
+    /// Calendar day string ("YYYY-MM-DD") in Japan time, refreshed on foreground and midnight rollover.
+    @Published private(set) var today: String
+    /// Incremented on every programmatic drill-down to Payments so local kind/status filters reset cleanly.
+    @Published private(set) var paymentsRouteRevision: Int = 0
+    /// Deep link or CSV URL received while Face ID lock was active, executed once unlocked.
+    var pendingLockedURL: URL?
 
     @Published var paymentsMonth: String?
     @Published var paymentsCycleID: String?
@@ -86,6 +98,8 @@ final class AppSession: ObservableObject {
     @Published var activeSheet: ActiveSheet?
     @Published var hasCompletedInitialLoad: Bool
 
+    private static let privacyMaskedKey = "financePrivacyMasked"
+
     init(arguments: [String] = ProcessInfo.processInfo.arguments) {
         let demo = arguments.contains("-demo")
         let target = Self.parseInitialScreen(from: arguments)
@@ -94,20 +108,35 @@ final class AppSession: ObservableObject {
         self.morePath = target.destination.map { [$0] } ?? []
         self.activeSheet = target.sheet
         self.periodMode = target.periodMode
+        self.privacyMasked = demo ? false : UserDefaults.standard.bool(forKey: Self.privacyMaskedKey)
         if demo {
             let loaded = DemoData.load()
             self.demoData = loaded?.data
             self.demoToday = loaded?.today
+            self.today = loaded?.today ?? JST.day(Date())
             self.demoRunLog = loaded?.runLog ?? []
             self.demoColorScheme = Self.parseColorScheme(from: arguments)
             self.hasCompletedInitialLoad = true
         } else {
             self.demoData = nil
             self.demoToday = nil
+            self.today = JST.day(Date())
             self.demoRunLog = []
             self.demoColorScheme = nil
             self.hasCompletedInitialLoad = false
         }
+    }
+
+    /// Refreshes `today` in JST and returns `true` when the calendar day rolled over.
+    @discardableResult
+    func refreshTodayIfNeeded(now: Date = Date()) -> Bool {
+        guard !isDemo else { return false }
+        let latest = JST.day(now)
+        if latest != today {
+            today = latest
+            return true
+        }
+        return false
     }
 
     /// Data to display across all screens (bundled demo data in `-demo` mode, live data otherwise).
@@ -118,11 +147,6 @@ final class AppSession: ObservableObject {
     /// Sync log entries for More (invented calm records in `-demo` mode, live run log otherwise).
     func resolvedRunLog(from model: AppModel) -> [SyncRunRecord] {
         isDemo ? demoRunLog : model.runLog
-    }
-
-    /// Calendar day string ("YYYY-MM-DD") in Japan time. Always the real date outside demo mode.
-    var today: String {
-        demoToday ?? JST.day(Date())
     }
 
     /// Navigates to Payments with optional month/cycle, category, layer, date range, search query, source, or uncategorized filter.
@@ -166,6 +190,7 @@ final class AppSession: ObservableObject {
         paymentsSource = source
         paymentsLayer = layer
         paymentsOnlyUncategorized = onlyUncategorized
+        paymentsRouteRevision &+= 1
         selectedTab = .payments
     }
 

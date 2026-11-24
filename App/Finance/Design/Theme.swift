@@ -21,8 +21,17 @@ enum Theme {
     static let badWash = Color("BadWash")
     static let track = Color("Track")
 
-    /// Warm burnished amber for approaching limits and cautionary indicators.
+    /// Warm burnished amber for bars, badges, and cautionary fills.
     static let warn = Color("LayerDayToDay")
+
+    /// High-contrast warning text token (WCAG AA compliant >= 4.5:1 on both light porcelain and dark obsidian surfaces).
+    static let warnText = Color(
+        UIColor { traits in
+            traits.userInterfaceStyle == .dark
+                ? UIColor(red: 0.96, green: 0.76, blue: 0.34, alpha: 1.0)
+                : UIColor(red: 0.56, green: 0.34, blue: 0.02, alpha: 1.0)
+        }
+    )
 
     /// Soft recessed interior container matching the warm alabaster / obsidian palette.
     static let well = Color("Track")

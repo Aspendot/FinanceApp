@@ -7,9 +7,11 @@ import Foundation
 /// every dash, long-vowel mark and wave dash into "-", and make small kana large.
 /// So "ﾌｧﾐﾘｰﾏｰﾄ", "フアミリ―マ―ト" and "ファミリーマート" share one key.
 public enum TextFold {
+    private static let posixLocale = Locale(identifier: "en_US_POSIX")
+
     public static func key(_ text: String) -> String {
         let nfkc = text.precomposedStringWithCompatibilityMapping
-            .folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            .folding(options: .caseInsensitive, locale: posixLocale)
         var kept = String.UnicodeScalarView()
         for scalar in nfkc.unicodeScalars where !scalar.properties.isWhitespace {
             kept.append(scalar)

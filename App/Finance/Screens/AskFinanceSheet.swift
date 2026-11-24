@@ -37,6 +37,8 @@ struct AskFinanceSheet: View {
             totalsByMonth: data.totalsByMonth,
             timeline: data.timeline,
             payday: data.payday,
+            liveCash: data.liveCash,
+            effectiveDebts: data.effectiveDebts,
             planSummary: data.planSummary,
             subscriptionSummary: data.subscriptionSummary,
             today: session.today
@@ -239,7 +241,7 @@ struct AskFinanceSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
+                    if !privacyMasked, let summaryNote = turn.summaryNote, !summaryNote.isEmpty {
                         Text(MaskedMoney.redactText(summaryNote, masked: privacyMasked))
                             .font(.subheadline)
                             .foregroundStyle(Theme.ink2)

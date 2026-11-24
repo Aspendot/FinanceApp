@@ -21,8 +21,7 @@ struct MonthsView: View {
     @State private var breakdownTab: BreakdownTab = .categories
     @State private var showAllCategories = false
     @State private var isScrubbingChart = false
-    @State private var cachedScreenKey: String = ""
-    @State private var cachedScreen: MonthsScreenModel?
+    @State private var screenCache = ScreenModelCache<String, MonthsScreenModel>()
 
     private var activeData: FinanceData? {
         session.resolvedData(from: model)
@@ -38,16 +37,14 @@ struct MonthsView: View {
     }
 
     private func resolvedScreen(for data: FinanceData) -> MonthsScreenModel {
-        let key = "\(data.id.uuidString)|\(session.periodMode.rawValue)|\(activeSelectedID ?? "")|\(session.today)"
-        if cachedScreenKey == key, let cachedScreen {
-            return cachedScreen
+        screenCache.get(for: screenCacheKey) {
+            MonthsScreenModel(
+                data: data,
+                periodMode: session.periodMode,
+                selectedPeriodID: activeSelectedID,
+                today: session.today
+            )
         }
-        return MonthsScreenModel(
-            data: data,
-            periodMode: session.periodMode,
-            selectedPeriodID: activeSelectedID,
-            today: session.today
-        )
     }
 
     var body: some View {
@@ -96,22 +93,6 @@ struct MonthsView: View {
             .background(Theme.page)
             .navigationTitle(session.periodMode == .payCycle ? "Pay Cycles" : "Months")
             .sensoryFeedback(.selection, trigger: session.periodMode)
-            .onChange(of: screenCacheKey, initial: true) { _, newKey in
-                guard let data = activeData, !newKey.isEmpty else {
-                    cachedScreen = nil
-                    cachedScreenKey = ""
-                    return
-                }
-                if cachedScreenKey != newKey || cachedScreen == nil {
-                    cachedScreen = MonthsScreenModel(
-                        data: data,
-                        periodMode: session.periodMode,
-                        selectedPeriodID: activeSelectedID,
-                        today: session.today
-                    )
-                    cachedScreenKey = newKey
-                }
-            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -369,8 +350,10 @@ struct MonthsView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 14)
                             .onChanged { value in
-                                // Only scrub when dragging primarily horizontally so vertical page scrolling never sticks.
-                                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                                // Only horizontal-scrub when all periods fit without native horizontal chart scrolling.
+                                guard screen.periodIDs.count <= 6,
+                                      abs(value.translation.width) > abs(value.translation.height)
+                                else { return }
                                 isScrubbingChart = true
                                 guard let plotFrame = proxy.plotFrame else { return }
                                 let plotX = value.location.x - geo[plotFrame].origin.x
@@ -538,20 +521,20 @@ struct MonthsView: View {
                     summaryDetailRow(
                         title: "Fixed (rent, bills, subs)",
                         value: MaskedMoney.yen(comp.fixedCosts, masked: privacyMasked),
-                        accessibilityValue: FinanceFormat.yenAccessibility(comp.fixedCosts),
+                        accessibilityValue: MaskedMoney.accessibility(comp.fixedCosts, masked: privacyMasked),
                         color: Theme.ink2
                     )
                     summaryDetailRow(
                         title: "Day-to-day",
                         value: MaskedMoney.yen(comp.dayToDayCosts, masked: privacyMasked),
-                        accessibilityValue: FinanceFormat.yenAccessibility(comp.dayToDayCosts),
+                        accessibilityValue: MaskedMoney.accessibility(comp.dayToDayCosts, masked: privacyMasked),
                         color: Theme.ink
                     )
                     if totals.debt != 0 {
                         summaryDetailRow(
                             title: "Debt payments",
                             value: MaskedMoney.yen(totals.debt, masked: privacyMasked),
-                            accessibilityValue: FinanceFormat.yenAccessibility(totals.debt),
+                            accessibilityValue: MaskedMoney.accessibility(totals.debt, masked: privacyMasked),
                             color: Theme.bad
                         )
                     }
@@ -559,7 +542,7 @@ struct MonthsView: View {
                         summaryDetailRow(
                             title: "Transfers to people",
                             value: MaskedMoney.yen(totals.people, masked: privacyMasked),
-                            accessibilityValue: FinanceFormat.yenAccessibility(totals.people),
+                            accessibilityValue: MaskedMoney.accessibility(totals.people, masked: privacyMasked),
                             color: Theme.ink2
                         )
                     }
@@ -573,7 +556,7 @@ struct MonthsView: View {
                             summaryDetailRow(
                                 title: leftLabel,
                                 value: MaskedMoney.signed(totals.left, masked: privacyMasked),
-                                accessibilityValue: FinanceFormat.yenAccessibility(totals.left, signed: true),
+                                accessibilityValue: MaskedMoney.accessibility(totals.left, signed: true, masked: privacyMasked),
                                 color: leftPositive ? Theme.good : Theme.bad,
                                 emphasized: true
                             )
@@ -1004,7 +987,7 @@ struct MonthsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(bar.name), \(FinanceFormat.yenAccessibility(bar.sum)), \(percent) percent, \(bar.count) \(paymentWord)")
+        .accessibilityLabel("\(bar.name), \(MaskedMoney.accessibility(bar.sum, masked: privacyMasked)), \(percent) percent, \(bar.count) \(paymentWord)")
     }
 
     private func openPaymentsForLayer(_ layer: SpendingLayer, period: BudgetPeriod?) {
@@ -1036,7 +1019,7 @@ struct MonthsView: View {
 
     private func chartAccessibilitySummary(screen: MonthsScreenModel) -> String {
         let title = screen.selectedPeriod?.title ?? screen.selectedPeriodID
-        let total = FinanceFormat.yenAccessibility(screen.selectedTotals.total)
+        let total = MaskedMoney.accessibility(screen.selectedTotals.total, masked: privacyMasked)
         return "Spending stacked chart. Selected period \(title), total spending \(total)."
     }
 }

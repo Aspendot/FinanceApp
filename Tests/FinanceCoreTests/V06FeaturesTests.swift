@@ -455,21 +455,21 @@ struct V06FeaturesTests {
         #expect(cfg.layer(group: "Excluded", category: "Excluded", layers: Self.sampleLayers) == nil)
 
         let items = [
-            BudgetItem(date: "2026-03-05", source: "Debit", merchant: "AMAZON P", amount: 600, group: "Subscriptions", category: "Other subs", layer: "Subscriptions"),
-            BudgetItem(date: "2026-03-07", source: "Debit", merchant: "AMAZON CO JP", amount: 3_400, group: "Shopping", category: "Online shopping", layer: "Day-to-day"),
-            BudgetItem(date: "2026-03-10", source: "Bank", merchant: "電話 KDDIリヨウキン", amount: 5_500, group: "Fixed bills", category: "Internet", layer: "Bills & taxes"),
-            BudgetItem(date: "2026-03-12", source: "Debit", merchant: "ANTHROPI", amount: 18_000, group: "Subscriptions", category: "AI", layer: "Subscriptions"),
+            BudgetItem(date: "2026-03-05", source: "Debit", merchant: "SAMPLE P", amount: 600, group: "Subscriptions", category: "Other subs", layer: "Subscriptions"),
+            BudgetItem(date: "2026-03-07", source: "Debit", merchant: "SAMPLE SHOP JP", amount: 3_000, group: "Shopping", category: "Online shopping", layer: "Day-to-day"),
+            BudgetItem(date: "2026-03-10", source: "Bank", merchant: "電話 SAMPLETEL", amount: 5_000, group: "Fixed bills", category: "Internet", layer: "Bills & taxes"),
+            BudgetItem(date: "2026-03-12", source: "Debit", merchant: "SAMPLECO", amount: 18_000, group: "Subscriptions", category: "AI", layer: "Subscriptions"),
         ]
-        let primeSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Amazon Prime", monthly: 600, status: "Check")]).running[0]
+        let primeSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Sample Prime", monthly: 600, status: "Check")]).running[0]
         let primeHist = SubscriptionHistory.compute(for: primeSub, allItems: items, months: ["2026-03"], today: "2026-04-14", config: cfg, layers: Self.sampleLayers)
         #expect(primeHist.matchedItems.count == 1)
-        #expect(primeHist.matchedItems[0].merchant == "AMAZON P")
+        #expect(primeHist.matchedItems[0].merchant == "SAMPLE P")
 
-        let kddiSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Fiber internet (billed by KDDI)", monthly: 5_500, status: "Keep")]).running[0]
-        let kddiHist = SubscriptionHistory.compute(for: kddiSub, allItems: items, months: ["2026-03"], today: "2026-04-14", config: cfg, layers: Self.sampleLayers)
-        #expect(kddiHist.matchedItems.count == 1)
+        let fiberSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Fiber internet (billed by SampleTel)", monthly: 5_000, status: "Keep")]).running[0]
+        let fiberHist = SubscriptionHistory.compute(for: fiberSub, allItems: items, months: ["2026-03"], today: "2026-04-14", config: cfg, layers: Self.sampleLayers)
+        #expect(fiberHist.matchedItems.count == 1)
 
-        let aiSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Claude (Anthropic)", monthly: 17_950, status: "Keep")]).running[0]
+        let aiSub = SubscriptionSummary.compute(from: [SubscriptionEntry(name: "Sample AI (SampleCorp)", monthly: 18_000, status: "Keep")]).running[0]
         let aiHist = SubscriptionHistory.compute(for: aiSub, allItems: items, months: ["2026-03"], today: "2026-04-14", config: cfg, layers: Self.sampleLayers)
         #expect(aiHist.matchedItems.count == 1)
 
@@ -564,30 +564,30 @@ struct V06FeaturesTests {
         #expect(forecast.startingCashEstimate == 220_000)
     }
 
-    @Test("Alerts suppress consecutive-day routine convenience-store buys, active-sub collisions, pre-stop charges, and LAWSON-vs-AWS")
+    @Test("Alerts suppress consecutive-day routine convenience-store buys, active-sub collisions, pre-stop charges, and substring word traps")
     func alertPrecisionEliminatesFalsePositives() {
         let items = [
             // Consecutive-day routine convenience store purchases -> NOT duplicates.
-            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "KONBINI", amount: 685, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
-            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "KONBINI", amount: 685, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "KONBINI", amount: 500, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "KONBINI", amount: 500, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
             // Same-day identical charge -> IS a possible duplicate.
             BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "BAR SAMPLE", amount: 900, group: "Going out", category: "Bars", layer: "Day-to-day"),
             BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "BAR SAMPLE", amount: 900, group: "Going out", category: "Bars", layer: "Day-to-day"),
-            // Active Claude subscription must NOT trigger stopped API credits alert.
-            BudgetItem(date: "2026-04-10", source: "Sample Debit", merchant: "ANTHROPI", amount: 17_950, group: "Subscriptions", category: "AI", layer: "Subscriptions"),
+            // Active subscription must NOT trigger stopped API credits alert.
+            BudgetItem(date: "2026-04-10", source: "Sample Debit", merchant: "SAMPLECO", amount: 18_000, group: "Subscriptions", category: "AI", layer: "Subscriptions"),
             // Pre-stop charge on a cancelled sub (stoppedDate 2026-04-10) must NOT alert.
-            BudgetItem(date: "2026-04-05", source: "Sample Debit", merchant: "DISCORD NITRO", amount: 1_050, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
+            BudgetItem(date: "2026-04-05", source: "Sample Debit", merchant: "CHAT PLUS", amount: 1_000, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
             // Post-stop charge on a cancelled sub MUST alert.
-            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "STREAMING PRO", amount: 1_980, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
-            // LAWSON contains "aws" inside the word -> must NOT match stopped AWS subscription.
-            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "LAWSON", amount: 3_500, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
+            BudgetItem(date: "2026-04-12", source: "Sample Debit", merchant: "STREAMING PRO", amount: 2_000, group: "Subscriptions", category: "Apps", layer: "Subscriptions"),
+            // "PAWSOME" contains "aws" inside the word -> must NOT match stopped short-token subscription.
+            BudgetItem(date: "2026-04-13", source: "Sample Debit", merchant: "PAWSOME MART", amount: 3_000, group: "Food", category: "Convenience stores", layer: "Day-to-day"),
         ]
         let subs = [
-            SubscriptionEntry(name: "Claude (Anthropic)", monthly: 17_950, status: "Keep"),
-            SubscriptionEntry(name: "OpenAI / Anthropic API credits", monthly: 4_900, status: "Stopped", stoppedDate: "2026-04-01"),
-            SubscriptionEntry(name: "Discord Nitro", monthly: 1_050, status: "Cancelled", stoppedDate: "2026-04-10"),
-            SubscriptionEntry(name: "Streaming Pro", monthly: 1_980, status: "Cancelled", stoppedDate: "2026-04-10"),
-            SubscriptionEntry(name: "AWS", monthly: 18_400, status: "Stopped", stoppedDate: "2026-04-01"),
+            SubscriptionEntry(name: "Sample AI (SampleCorp)", monthly: 18_000, status: "Keep"),
+            SubscriptionEntry(name: "SampleCorp API credits", monthly: 5_000, status: "Stopped", stoppedDate: "2026-04-01"),
+            SubscriptionEntry(name: "Chat Plus", monthly: 1_000, status: "Cancelled", stoppedDate: "2026-04-10"),
+            SubscriptionEntry(name: "Streaming Pro", monthly: 2_000, status: "Cancelled", stoppedDate: "2026-04-10"),
+            SubscriptionEntry(name: "AWS", monthly: 20_000, status: "Stopped", stoppedDate: "2026-04-01"),
         ]
         let bundle = DataBundle(
             generatedAt: "2026-04-14T10:00:00+09:00",
@@ -616,5 +616,147 @@ struct V06FeaturesTests {
         let subAlerts = alerts.filter { $0.kind == .cancelledSubscriptionCharge }
         #expect(subAlerts.count == 1)
         #expect(subAlerts[0].detail.contains("STREAMING PRO"))
+    }
+
+    @Test("Audit regressions: unequal interchangeable matching, CRLF CSV, overdue rollover, LiveCash post-asOf rows, PayCycle guard, multiset delete")
+    func auditHardeningRegressions() throws {
+        // 1. 3 identical notices vs 2 identical bank rows must NOT reuse a row or crash.
+        let bundle = DataBundle(
+            generatedAt: "2026-04-14T10:00:00+09:00",
+            asOf: "2026-04-01",
+            coverage: ["mufg_debit": CoverageRange(start: "2026-01-01", end: "2026-04-01")],
+            sourceLabels: ["mufg_debit": "Sample Debit"],
+            items: [],
+            layers: Self.sampleLayers,
+            layerConfig: Self.sampleConfig
+        )
+        let bankTxs = [
+            BankTransaction(id: "tx-1", connectedAccountID: "acc-1", date: "2026-04-05", amount: 1_000, description: "SAMPLE SHOP"),
+            BankTransaction(id: "tx-2", connectedAccountID: "acc-1", date: "2026-04-05", amount: 1_000, description: "SAMPLE SHOP"),
+        ]
+        let threeNotices = ["n-1", "n-2", "n-3"].map { id in
+            Notice(
+                messageID: id,
+                source: .mufgDebit,
+                kind: .purchase,
+                receivedAt: "2026-04-05T10:00:00+09:00",
+                occurredOn: "2026-04-05",
+                amount: 1_000,
+                currency: "JPY",
+                merchant: "SAMPLE SHOP",
+                reference: nil,
+                parser: "test"
+            )
+        }
+        let layered = BankLayering.build(
+            bundle: bundle,
+            bankTransactions: bankTxs,
+            accountMapping: ["acc-1": "mufg_debit"],
+            notices: threeNotices,
+            categorizer: Categorizer(rules: RuleSet()),
+            config: Self.sampleConfig
+        )
+        #expect(layered.matchedPairs.count == 2)
+        #expect(Set(layered.matchedPairs.map(\.transactionID)).count == 2)
+        #expect(layered.pendingNoticeIDs.count == 1)
+
+        // Statement Matcher must also never reuse a row when 3 notices face 2 identical rows.
+        let stmtRows = [
+            StatementRow(id: "r-1", source: .mufgDebit, date: "2026-04-05", amount: 1_000, merchant: "SAMPLE SHOP"),
+            StatementRow(id: "r-2", source: .mufgDebit, date: "2026-04-05", amount: 1_000, merchant: "SAMPLE SHOP"),
+        ]
+        let matchReport = Matcher.match(notices: threeNotices, rows: stmtRows)
+        #expect(matchReport.pairs.count == 2)
+        #expect(Set(matchReport.pairs.map(\.rowID)).count == 2)
+
+        // 2. PayPay CSV with CRLF line endings + overlapping external ID pool handling.
+        let crlfCSV = [
+            "取引日,出金金額（円）,入金金額（円）,取引内容,取引先,取引方法,取引番号",
+            "2026/04/10 10:00:00,500,-,支払い,SAMPLE COFFEE,PayPay残高,TX-OLD",
+            "2026/04/10 14:00:00,500,-,支払い,SAMPLE COFFEE,PayPay残高,TX-NEW",
+        ].joined(separator: "\r\n")
+        let existingCoffee = BudgetItem(date: "2026-04-10", source: "PayPay", merchant: "SAMPLE COFFEE", amount: 500, group: "Food", category: "Coffee", layer: "Day-to-day")
+        let csvResult = try PayPayCSVParser.parse(
+            csvText: crlfCSV,
+            categorizer: Categorizer(rules: RuleSet()),
+            existingItems: [existingCoffee],
+            existingExternalIDs: ["paypay:TX-OLD"]
+        )
+        #expect(csvResult.entries.count == 1)
+        #expect(csvResult.entries[0].externalID == "paypay:TX-NEW")
+        #expect(csvResult.skippedDuplicates == 1)
+
+        // 3. Salary rollover must preserve unpaid overdue bills instead of silently dropping them.
+        let rolloverTimeline = [
+            TimelineEntry(date: "2026-04-24", item: "Overdue Rent", amount: 80_000),
+            TimelineEntry(
+                date: "2026-04-25",
+                item: "Salary",
+                amount: -300_000,
+                payday: true,
+                next: true,
+                match: TimelineMatch(source: "Sample Bank", pattern: "SALARY", dir: "in", window: [-3, 3])
+            ),
+            TimelineEntry(date: "2026-05-25", item: "Salary", amount: -300_000, payday: true),
+        ]
+        let salaryRow = TimelineReconciler.BankRow(source: "Sample Bank", date: "2026-04-25", amount: -300_000, description: "SALARY DEPOSIT")
+        let reconciled = TimelineReconciler.reconcile(timeline: rolloverTimeline, bankRows: [salaryRow])
+        #expect(reconciled.contains(where: { $0.item == "Overdue Rent" && $0.done != true }))
+        #expect(reconciled.contains(where: { $0.date == "2026-05-25" && $0.next == true }))
+
+        // 4. JST.dayNumber rejects impossible dates like Feb 31, and PayCycle survives malformed dates.
+        #expect(JST.dayNumber("2026-02-31") == nil)
+        #expect(JST.dayNumber("2026-02-28") != nil)
+        let badTimeline = [TimelineEntry(date: "2026-04-xx", item: "Salary", amount: -300_000, payday: true, next: true)]
+        let safeCycles = PayCycleBuilder.payCycles(items: [], timeline: badTimeline, config: Self.sampleConfig, today: "2026-04-14")
+        #expect(safeCycles.isEmpty)
+
+        // 5. Deleting 1 of 2 identical same-day local entries only hides 1 copy.
+        let copyA = BudgetItem(date: "2026-04-14", source: "Cash", merchant: "BAKERY", amount: 500, group: "Food", category: "Coffee", layer: "Day-to-day")
+        let copyB = copyA
+        let fp = CategoryOverride.transactionFingerprint(for: copyA)
+        let mods = LocalModifications(deletedEntryFingerprintCounts: [fp: 1])
+        let applied = LocalDataApplier.apply(baseItems: [copyA, copyB], modifications: mods, config: Self.sampleConfig, layers: Self.sampleLayers)
+        #expect(applied.allItems.count == 1)
+
+        // 6. LiveCash releases phone checkoff hold once exact-amount post-asOf bank outflow posts.
+        let bal = [AccountBalance(source: "bank", label: "Main Bank", balance: 200_000, asOf: "2026-04-12")]
+        let tl = [
+            TimelineEntry(date: "2026-03-25", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(date: "2026-04-14", item: "Water", amount: 4_000, done: true),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+        ]
+        let pv = PaydayView.compute(timeline: tl, today: "2026-04-14")!
+        let settledRow = TimelineReconciler.BankRow(source: "Main Bank", date: "2026-04-14", amount: 4_000, description: "WATER BILL")
+        let liveAfterClear = LiveCashSummary.compute(
+            accountBalances: bal,
+            sourceLabels: ["bank": "Main Bank"],
+            bankRows: [settledRow],
+            pendingItems: [],
+            payday: pv,
+            phoneCheckedBillKeys: [BillCheckoff.key(for: tl[1])],
+            lastPayday: "2026-03-25"
+        )!
+        #expect(liveAfterClear.estimatedBankCash == 196_000)
+        #expect(liveAfterClear.phoneCheckedBillsSum == 0)
+        #expect(liveAfterClear.cashLeftUntilPayday == 196_000)
+
+        // 7. FinanceQueryEngine matches LiveCash headline & ignores substring word traps ("lower" vs "owe").
+        let queryCtx = FinanceQueryEngine.Context(
+            bundle: bundle,
+            allItems: [copyA],
+            totalsByMonth: MonthTotals.compute(items: [copyA], config: Self.sampleConfig, layers: Self.sampleLayers),
+            timeline: tl,
+            payday: pv,
+            liveCash: liveAfterClear,
+            effectiveDebts: [DebtEntry(name: "Sample Loan", balance: 50_000)],
+            planSummary: PlanSummary.compute(plan: [], planWindow: nil, totalsByMonth: [:], selectedMonth: "2026-04", currentMonth: "2026-04", inProgressMonth: "2026-04"),
+            subscriptionSummary: SubscriptionSummary.compute(from: []),
+            today: "2026-04-14"
+        )
+        let paydayAns = FinanceQueryEngine.answer("How much is left until payday?", context: queryCtx)
+        #expect(paydayAns.headline == "¥196,000")
+        let lowerAns = FinanceQueryEngine.answer("How much did I spend on power?", context: queryCtx)
+        #expect(lowerAns.headline != "¥50,000")
     }
 }

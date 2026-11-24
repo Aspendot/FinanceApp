@@ -460,17 +460,36 @@ public enum SpendingInsights {
 
     // MARK: - Debt Payoff Math
 
-    /// Extracts an annual interest rate (e.g. "18.0%" or "~15%") from a debt's info lines, if written.
+    /// Extracts an annual interest rate (e.g. "18.0% APR" or "~15%") from a debt's info lines, if written.
+    /// Avoids confusing credit-limit utilization lines (e.g. "70% of limit used") with an APR.
     public static func extractAnnualRate(from lines: [String]?) -> Double? {
         guard let lines else { return nil }
         let pattern = #"(\d+(?:\.\d+)?)\s*%"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        for line in lines {
+        let rateHints = ["apr", "rate", "interest", "金利", "年利", "年率", "実質"]
+        let nonRateHints = ["limit", "used", "utilization", "限度", "利用枠", "枠"]
+
+        func matchPercent(in line: String) -> Double? {
             let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            if let match = regex.firstMatch(in: line, range: range),
-               let r = Range(match.range(at: 1), in: line),
-               let value = Double(line[r]), value >= 0, value <= 100
-            {
+            guard let match = regex.firstMatch(in: line, range: range),
+                  let r = Range(match.range(at: 1), in: line),
+                  let value = Double(line[r]), value >= 0, value <= 100
+            else { return nil }
+            return value
+        }
+
+        // Pass 1: prefer lines explicitly mentioning interest / APR.
+        for line in lines {
+            let lower = line.lowercased()
+            if rateHints.contains(where: { lower.contains($0) }), let value = matchPercent(in: line) {
+                return value
+            }
+        }
+        // Pass 2: fallback to a bare percentage line only if it does not describe limit utilization.
+        for line in lines {
+            let lower = line.lowercased()
+            if nonRateHints.contains(where: { lower.contains($0) }) { continue }
+            if let value = matchPercent(in: line) {
                 return value
             }
         }
@@ -666,7 +685,29 @@ public enum SpendingInsights {
             }
         }
 
-        // 2. Unpaid scheduled bills due within the next 3 days (including today).
+        // 2. Overdue unpaid bills and unpaid scheduled bills due within the next 3 days (including today).
+        let overdueBills = timeline.filter { entry in
+            entry.done != true
+                && entry.event != true
+                && entry.borrowed != true
+                && entry.amount > 0
+                && entry.date < today
+        }
+        for entry in overdueBills.prefix(3) {
+            let daysOver = max(1, todayNum - (JST.dayNumber(entry.date) ?? todayNum))
+            let est = entry.estimate == true ? " (estimate)" : ""
+            let overdueText = "Overdue by \(daysOver) \(daysOver == 1 ? "day" : "days") (due \(entry.date))"
+            alerts.append(FinanceAlert(
+                id: "overdue:\(entry.date):\(entry.item):\(entry.amount)",
+                kind: .upcomingBillSoon,
+                severity: .urgent,
+                title: "\(entry.item) · ¥\(entry.amount.formatted())\(est)",
+                detail: entry.note.map { "\(overdueText) · \($0)" } ?? overdueText,
+                badge: "Overdue",
+                action: .openComingUp
+            ))
+        }
+
         if let soonLimit = JST.addingDays(3, to: today) {
             let dueSoon = timeline.filter { entry in
                 entry.done != true

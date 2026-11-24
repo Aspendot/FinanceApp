@@ -19,11 +19,73 @@ struct SnapshotProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SnapshotEntry>) -> Void) {
-        completion(Timeline(entries: [current()], policy: .after(Date(timeIntervalSinceNow: 30 * 60))))
+        let now = Date()
+        let base = SharedStore.read() ?? .placeholder
+        let hasGroup = SharedStore.groupID != nil
+        var entries = [SnapshotEntry(date: now, snapshot: Self.adjustedSnapshot(base, on: now), hasGroup: hasGroup)]
+
+        // Schedule an automatic JST midnight rollover entry so `daysToPayday` advances overnight without opening the app.
+        let jst = TimeZone(secondsFromGMT: 9 * 3600)!
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = jst
+        if let tomorrowStart = cal.nextDate(
+            after: now,
+            matching: DateComponents(hour: 0, minute: 0, second: 5),
+            matchingPolicy: .nextTime
+        ) {
+            entries.append(SnapshotEntry(
+                date: tomorrowStart,
+                snapshot: Self.adjustedSnapshot(base, on: tomorrowStart),
+                hasGroup: hasGroup
+            ))
+        }
+        let nextRefresh = min(
+            now.addingTimeInterval(30 * 60),
+            entries.count > 1 ? entries[1].date.addingTimeInterval(60) : now.addingTimeInterval(30 * 60)
+        )
+        completion(Timeline(entries: entries, policy: .after(nextRefresh)))
     }
 
     private func current() -> SnapshotEntry {
-        SnapshotEntry(date: Date(), snapshot: SharedStore.read() ?? .placeholder, hasGroup: SharedStore.groupID != nil)
+        let now = Date()
+        let snap = Self.adjustedSnapshot(SharedStore.read() ?? .placeholder, on: now)
+        return SnapshotEntry(date: now, snapshot: snap, hasGroup: SharedStore.groupID != nil)
+    }
+
+    /// Recomputes `daysToPayday` and title from `paydayDate` in JST so countdowns never freeze overnight.
+    private static func adjustedSnapshot(_ raw: WidgetSnapshot, on date: Date) -> WidgetSnapshot {
+        guard let paydayDate = raw.paydayDate,
+              let targetDay = dayNumber(paydayDate)
+        else { return raw }
+        let jst = TimeZone(secondsFromGMT: 9 * 3600)!
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = jst
+        let c = cal.dateComponents([.year, .month, .day], from: date)
+        guard let y = c.year, let m = c.month, let d = c.day,
+              let todayNum = dayNumber(String(format: "%04d-%02d-%02d", y, m, d))
+        else { return raw }
+        let remaining = max(0, targetDay - todayNum)
+        var copy = raw
+        copy.daysToPayday = remaining
+        if raw.title.hasPrefix("Until payday") {
+            let word = remaining == 1 ? "day" : "days"
+            copy.title = "Until payday · \(remaining) \(word)"
+        }
+        return copy
+    }
+
+    private static func dayNumber(_ text: String) -> Int? {
+        let p = text.split(separator: "-", omittingEmptySubsequences: false)
+        guard p.count == 3, p[0].count == 4, p[1].count == 2, p[2].count == 2,
+              let y = Int(p[0]), let m = Int(p[1]), let d = Int(p[2]),
+              (1...12).contains(m), (1...31).contains(d)
+        else { return nil }
+        let yy = m <= 2 ? y - 1 : y
+        let era = (yy >= 0 ? yy : yy - 399) / 400
+        let yoe = yy - era * 400
+        let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+        return era * 146_097 + doe - 719_468
     }
 }
 
