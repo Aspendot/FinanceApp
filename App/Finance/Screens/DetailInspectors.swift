@@ -915,6 +915,8 @@ struct AddReminderSheet: View {
                         .font(.subheadline)
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                         .font(.subheadline)
+                        .environment(\.timeZone, JST.timeZone)
+                        .environment(\.calendar, DayText.calendar)
                     Toggle("Reminder event only (no yen amount)", isOn: $isEvent)
                         .font(.subheadline)
                         .tint(Theme.accent)

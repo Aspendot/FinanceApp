@@ -561,7 +561,8 @@ public enum ReviewInboxBuilder {
         // Precompute top day-to-day spending categories for fallback suggestions (avoid suggesting
         // fixed bills like Rent/Utilities or non-spending groups for everyday card/cash purchases).
         let deprioritizedGroups: Set<String> = [
-            "fixed bills", "bills", "housing", "income", "people", "debt", "transfers", "excluded", "work"
+            "fixed bills", "bills", "housing", "subscriptions", "ai & subscriptions",
+            "income", "people", "debt", "transfers", "excluded", "work",
         ]
         let deprioritizedCategories: Set<String> = [
             "rent", "utilities", "electricity & gas", "resident tax (住民税)", "salary", "salary / bonus"

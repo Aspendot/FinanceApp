@@ -313,6 +313,8 @@ struct ReceiptScanSheet: View {
                     .labelsHidden()
                     .datePickerStyle(.compact)
                     .tint(Theme.accent)
+                    .environment(\.timeZone, JST.timeZone)
+                    .environment(\.calendar, DayText.calendar)
                 }
 
                 HStack(spacing: 10) {

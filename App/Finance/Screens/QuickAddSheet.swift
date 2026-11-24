@@ -182,6 +182,8 @@ struct QuickAddSheet: View {
                     DatePicker("Date", selection: $date, displayedComponents: .date)
                         .font(.subheadline)
                         .foregroundStyle(Theme.ink)
+                        .environment(\.timeZone, JST.timeZone)
+                        .environment(\.calendar, DayText.calendar)
 
                     TextField("Note (optional)", text: $note)
                         .font(.subheadline)
