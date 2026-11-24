@@ -879,9 +879,51 @@ struct V06FeaturesTests {
         // Apr 16 Rent (80,000) -> 100,400, which MUST equal live.cashLeftUntilPayday to the exact yen.
         #expect(running.balanceAfter[3] == [100_400])
         #expect(live.cashLeftUntilPayday == 100_400)
+        #expect(running.cashAfterBills == 100_400)
+
+        // Open credit/borrowing room before next payday reconciles with LiveCashSummary.cashLeftIfBorrowed.
+        #expect(running.openCreditSources == [
+            ComingUpCreditSource(item: "Card room", shortLabel: "Card room", amount: 38_000),
+        ])
+        #expect(running.openCreditSum == 38_000)
+        #expect(running.totalWithCredit == 138_400)
+        #expect(running.totalWithCredit == live.cashLeftIfBorrowed)
 
         // Apr 25 Payday Salary (+300,000) -> 400,400; Apr 26 Sub (4,000) -> 396,400.
         #expect(running.balanceAfter[4] == [400_400])
         #expect(running.balanceAfter[5] == [396_400])
+
+        // Compact label extraction strips descriptive suffix after ":" and skips settled (done) borrowings.
+        #expect(ComingUpCreditSource.compactLabel(for: "Card A: usable room") == "Card A")
+        #expect(ComingUpCreditSource.compactLabel(for: "Loan B: borrow ¥10,000 again") == "Loan B")
+        let mixedTimeline = [
+            TimelineEntry(date: "2026-04-10", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(date: "2026-04-14", item: "Card A: usable room", amount: -38_000, borrowed: true),
+            TimelineEntry(date: "2026-04-15", item: "Loan B: borrow ¥10,000 again", amount: -10_000, borrowed: true),
+            TimelineEntry(date: "2026-04-16", item: "Loan C: already drawn", amount: -5_000, done: true, borrowed: true),
+            TimelineEntry(date: "2026-04-20", item: "Rent", amount: 80_000),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+            TimelineEntry(date: "2026-04-28", item: "Next cycle loan: borrow", amount: -10_000, borrowed: true),
+        ]
+        let mixedPayday = try #require(PaydayView.compute(timeline: mixedTimeline, today: "2026-04-14"))
+        let mixedLive = try #require(LiveCashSummary.compute(
+            accountBalances: balances,
+            sourceLabels: labels,
+            bankRows: [],
+            pendingItems: pending,
+            payday: mixedPayday,
+            lastPayday: "2026-04-10"
+        ))
+        let mixedGroups = ComingUp.groups(timeline: mixedTimeline, today: "2026-04-14")
+        let mixedRunning = try #require(ComingUp.runningBalances(
+            groups: mixedGroups,
+            today: "2026-04-14",
+            liveCash: mixedLive,
+            lastPayday: "2026-04-10"
+        ))
+        #expect(mixedRunning.openCreditSources.map(\.shortLabel) == ["Card A", "Loan B"])
+        #expect(mixedRunning.openCreditSum == 48_000)
+        #expect(mixedRunning.cashAfterBills == mixedLive.cashLeftUntilPayday)
+        #expect(mixedRunning.totalWithCredit == mixedLive.cashLeftIfBorrowed)
     }
 }

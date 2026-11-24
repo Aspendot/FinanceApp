@@ -23,6 +23,34 @@ public struct ComingUpGroup: Codable, Sendable, Equatable {
     }
 }
 
+/// One unsettled optional borrowing or credit-room entry available before the next payday.
+public struct ComingUpCreditSource: Sendable, Equatable {
+    /// Full entry title from the timeline (e.g. `"Card credit: usable room"`).
+    public var item: String
+    /// Compact display label (text before `":"` when present, otherwise `item`).
+    public var shortLabel: String
+    /// Positive yen amount available (`-entry.amount`).
+    public var amount: Int
+
+    public init(item: String, shortLabel: String? = nil, amount: Int) {
+        self.item = item
+        self.shortLabel = shortLabel ?? Self.compactLabel(for: item)
+        self.amount = amount
+    }
+
+    /// Extracts a concise source name from a timeline title (prefix before `":"` if non-empty).
+    public static func compactLabel(for item: String) -> String {
+        let trimmed = item.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let colon = trimmed.firstIndex(of: ":") {
+            let prefix = trimmed[..<colon].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !prefix.isEmpty {
+                return String(prefix)
+            }
+        }
+        return trimmed
+    }
+}
+
 /// Running bank-cash balance projection across chronological `ComingUpGroup` entries starting from today.
 public struct ComingUpRunningBalance: Sendable, Equatable {
     /// Current live bank cash right now (before reserving unsettled overdue bills).
@@ -37,6 +65,14 @@ public struct ComingUpRunningBalance: Sendable, Equatable {
     public var pastPendingInflowsSum: Int
     /// Available bank cash entering today's scheduled bills (`cashNow + pastPendingInflowsSum - priorHeldSum`).
     public var startingTodayCash: Int
+    /// Projected bank cash after all scheduled bills before the next payday (matches `LiveCashSummary.cashLeftUntilPayday`).
+    public var cashAfterBills: Int
+    /// Unsettled optional borrowing and credit-room entries available before the next payday.
+    public var openCreditSources: [ComingUpCreditSource]
+    /// Sum of unsettled optional borrowing / credit room before the next payday.
+    public var openCreditSum: Int { openCreditSources.reduce(0) { $0 + $1.amount } }
+    /// Total funds before next payday including optional borrowing / credit room (`cashAfterBills + openCreditSum`).
+    public var totalWithCredit: Int { cashAfterBills + openCreditSum }
     /// Projected balance immediately after each entry at `balanceAfter[groupIndex][entryIndex]`,
     /// or `nil` for entries that do not move bank cash from today onward (past paid items, events,
     /// card-billed renewals, or optional borrowing).
@@ -48,6 +84,8 @@ public struct ComingUpRunningBalance: Sendable, Equatable {
         pastPhoneHeldSum: Int,
         pastPendingInflowsSum: Int = 0,
         startingTodayCash: Int,
+        cashAfterBills: Int? = nil,
+        openCreditSources: [ComingUpCreditSource] = [],
         balanceAfter: [[Int?]]
     ) {
         self.cashNow = cashNow
@@ -55,6 +93,8 @@ public struct ComingUpRunningBalance: Sendable, Equatable {
         self.pastPhoneHeldSum = pastPhoneHeldSum
         self.pastPendingInflowsSum = pastPendingInflowsSum
         self.startingTodayCash = startingTodayCash
+        self.cashAfterBills = cashAfterBills ?? startingTodayCash
+        self.openCreditSources = openCreditSources
         self.balanceAfter = balanceAfter
     }
 }
@@ -126,13 +166,29 @@ public enum ComingUp {
             }
         }
 
+        let nextPaydayDate = groups.first { group in
+            group.entries.contains { $0.next == true }
+        }?.date
+
+        var openCreditSources: [ComingUpCreditSource] = []
+        for group in groups {
+            if let nextPaydayDate, group.date >= nextPaydayDate { break }
+            for entry in group.entries where entry.borrowed == true && entry.done != true && entry.amount < 0 {
+                openCreditSources.append(ComingUpCreditSource(item: entry.item, amount: -entry.amount))
+            }
+        }
+
         let startingToday = cashNow + pastPendingInflows - overdueUnpaid - pastPhoneHeld
         var running = startingToday
+        var cashBeforeNextPayday: Int?
         var matrix: [[Int?]] = []
         matrix.reserveCapacity(groups.count)
 
         // Pass 2: step through today and future groups in chronological order.
         for group in groups {
+            if cashBeforeNextPayday == nil, let nextPaydayDate, group.date >= nextPaydayDate {
+                cashBeforeNextPayday = running
+            }
             if group.date < today {
                 matrix.append(Array(repeating: nil, count: group.entries.count))
                 continue
@@ -169,6 +225,8 @@ public enum ComingUp {
             pastPhoneHeldSum: pastPhoneHeld,
             pastPendingInflowsSum: pastPendingInflows,
             startingTodayCash: startingToday,
+            cashAfterBills: cashBeforeNextPayday ?? running,
+            openCreditSources: openCreditSources,
             balanceAfter: matrix
         )
     }
