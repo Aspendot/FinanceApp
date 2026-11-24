@@ -5,10 +5,12 @@ import SwiftUI
 struct WhereToCutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
     @EnvironmentObject private var session: AppSession
 
     let plan: PlanSummary
     var isPresentedModally: Bool = false
+    var activePace: Double? = nil
 
     @State private var showSettled = false
 
@@ -141,7 +143,7 @@ struct WhereToCutView: View {
     private func planRowView(_ row: PlanRow) -> some View {
         Button {
             if isPresentedModally { dismiss() }
-            session.openPayments(month: plan.selectedMonth, category: row.entry.category)
+            session.activeSheet = .categoryDetail(name: row.entry.category, periodID: plan.selectedMonth)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 if dynamicTypeSize.isAccessibilitySize {
@@ -197,13 +199,13 @@ struct WhereToCutView: View {
                     let barColor: Color = row.selectedMonthSpent > target
                         ? Theme.bad
                         : (ratio >= 0.8 ? Theme.warn : Theme.good)
-                    ProgressMeter(ratio: ratio, tint: barColor, height: 6)
+                    ProgressMeter(ratio: ratio, tint: barColor, height: 6, paceRatio: activePace)
                 }
 
                 FlowLayout(horizontalSpacing: 16, verticalSpacing: 4) {
-                    metricPair(label: DayText.shortMonth(plan.selectedMonth + "-01"), value: Money.yen(row.selectedMonthSpent))
-                    metricPair(label: "Avg", value: Money.yen(row.entry.now))
-                    metricPair(label: "Target", value: row.entry.target.map { Money.yen($0) } ?? "—")
+                    metricPair(label: "Period", value: MaskedMoney.yen(row.selectedMonthSpent, masked: privacyMasked))
+                    metricPair(label: "Avg", value: MaskedMoney.yen(row.entry.now, masked: privacyMasked))
+                    metricPair(label: "Target", value: row.entry.target.map { MaskedMoney.yen($0, masked: privacyMasked) } ?? "—")
                 }
             }
             .contentShape(Rectangle())

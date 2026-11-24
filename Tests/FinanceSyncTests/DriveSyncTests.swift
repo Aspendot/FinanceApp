@@ -238,4 +238,66 @@ struct DriveSyncTests {
             _ = try await client.listAppDataFiles()
         }
     }
+
+    @Test("GoogleDriveClient uploads new appDataFolder file with multipart POST and updates existing with PATCH")
+    func driveClientUploadCreateAndUpdate() async throws {
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let store = InMemoryTokenStore(tokens: OAuthTokens(
+            accessToken: "drive-token",
+            refreshToken: "refresh-3",
+            expiresAt: now.addingTimeInterval(3600),
+            scope: "\(GoogleOAuth.gmailReadOnlyScope) \(GoogleOAuth.driveAppDataScope)"
+        ))
+
+        let payload = Data("FNB1".utf8) + Data(repeating: 0x55, count: 48)
+        let transport = FakeHTTPTransport()
+        // 1. Create path: list returns empty, then multipart POST returns file metadata.
+        await transport.enqueue(try TestJSON.response(json: ["files": []]))
+        await transport.enqueue(try TestJSON.response(json: [
+            "id": "edits-file-1",
+            "name": "phone-edits.fnb",
+            "modifiedTime": "2026-04-14T10:00:00.000Z",
+            "md5Checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size": "\(payload.count)",
+        ]))
+        // 2. Update path: list returns existing file, then PATCH updates media bytes.
+        await transport.enqueue(try TestJSON.response(json: [
+            "files": [[
+                "id": "edits-file-1",
+                "name": "phone-edits.fnb",
+            ]],
+        ]))
+        await transport.enqueue(try TestJSON.response(json: [
+            "id": "edits-file-1",
+            "name": "phone-edits.fnb",
+            "modifiedTime": "2026-04-14T10:05:00.000Z",
+            "md5Checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "size": "\(payload.count)",
+        ]))
+
+        let client = GoogleDriveClient(
+            clientID: sampleClientID,
+            tokenStore: store,
+            transport: transport,
+            sleeper: RecordingSleeper(),
+            now: { now }
+        )
+
+        let created = try await client.uploadAppDataFile(name: GoogleDriveClient.phoneEditsFileName, data: payload)
+        #expect(created.id == "edits-file-1")
+        #expect(created.md5Checksum == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+        let updated = try await client.uploadAppDataFile(name: GoogleDriveClient.phoneEditsFileName, data: payload)
+        #expect(updated.md5Checksum == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+        let requests = await transport.requests()
+        #expect(requests.count == 4)
+        #expect(requests[1].method == "POST")
+        #expect(requests[1].url.absoluteString.contains("uploadType=multipart"))
+        #expect(requests[1].headers["Content-Type"]?.hasPrefix("multipart/related; boundary=") == true)
+        #expect(requests[3].method == "PATCH")
+        #expect(requests[3].url.absoluteString.contains("/files/edits-file-1"))
+        #expect(requests[3].url.absoluteString.contains("uploadType=media"))
+        #expect(requests[3].body == payload)
+    }
 }

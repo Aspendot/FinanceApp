@@ -6,65 +6,76 @@ struct PaymentsView: View {
     @EnvironmentObject private var session: AppSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var statusFilter: PaymentStatusFilter = .all
     @State private var typeFilter: PaymentTypeFilter = .payments
     @State private var sortOrder: PaymentSortOrder = .newest
     @State private var inspectedPayment: InspectedPayment?
+    @State private var quickRecategorizeItem: BudgetItem?
+
+    private var activeSelectedID: String? {
+        session.periodMode == .payCycle ? session.paymentsCycleID : session.paymentsMonth
+    }
 
     private var hasExtraFilters: Bool {
-        statusFilter != .all || typeFilter != .payments || sortOrder != .newest || session.paymentsSource != nil
+        statusFilter != .all
+            || typeFilter != .payments
+            || sortOrder != .newest
+            || session.paymentsSource != nil
+            || session.paymentsLayer != nil
+            || session.paymentsDateRange != nil
     }
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.cardSpacing) {
-                    if let data = session.resolvedData(from: model) {
-                        let effectiveStatus: PaymentStatusFilter = session.paymentsOnlyUncategorized
-                            ? .uncategorized
-                            : statusFilter
-                        let screen = PaymentsScreenModel(
-                            data: data,
-                            selectedMonth: session.paymentsMonth,
-                            allMonths: session.paymentsAllMonths,
-                            category: session.paymentsCategory,
-                            source: session.paymentsSource,
-                            statusFilter: effectiveStatus,
-                            typeFilter: typeFilter,
-                            sortOrder: sortOrder,
-                            query: session.paymentsQuery
-                        )
-                        if screen.months.isEmpty {
+            Group {
+                if let data = session.resolvedData(from: model) {
+                    let effectiveStatus: PaymentStatusFilter = session.paymentsOnlyUncategorized
+                        ? .uncategorized
+                        : statusFilter
+                    let screen = PaymentsScreenModel(
+                        data: data,
+                        periodMode: session.periodMode,
+                        selectedPeriodID: activeSelectedID,
+                        allPeriods: session.paymentsAllMonths,
+                        category: session.paymentsCategory,
+                        source: session.paymentsSource,
+                        layerFilter: session.paymentsLayer,
+                        dateRange: session.paymentsDateRange,
+                        statusFilter: effectiveStatus,
+                        typeFilter: typeFilter,
+                        sortOrder: sortOrder,
+                        query: session.paymentsQuery
+                    )
+                    if screen.periods.isEmpty {
+                        ScrollView {
                             StateCard(
                                 kind: .empty,
                                 title: "No payments yet",
                                 message: "Turn on Google Drive sync in More → Connections."
                             )
-                        } else {
-                            scopeAndMonthControls(screen: screen)
-                            if !screen.categories.isEmpty {
-                                categoryPicker(screen: screen)
-                            }
-                            if hasExtraFilters || session.paymentsOnlyUncategorized {
-                                activeFiltersBanner(effectiveStatus: effectiveStatus)
-                            }
-                            summaryCard(screen: screen, data: data)
-                            if screen.sections.isEmpty {
-                                emptyFilterCard
-                            } else {
-                                ForEach(screen.sections) { section in
-                                    daySectionView(section: section, data: data)
-                                }
-                            }
+                            .padding(.horizontal, Theme.screenPadding)
+                            .padding(.vertical, 12)
                         }
-                    } else if !session.hasCompletedInitialLoad {
+                        .background(Theme.page)
+                    } else {
+                        paymentsList(screen: screen, data: data, effectiveStatus: effectiveStatus)
+                    }
+                } else if !session.hasCompletedInitialLoad {
+                    ScrollView {
                         StateCard(
                             kind: .loading,
                             title: "Loading data",
                             message: "Checking stored statements and recent bank emails."
                         )
-                    } else if let error = model.importMessage, error.hasPrefix("Not imported:") {
+                        .padding(.horizontal, Theme.screenPadding)
+                        .padding(.vertical, 12)
+                    }
+                    .background(Theme.page)
+                } else if let error = model.importMessage, error.hasPrefix("Not imported:") {
+                    ScrollView {
                         StateCard(
                             kind: .error,
                             title: "Could not read data file",
@@ -73,27 +84,53 @@ struct PaymentsView: View {
                         ) {
                             Task { await model.checkInbox() }
                         }
-                    } else {
-                        NoDataView()
+                        .padding(.horizontal, Theme.screenPadding)
+                        .padding(.vertical, 12)
                     }
+                    .background(Theme.page)
+                } else {
+                    ScrollView {
+                        NoDataView()
+                            .padding(.horizontal, Theme.screenPadding)
+                            .padding(.vertical, 12)
+                    }
+                    .background(Theme.page)
                 }
-                .padding(.horizontal, Theme.screenPadding)
-                .padding(.vertical, 12)
             }
-            .background(Theme.page)
             .searchable(text: $session.paymentsQuery, prompt: "Merchant, category or card")
             .navigationTitle("Payments")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 12) {
-                        filterMenu
                         Button {
-                            session.activeSheet = .quickAdd
+                            withAnimation(.easeInOut(duration: 0.16)) {
+                                session.privacyMasked.toggle()
+                            }
+                        } label: {
+                            Image(systemName: session.privacyMasked ? "eye.slash.fill" : "eye")
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(session.privacyMasked ? Theme.accent : Theme.ink2)
+                        }
+                        .accessibilityLabel(session.privacyMasked ? "Show amounts" : "Hide amounts")
+
+                        filterMenu
+
+                        Menu {
+                            Button {
+                                session.activeSheet = .quickAdd
+                            } label: {
+                                Label("Add payment", systemImage: "plus.circle")
+                            }
+                            Button {
+                                session.activeSheet = .scanReceipt
+                            } label: {
+                                Label("Scan receipt or slip", systemImage: "doc.text.viewfinder")
+                            }
                         } label: {
                             Image(systemName: "plus")
                                 .font(.body.weight(.semibold))
                         }
-                        .accessibilityLabel("Add payment")
+                        .accessibilityLabel("Add payment or scan receipt")
                     }
                 }
             }
@@ -106,31 +143,269 @@ struct PaymentsView: View {
                     PaymentDetailSheet(item: inspected.item, data: data)
                 }
             }
+            .confirmationDialog(
+                quickRecategorizeItem?.merchant ?? "Change category",
+                isPresented: Binding(
+                    get: { quickRecategorizeItem != nil },
+                    set: { if !$0 { quickRecategorizeItem = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let target = quickRecategorizeItem, let data = session.resolvedData(from: model) {
+                    ForEach(data.availableCategories.prefix(12), id: \.category) { pair in
+                        Button(pair.category) {
+                            let item = target
+                            quickRecategorizeItem = nil
+                            guard !session.isDemo else { return }
+                            Task {
+                                try? await model.setCategoryOverride(
+                                    for: item,
+                                    group: pair.group,
+                                    category: pair.category,
+                                    applyToAllFromMerchant: false
+                                )
+                            }
+                        }
+                    }
+                    Button("More options…") {
+                        let item = target
+                        quickRecategorizeItem = nil
+                        inspectedPayment = InspectedPayment(item: item)
+                    }
+                    Button("Cancel", role: .cancel) { quickRecategorizeItem = nil }
+                }
+            } message: {
+                if let target = quickRecategorizeItem {
+                    Text("\(Money.payment(target.amount)) · Swipe triage updates this payment immediately.")
+                }
+            }
         }
+    }
+
+    // MARK: - Native List enabling silky .swipeActions triage while preserving porcelain card design
+
+    private func paymentsList(
+        screen: PaymentsScreenModel,
+        data: FinanceData,
+        effectiveStatus: PaymentStatusFilter
+    ) -> some View {
+        List {
+            // Controls + Summary header block
+            Section {
+                VStack(alignment: .leading, spacing: 12) {
+                    PeriodModeSwitch(mode: $session.periodMode)
+                    scopeAndPeriodControls(screen: screen)
+                    if !screen.categories.isEmpty {
+                        categoryPicker(screen: screen)
+                    }
+                    if hasExtraFilters || session.paymentsOnlyUncategorized {
+                        activeFiltersBanner(effectiveStatus: effectiveStatus, bundleLayers: data.bundle.layers)
+                    }
+                    summaryCard(screen: screen, data: data)
+                }
+                .listRowInsets(EdgeInsets(top: 8, leading: Theme.screenPadding, bottom: 8, trailing: Theme.screenPadding))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
+
+            if screen.sections.isEmpty {
+                Section {
+                    emptyFilterCard
+                        .listRowInsets(EdgeInsets(top: 6, leading: Theme.screenPadding, bottom: 12, trailing: Theme.screenPadding))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+            } else {
+                ForEach(screen.sections) { section in
+                    Section {
+                        ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
+                            let isFirst = index == 0
+                            let isLast = index == section.rows.count - 1
+                            swipeablePaymentRow(
+                                item: row.value,
+                                data: data,
+                                isFirst: isFirst,
+                                isLast: isLast,
+                                showDateInSubtitle: section.date == "LARGEST"
+                            )
+                            .listRowInsets(EdgeInsets(
+                                top: isFirst ? 2 : 0,
+                                leading: Theme.screenPadding,
+                                bottom: isLast ? 8 : 0,
+                                trailing: Theme.screenPadding
+                            ))
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    quickRecategorizeItem = row.value
+                                } label: {
+                                    Label("Category", systemImage: "tag.fill")
+                                }
+                                .tint(Theme.accent)
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button {
+                                    guard !session.isDemo else { return }
+                                    Task { try? await model.excludeAsNonSpending(item: row.value, categoryLabel: "Excluded") }
+                                } label: {
+                                    Label("Exclude", systemImage: "eye.slash")
+                                }
+                                .tint(Theme.muted)
+
+                                Button {
+                                    guard !session.isDemo else { return }
+                                    Task { try? await model.excludeAsNonSpending(item: row.value, categoryLabel: "Work expense") }
+                                } label: {
+                                    Label("Work", systemImage: "briefcase.fill")
+                                }
+                                .tint(Color("LayerRent"))
+                            }
+                        }
+                    } header: {
+                        daySectionHeader(section: section)
+                            .textCase(nil)
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Theme.page)
+    }
+
+    private func daySectionHeader(section: PaymentsScreenModel.DaySection) -> some View {
+        let headerTitle = section.date == "LARGEST" ? "Largest first" : FinanceFormat.dayHeader(section.date)
+        return Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 2) {
+                    SectionLabel(headerTitle)
+                    if section.countedSubtotal != 0 && section.date != "LARGEST" {
+                        Text(MaskedMoney.payment(section.countedSubtotal, masked: privacyMasked))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.ink2)
+                    }
+                }
+            } else {
+                HStack(alignment: .center, spacing: 8) {
+                    SectionLabel(headerTitle)
+                    Spacer(minLength: 8)
+                    if section.countedSubtotal != 0 && section.date != "LARGEST" {
+                        Text(MaskedMoney.payment(section.countedSubtotal, masked: privacyMasked))
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(Theme.ink2)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Theme.well.opacity(0.8), in: Capsule())
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 4)
+    }
+
+    private func swipeablePaymentRow(
+        item: BudgetItem,
+        data: FinanceData,
+        isFirst: Bool,
+        isLast: Bool,
+        showDateInSubtitle: Bool
+    ) -> some View {
+        let topR: CGFloat = isFirst ? Theme.cardRadius : 0
+        let botR: CGFloat = isLast ? Theme.cardRadius : 0
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: topR,
+            bottomLeadingRadius: botR,
+            bottomTrailingRadius: botR,
+            topTrailingRadius: topR,
+            style: .continuous
+        )
+
+        return Button {
+            inspectedPayment = InspectedPayment(item: item)
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                PaymentRow(
+                    item: item,
+                    counted: data.layer(of: item) != nil,
+                    isLocal: data.isLocalItem(item),
+                    showDateInSubtitle: showDateInSubtitle
+                )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                if !isLast {
+                    HairlineDivider()
+                        .padding(.leading, dynamicTypeSize.isAccessibilitySize ? Theme.cardPadding : 64)
+                }
+            }
+            .background(Theme.surface, in: shape)
+            .overlay(
+                shape.strokeBorder(
+                    colorScheme == .dark ? Color.white.opacity(0.06) : Theme.line.opacity(0.55),
+                    lineWidth: 0.5
+                )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - Filter & Sort menu
 
     private var filterMenu: some View {
-        let sources = session.resolvedData(from: model)?.availableSources ?? []
+        let data = session.resolvedData(from: model)
+        let sources = data?.availableSources ?? []
+        let bundleLayers = data?.bundle.layers ?? []
         return Menu {
             Section("Scope") {
                 Button {
+                    session.paymentsDateRange = nil
+                    session.paymentsDateRangeLabel = nil
                     session.paymentsAllMonths = false
                 } label: {
-                    if !session.paymentsAllMonths {
-                        Label("Single month", systemImage: "checkmark")
+                    let selected = !session.paymentsAllMonths && session.paymentsDateRange == nil
+                    if selected {
+                        Label(session.periodMode == .payCycle ? "Single pay cycle" : "Single month", systemImage: "checkmark")
                     } else {
-                        Text("Single month")
+                        Text(session.periodMode == .payCycle ? "Single pay cycle" : "Single month")
                     }
                 }
                 Button {
+                    session.paymentsDateRange = nil
+                    session.paymentsDateRangeLabel = nil
                     session.paymentsAllMonths = true
                 } label: {
-                    if session.paymentsAllMonths {
-                        Label("All months", systemImage: "checkmark")
+                    if session.paymentsAllMonths && session.paymentsDateRange == nil {
+                        Label("All time", systemImage: "checkmark")
                     } else {
-                        Text("All months")
+                        Text("All time")
+                    }
+                }
+            }
+
+            Section("Spending Layer") {
+                Button {
+                    session.paymentsLayer = nil
+                } label: {
+                    if session.paymentsLayer == nil {
+                        Label("All layers", systemImage: "checkmark")
+                    } else {
+                        Text("All layers")
+                    }
+                }
+                ForEach(SpendingLayer.allCases) { layer in
+                    Button {
+                        session.paymentsLayer = layer
+                    } label: {
+                        let title = layer.title(in: bundleLayers)
+                        if session.paymentsLayer == layer {
+                            Label(title, systemImage: "checkmark")
+                        } else {
+                            Text(title)
+                        }
                     }
                 }
             }
@@ -218,37 +493,37 @@ struct PaymentsView: View {
         .accessibilityLabel("Filter and sort payments")
     }
 
-    // MARK: - Scope & month picker
+    // MARK: - Scope & period picker
 
-    private func scopeAndMonthControls(screen: PaymentsScreenModel) -> some View {
+    private func scopeAndPeriodControls(screen: PaymentsScreenModel) -> some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     FilterChip(
-                        title: "All months",
-                        isSelected: screen.allMonths
+                        title: screen.periodMode == .payCycle ? "All cycles" : "All months",
+                        isSelected: screen.allPeriods && session.paymentsDateRange == nil
                     ) {
-                        toggleAllMonths(true)
+                        toggleAllPeriods(true)
                     }
-                    .id("ALL_MONTHS")
+                    .id("ALL_PERIODS")
 
-                    ForEach(screen.months, id: \.self) { month in
+                    ForEach(screen.periods) { period in
                         FilterChip(
-                            title: FinanceFormat.monthChip(month, includeYear: screen.spansMultipleYears),
-                            isSelected: !screen.allMonths && month == screen.selectedMonth
+                            title: period.shortLabel,
+                            isSelected: !screen.allPeriods && period.id == screen.selectedPeriodID
                         ) {
-                            selectMonth(month)
+                            selectPeriod(period.id)
                         }
-                        .id(month)
+                        .id(period.id)
                     }
                 }
                 .padding(.vertical, 2)
             }
             .onAppear {
-                proxy.scrollTo(screen.allMonths ? "ALL_MONTHS" : screen.selectedMonth, anchor: .trailing)
+                proxy.scrollTo(screen.allPeriods ? "ALL_PERIODS" : screen.selectedPeriodID, anchor: .trailing)
             }
-            .onChange(of: screen.selectedMonth) { _, target in
-                guard !screen.allMonths else { return }
+            .onChange(of: screen.selectedPeriodID) { _, target in
+                guard !screen.allPeriods else { return }
                 scrollTo(proxy: proxy, target: target)
             }
         }
@@ -303,8 +578,16 @@ struct PaymentsView: View {
         }
     }
 
-    private func activeFiltersBanner(effectiveStatus: PaymentStatusFilter) -> some View {
+    private func activeFiltersBanner(effectiveStatus: PaymentStatusFilter, bundleLayers: [LayerDefinition]) -> some View {
         FlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+            if let rangeLabel = session.paymentsDateRangeLabel {
+                QuietTag(rangeLabel, tone: .accent)
+            } else if let range = session.paymentsDateRange {
+                QuietTag("\(DayText.short(range.lowerBound)) – \(DayText.short(range.upperBound))", tone: .accent)
+            }
+            if let layer = session.paymentsLayer {
+                QuietTag(layer.title(in: bundleLayers), tone: .accent)
+            }
             if effectiveStatus != .all {
                 QuietTag(effectiveStatus.rawValue, tone: .accent)
             }
@@ -327,12 +610,18 @@ struct PaymentsView: View {
         }
     }
 
-    // MARK: - Month summary card with 4-layer proportion ribbon
+    // MARK: - Summary card with 4-layer proportion ribbon
 
     private func summaryCard(screen: PaymentsScreenModel, data: FinanceData) -> some View {
-        let headerLabel = screen.allMonths
-            ? "All \(screen.months.count) months"
-            : DayText.month(screen.selectedMonth)
+        let headerLabel: String = {
+            if let rangeLabel = session.paymentsDateRangeLabel { return rangeLabel }
+            if screen.allPeriods {
+                return screen.periodMode == .payCycle
+                    ? "All \(screen.periods.count) pay cycles"
+                    : "All \(screen.periods.count) months"
+            }
+            return screen.selectedPeriod?.title ?? screen.selectedPeriodID
+        }()
 
         let displayAmount = typeFilter == .income ? screen.incomeTotal : screen.countedSpending
         let amountColor = typeFilter == .income ? Theme.good : Theme.ink
@@ -348,14 +637,13 @@ struct PaymentsView: View {
             if screen.excludedRowCount > 0 {
                 parts.append("\(screen.excludedRowCount) excluded")
             }
-            if screen.spendingRowCount > 1 && (!session.paymentsQuery.isEmpty || screen.allMonths) {
+            if screen.spendingRowCount > 1 && (!session.paymentsQuery.isEmpty || screen.allPeriods) {
                 let avg = Int((Double(screen.countedSpending) / Double(screen.spendingRowCount)).rounded())
-                parts.append("avg \(Money.yen(avg))")
+                parts.append("avg \(MaskedMoney.yen(avg, masked: privacyMasked))")
             }
             return parts.joined(separator: " · ")
         }()
 
-        // Compute the 4-layer spending mix for the sleek ribbon bar
         let layerSlices: [(layer: SpendingLayer, sum: Int)] = {
             guard typeFilter != .income else { return [] }
             var totals: [SpendingLayer: Int] = [:]
@@ -429,72 +717,6 @@ struct PaymentsView: View {
         }
     }
 
-    // MARK: - Day section
-
-    private func daySectionView(section: PaymentsScreenModel.DaySection, data: FinanceData) -> some View {
-        let headerTitle = section.date == "LARGEST" ? "Largest first" : FinanceFormat.dayHeader(section.date)
-        return VStack(alignment: .leading, spacing: 8) {
-            Group {
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 2) {
-                        SectionLabel(headerTitle)
-                        if section.countedSubtotal != 0 && section.date != "LARGEST" {
-                            Text(Money.payment(section.countedSubtotal))
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.ink2)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.5)
-                                .allowsTightening(true)
-                                .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
-                        }
-                    }
-                } else {
-                    HStack(alignment: .center, spacing: 8) {
-                        SectionLabel(headerTitle)
-                        Spacer(minLength: 8)
-                        if section.countedSubtotal != 0 && section.date != "LARGEST" {
-                            Text(Money.payment(section.countedSubtotal))
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(Theme.ink2)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Theme.well.opacity(0.8), in: Capsule())
-                                .accessibilityLabel("Day total \(FinanceFormat.paymentAccessibility(section.countedSubtotal))")
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 4)
-
-            FinanceCard(padding: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(section.rows.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 {
-                            HairlineDivider()
-                                .padding(.leading, dynamicTypeSize.isAccessibilitySize ? Theme.cardPadding : 64)
-                        }
-                        Button {
-                            inspectedPayment = InspectedPayment(item: row.value)
-                        } label: {
-                            PaymentRow(
-                                item: row.value,
-                                counted: data.layer(of: row.value) != nil,
-                                isLocal: data.isLocalItem(row.value),
-                                showDateInSubtitle: section.date == "LARGEST"
-                            )
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
-    }
-
     // MARK: - Empty filter state
 
     private var emptyFilterCard: some View {
@@ -503,41 +725,43 @@ struct PaymentsView: View {
             title: "No matching payments",
             message: session.paymentsAllMonths
                 ? "Try a different search term or clear active filters."
-                : "No matches in this month. Try switching to All months or clearing filters.",
-            actionTitle: session.paymentsAllMonths ? "Clear filters" : "Search all months"
+                : "No matches in this period. Try switching to All or clearing filters.",
+            actionTitle: session.paymentsAllMonths ? "Clear filters" : "Search all periods"
         ) {
             if session.paymentsAllMonths {
                 resetAllFilters()
                 session.paymentsQuery = ""
                 selectCategory(nil)
             } else {
+                session.paymentsDateRange = nil
+                session.paymentsDateRangeLabel = nil
                 session.paymentsAllMonths = true
             }
         }
     }
 
-    private func toggleAllMonths(_ all: Bool) {
-        if reduceMotion {
+    private func toggleAllPeriods(_ all: Bool) {
+        let update = {
+            session.paymentsDateRange = nil
+            session.paymentsDateRangeLabel = nil
             session.paymentsAllMonths = all
-        } else {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                session.paymentsAllMonths = all
-            }
         }
+        if reduceMotion { update() } else { withAnimation(.easeInOut(duration: 0.18), update) }
     }
 
-    private func selectMonth(_ month: String) {
-        if reduceMotion {
+    private func selectPeriod(_ id: String) {
+        let update = {
+            session.paymentsDateRange = nil
+            session.paymentsDateRangeLabel = nil
             session.paymentsAllMonths = false
-            session.paymentsMonth = month
-            session.paymentsCategory = nil
-        } else {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                session.paymentsAllMonths = false
-                session.paymentsMonth = month
-                session.paymentsCategory = nil
+            if session.periodMode == .payCycle {
+                session.paymentsCycleID = id
+            } else {
+                session.paymentsMonth = id
             }
+            session.paymentsCategory = nil
         }
+        if reduceMotion { update() } else { withAnimation(.easeInOut(duration: 0.18), update) }
     }
 
     private func selectCategory(_ category: String?) {
@@ -555,19 +779,23 @@ struct PaymentsView: View {
         typeFilter = .payments
         sortOrder = .newest
         session.paymentsSource = nil
+        session.paymentsLayer = nil
+        session.paymentsDateRange = nil
+        session.paymentsDateRangeLabel = nil
         session.paymentsOnlyUncategorized = false
     }
 }
 
 struct PaymentRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.privacyMasked) private var privacyMasked
     let item: BudgetItem
     let counted: Bool
     var isLocal: Bool = false
     var showDateInSubtitle: Bool = false
 
     var body: some View {
-        let amountText = Money.payment(item.amount)
+        let amountText = MaskedMoney.payment(item.amount, masked: privacyMasked)
         let amountColor = item.amount < 0 ? Theme.good : Theme.ink
         let subtitle = showDateInSubtitle
             ? "\(DayText.short(item.date)) · \(item.category) · \(item.source)"
@@ -652,7 +880,7 @@ struct PaymentRow: View {
     private var accessibilityText: String {
         var parts = [
             item.merchant,
-            FinanceFormat.paymentAccessibility(item.amount),
+            privacyMasked ? "Hidden amount" : FinanceFormat.paymentAccessibility(item.amount),
             DayText.short(item.date),
             item.category,
             item.source

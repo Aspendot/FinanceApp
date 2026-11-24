@@ -1,9 +1,10 @@
+import CryptoKit
 import FinanceCore
 import FinanceSync
 import Foundation
 import Security
 
-/// Persisted state for encrypted Google Drive bundle sync.
+/// Persisted state for encrypted Google Drive bundle & phone-edits sync.
 struct DriveSyncState: Codable, Equatable, Sendable {
     var lastImportedMD5: String? = nil
     var lastImportedFileID: String? = nil
@@ -12,6 +13,53 @@ struct DriveSyncState: Codable, Equatable, Sendable {
     var lastCheckedAt: Date? = nil
     var lastErrorMessage: String? = nil
     var needsDriveConsent: Bool = false
+    var lastPushedEditsAt: Date? = nil
+    var lastPushedEditsHash: String? = nil
+    var lastPushErrorMessage: String? = nil
+
+    init(
+        lastImportedMD5: String? = nil,
+        lastImportedFileID: String? = nil,
+        lastImportedModifiedTime: String? = nil,
+        lastImportedGeneratedAt: String? = nil,
+        lastCheckedAt: Date? = nil,
+        lastErrorMessage: String? = nil,
+        needsDriveConsent: Bool = false,
+        lastPushedEditsAt: Date? = nil,
+        lastPushedEditsHash: String? = nil,
+        lastPushErrorMessage: String? = nil
+    ) {
+        self.lastImportedMD5 = lastImportedMD5
+        self.lastImportedFileID = lastImportedFileID
+        self.lastImportedModifiedTime = lastImportedModifiedTime
+        self.lastImportedGeneratedAt = lastImportedGeneratedAt
+        self.lastCheckedAt = lastCheckedAt
+        self.lastErrorMessage = lastErrorMessage
+        self.needsDriveConsent = needsDriveConsent
+        self.lastPushedEditsAt = lastPushedEditsAt
+        self.lastPushedEditsHash = lastPushedEditsHash
+        self.lastPushErrorMessage = lastPushErrorMessage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case lastImportedMD5, lastImportedFileID, lastImportedModifiedTime, lastImportedGeneratedAt
+        case lastCheckedAt, lastErrorMessage, needsDriveConsent
+        case lastPushedEditsAt, lastPushedEditsHash, lastPushErrorMessage
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lastImportedMD5 = try c.decodeIfPresent(String.self, forKey: .lastImportedMD5)
+        lastImportedFileID = try c.decodeIfPresent(String.self, forKey: .lastImportedFileID)
+        lastImportedModifiedTime = try c.decodeIfPresent(String.self, forKey: .lastImportedModifiedTime)
+        lastImportedGeneratedAt = try c.decodeIfPresent(String.self, forKey: .lastImportedGeneratedAt)
+        lastCheckedAt = try c.decodeIfPresent(Date.self, forKey: .lastCheckedAt)
+        lastErrorMessage = try c.decodeIfPresent(String.self, forKey: .lastErrorMessage)
+        needsDriveConsent = try c.decodeIfPresent(Bool.self, forKey: .needsDriveConsent) ?? false
+        lastPushedEditsAt = try c.decodeIfPresent(Date.self, forKey: .lastPushedEditsAt)
+        lastPushedEditsHash = try c.decodeIfPresent(String.self, forKey: .lastPushedEditsHash)
+        lastPushErrorMessage = try c.decodeIfPresent(String.self, forKey: .lastPushErrorMessage)
+    }
 }
 
 /// Keychain storage for the 32-byte Drive encryption key (`AfterFirstUnlockThisDeviceOnly`).
@@ -256,6 +304,61 @@ enum DriveSync {
         case .notNewer:
             try? DriveSyncStore.saveState(state)
             return .notNewer
+        }
+    }
+
+    enum PushOutcome: Equatable, Sendable {
+        case unchanged
+        case pushed(bytes: Int)
+        case needsConsent
+    }
+
+    /// Seals `LocalModifications` with the paired AES-256-GCM key and uploads `phone-edits.fnb`
+    /// to Google Drive's hidden `appDataFolder` so the PC pipeline can pull and merge it.
+    static func pushLocalModifications(
+        client: GoogleDriveClient,
+        key: DriveSyncKey,
+        modifications: LocalModifications,
+        force: Bool = false,
+        now: Date = Date()
+    ) async throws -> PushOutcome {
+        var state = (try? DriveSyncStore.loadState()) ?? DriveSyncState()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let plaintext = try encoder.encode(modifications)
+        let digest = CryptoKit.SHA256.hash(data: plaintext)
+        let hashHex = digest.map { String(format: "%02x", $0) }.joined()
+
+        if !force, state.lastPushedEditsHash == hashHex {
+            return .unchanged
+        }
+        if !force, modifications.isEmpty, state.lastPushedEditsHash == nil {
+            return .unchanged
+        }
+
+        let sealed = try DriveEnvelope.seal(plaintext: plaintext, key: key)
+        do {
+            _ = try await client.uploadAppDataFile(
+                name: GoogleDriveClient.phoneEditsFileName,
+                data: sealed
+            )
+            state.lastPushedEditsAt = now
+            state.lastPushedEditsHash = hashHex
+            state.lastPushErrorMessage = nil
+            state.needsDriveConsent = false
+            try? DriveSyncStore.saveState(state)
+            return .pushed(bytes: sealed.count)
+        } catch let error as GoogleDriveClientError where error.requiresDriveConsent {
+            try Task.checkCancellation()
+            state.needsDriveConsent = true
+            state.lastPushErrorMessage = error.localizedDescription
+            try? DriveSyncStore.saveState(state)
+            return .needsConsent
+        } catch {
+            try Task.checkCancellation()
+            state.lastPushErrorMessage = diagnostic(for: error)
+            try? DriveSyncStore.saveState(state)
+            throw error
         }
     }
 

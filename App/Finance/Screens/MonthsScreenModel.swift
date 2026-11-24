@@ -1,12 +1,12 @@
 import FinanceCore
 import Foundation
 
-/// Derived view model for the Months screen, computed over ALL items (including Money Forward bank rows,
-/// pending Gmail notices, manual entries and local category overrides).
+/// Derived view model for the Months screen, supporting both Calendar Months and Pay Cycles
+/// over ALL items (statements + Money Forward + pending emails + local entries & overrides).
 struct MonthsScreenModel: Sendable {
     struct StackedSegment: Identifiable, Sendable {
         let id: String
-        let month: String
+        let periodID: String
         let layer: SpendingLayer
         let layerTitle: String
         let amount: Int
@@ -16,8 +16,8 @@ struct MonthsScreenModel: Sendable {
     }
 
     struct IncomePoint: Identifiable, Sendable {
-        var id: String { month }
-        let month: String
+        var id: String { periodID }
+        let periodID: String
         let income: Int
     }
 
@@ -39,11 +39,15 @@ struct MonthsScreenModel: Sendable {
         let layer: SpendingLayer
     }
 
-    let months: [String]
-    let spansMultipleYears: Bool
-    let selectedMonth: String
-    let inProgressMonth: String?
-    let totalsByMonth: [String: MonthTotals]
+    let periodMode: BudgetPeriodMode
+    let periods: [BudgetPeriod]
+    let periodIDs: [String]
+    let periodByID: [String: BudgetPeriod]
+    let selectedPeriod: BudgetPeriod?
+    let selectedPeriodID: String
+    let inProgressPeriodID: String?
+    let activePeriodPace: Double?
+    let totalsByPeriod: [String: MonthTotals]
     let segments: [StackedSegment]
     let incomePoints: [IncomePoint]
     let maxChartTotal: Int
@@ -55,41 +59,45 @@ struct MonthsScreenModel: Sendable {
     let sourceSummaries: [SourceSummary]
     let planSummary: PlanSummary
 
-    init(data: FinanceData, selectedMonth: String?, today: String) {
+    init(
+        data: FinanceData,
+        periodMode: BudgetPeriodMode,
+        selectedPeriodID: String?,
+        today: String
+    ) {
+        self.periodMode = periodMode
         let allItems = data.allItems
-        let totals = data.totalsByMonth
-        self.totalsByMonth = totals
+        let periodsList = data.periods(for: periodMode)
+        let totals = data.totals(for: periodMode)
+        self.periods = periodsList
+        self.periodIDs = periodsList.map(\.id)
+        self.periodByID = Dictionary(uniqueKeysWithValues: periodsList.map { ($0.id, $0) })
+        self.totalsByPeriod = totals
 
-        let sortedMonths = totals.keys.sorted()
-        self.months = sortedMonths
-        let years = Set(sortedMonths.map { String($0.prefix(4)) })
-        self.spansMultipleYears = years.count > 1
+        let resolvedPeriod = selectedPeriodID.flatMap { id in periodsList.first(where: { $0.id == id }) }
+            ?? periodsList.last
+        self.selectedPeriod = resolvedPeriod
+        let resolvedID = resolvedPeriod?.id ?? ""
+        self.selectedPeriodID = resolvedID
 
-        let asOfMonth = String(data.bundle.asOf.prefix(7))
-        let latestPartial = max(asOfMonth, String(today.prefix(7)))
-        let partialMonth: String? = (sortedMonths.last.map { $0 >= latestPartial } ?? false) ? sortedMonths.last : nil
-        self.inProgressMonth = partialMonth
-
-        let resolvedMonth = selectedMonth.flatMap { sortedMonths.contains($0) ? $0 : nil }
-            ?? sortedMonths.last
-            ?? ""
-        self.selectedMonth = resolvedMonth
+        let partialID = periodsList.last(where: { $0.isInProgress })?.id
+        self.inProgressPeriodID = partialID
+        self.activePeriodPace = resolvedPeriod?.paceProgress(on: today)
 
         let bundleLayers = data.bundle.layers
         var builtSegments: [StackedSegment] = []
         var incomePts: [IncomePoint] = []
         var maxStack = 0
 
-        for month in sortedMonths {
-            guard let monthTotal = totals[month] else { continue }
-            let isPartial = (month == partialMonth)
+        for period in periodsList {
+            guard let periodTotal = totals[period.id] else { continue }
             var buckets: [SpendingLayer: Int] = [:]
-            for (key, value) in monthTotal.layers {
+            for (key, value) in periodTotal.layers {
                 let resolved = SpendingLayer.resolve(key: key, bundleLayers: bundleLayers)
                 buckets[resolved, default: 0] += value
             }
 
-            // Stack in strict canonical order so Rent is always the bottom flat band.
+            // Stack in strict canonical order so Rent is always the flat bottom band.
             var runningY = 0
             for layer in SpendingLayer.allCases {
                 let amount = max(0, buckets[layer, default: 0])
@@ -97,24 +105,24 @@ struct MonthsScreenModel: Sendable {
                 let endY = runningY + amount
                 builtSegments.append(
                     StackedSegment(
-                        id: "\(month)-\(layer.rawValue)",
-                        month: month,
+                        id: "\(period.id)-\(layer.rawValue)",
+                        periodID: period.id,
                         layer: layer,
                         layerTitle: layer.title(in: bundleLayers),
                         amount: amount,
                         yStart: runningY,
                         yEnd: endY,
-                        isInProgress: isPartial
+                        isInProgress: period.isInProgress
                     )
                 )
                 runningY = endY
             }
             maxStack = max(maxStack, runningY)
 
-            // Draw the income line only across completed months with recorded income.
-            if !isPartial && monthTotal.income > 0 {
-                incomePts.append(IncomePoint(month: month, income: monthTotal.income))
-                maxStack = max(maxStack, monthTotal.income)
+            // Draw income line across completed periods (and in Pay Cycle mode, also the current cycle since salary lands Day 1!).
+            if (!period.isInProgress || period.mode == .payCycle) && periodTotal.income > 0 {
+                incomePts.append(IncomePoint(periodID: period.id, income: periodTotal.income))
+                maxStack = max(maxStack, periodTotal.income)
             }
         }
 
@@ -122,17 +130,26 @@ struct MonthsScreenModel: Sendable {
         self.incomePoints = incomePts
         self.maxChartTotal = Self.roundedAxisCeiling(maxStack)
 
-        let activeTotals = totals[resolvedMonth] ?? MonthTotals()
+        let activeTotals = totals[resolvedID] ?? MonthTotals()
         self.selectedTotals = activeTotals
 
-        self.comparison = SpendingInsights.monthComparison(
-            totalsByMonth: totals,
-            selectedMonth: resolvedMonth,
-            asOf: data.bundle.asOf,
-            today: today,
-            planWindow: data.bundle.planWindow,
-            layers: bundleLayers
-        )
+        if periodMode == .calendarMonth {
+            self.comparison = SpendingInsights.monthComparison(
+                totalsByMonth: data.totalsByMonth,
+                selectedMonth: resolvedID,
+                asOf: data.bundle.asOf,
+                today: today,
+                planWindow: data.bundle.planWindow,
+                layers: bundleLayers
+            )
+        } else {
+            self.comparison = PayCycleBuilder.periodComparison(
+                periods: periodsList,
+                totalsByPeriod: totals,
+                selectedPeriodID: resolvedID,
+                layers: bundleLayers
+            )
+        }
 
         var activeLayerBuckets: [SpendingLayer: Int] = [:]
         for (key, value) in activeTotals.layers {
@@ -150,9 +167,13 @@ struct MonthsScreenModel: Sendable {
             )
         }
 
-        // Map each category in the selected month to its spending layer so bars match the chart.
+        let periodItems: [BudgetItem] = {
+            guard let resolvedPeriod else { return [] }
+            return allItems.filter { resolvedPeriod.contains($0.date) }
+        }()
+
         var categoryLayerVotes: [String: [SpendingLayer: Int]] = [:]
-        for item in allItems where item.date.hasPrefix(resolvedMonth) {
+        for item in periodItems {
             if let key = data.layer(of: item) {
                 let resolved = SpendingLayer.resolve(key: key, bundleLayers: bundleLayers)
                 categoryLayerVotes[item.category, default: [:]][resolved, default: 0] += max(1, abs(item.amount))
@@ -184,28 +205,37 @@ struct MonthsScreenModel: Sendable {
         }
 
         self.topMerchants = SpendingInsights.topMerchants(
-            items: allItems,
+            items: periodItems,
             config: data.bundle.layerConfig,
             layers: bundleLayers,
-            month: resolvedMonth,
+            month: nil,
             limit: 20
         )
 
         self.sourceSummaries = SpendingInsights.spendingBySource(
-            items: allItems,
+            items: periodItems,
             config: data.bundle.layerConfig,
             layers: bundleLayers,
-            month: resolvedMonth
+            month: nil
         )
 
         self.planSummary = PlanSummary.compute(
-            plan: data.bundle.plan,
-            planWindow: data.bundle.planWindow,
+            plan: data.effectivePlan,
+            planWindow: periodMode == .calendarMonth ? data.bundle.planWindow : nil,
             totalsByMonth: totals,
-            selectedMonth: resolvedMonth,
-            currentMonth: sortedMonths.last ?? resolvedMonth,
-            inProgressMonth: partialMonth
+            selectedMonth: resolvedID,
+            currentMonth: periodsList.last?.id ?? resolvedID,
+            inProgressMonth: partialID
         )
+    }
+
+    func axisLabel(for periodID: String) -> String {
+        guard let period = periodByID[periodID] else { return periodID }
+        let suffix = period.isInProgress ? "*" : ""
+        if period.mode == .calendarMonth {
+            return FinanceFormat.chartMonth(period.id) + suffix
+        }
+        return period.shortLabel + suffix
     }
 
     private static func roundedAxisCeiling(_ value: Int) -> Int {

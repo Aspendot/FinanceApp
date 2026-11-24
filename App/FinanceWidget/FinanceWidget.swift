@@ -1,3 +1,4 @@
+import AppIntents
 import SwiftUI
 import UIKit
 import WidgetKit
@@ -364,7 +365,6 @@ struct FinanceWidgetView: View {
     }
 }
 
-@main
 struct FinanceWidget: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "FinanceWidget", provider: SnapshotProvider()) { entry in
@@ -379,5 +379,40 @@ struct FinanceWidget: Widget {
             .accessoryCircular,
             .accessoryInline
         ])
+    }
+}
+
+/// Control Center and Lock Screen 1-tap button that opens Quick Add directly.
+struct QuickAddControlWidget: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "QuickAddControlWidget") {
+            ControlWidgetButton(action: OpenQuickAddIntent()) {
+                Label("Add payment", systemImage: "yensign.circle.fill")
+            }
+        }
+        .displayName("Add payment")
+        .description("Log a cash or card payment in Finance.")
+    }
+}
+
+/// Control Center and Lock Screen 1-tap button that opens the AI/OCR Receipt Scanner directly.
+struct ScanReceiptControlWidget: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "ScanReceiptControlWidget") {
+            ControlWidgetButton(action: OpenScanReceiptIntent()) {
+                Label("Scan receipt", systemImage: "doc.text.viewfinder")
+            }
+        }
+        .displayName("Scan receipt")
+        .description("Scan a paper receipt, payment slip, or screenshot in Finance.")
+    }
+}
+
+@main
+struct FinanceWidgetBundle: WidgetBundle {
+    var body: some Widget {
+        FinanceWidget()
+        QuickAddControlWidget()
+        ScanReceiptControlWidget()
     }
 }

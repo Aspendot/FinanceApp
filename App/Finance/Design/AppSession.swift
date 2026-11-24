@@ -16,26 +16,47 @@ enum MoreDestination: String, Hashable {
     case gmail
     case moneyForward
     case drive
+    case receiptScanner
     case notifications
     case localData
     case syncHealth
     case diagnostics
 }
 
-/// Modal sheets launchable from any primary tab or via demo arguments.
-enum ActiveSheet: String, Identifiable, Hashable {
+/// Modal sheets launchable from any primary tab, deep links, or demo arguments.
+enum ActiveSheet: Identifiable, Equatable {
     case quickAdd
+    case scanReceipt
     case ask
     case debtPayoff
     case targets
+    case reviewInbox
+    case runway
+    case addReminder(defaultTitle: String?, defaultDate: String?, defaultNote: String?)
+    case subscriptionDetail(SubscriptionItem)
+    case debtDetail(DebtEntry)
+    case categoryDetail(name: String, periodID: String?)
+    case merchantDetail(name: String, periodID: String?)
 
-    var id: String { rawValue }
+    var id: String {
+        switch self {
+        case .quickAdd: return "quickAdd"
+        case .scanReceipt: return "scanReceipt"
+        case .ask: return "ask"
+        case .debtPayoff: return "debtPayoff"
+        case .targets: return "targets"
+        case .reviewInbox: return "reviewInbox"
+        case .runway: return "runway"
+        case .addReminder(let t, let d, _): return "addReminder:\(t ?? ""):\(d ?? "")"
+        case .subscriptionDetail(let sub): return "sub:\(sub.id)"
+        case .debtDetail(let debt): return "debt:\(debt.name)"
+        case .categoryDetail(let name, let p): return "cat:\(name):\(p ?? "")"
+        case .merchantDetail(let name, let p): return "merchant:\(name):\(p ?? "")"
+        }
+    }
 }
 
-/// Shared UI coordination across tabs and launch-argument demo mode.
-///
-/// Keeps screen navigation, category/query cross-filtering, modal sheets, and
-/// `-demo` / `-screen` / `-appearance` launch arguments outside `AppModel` and `FinanceData`.
+/// Shared UI coordination across tabs, global period mode, privacy mask, deep links, and demo mode.
 @MainActor
 final class AppSession: ObservableObject {
     let isDemo: Bool
@@ -46,13 +67,22 @@ final class AppSession: ObservableObject {
 
     @Published var selectedTab: AppTab
     @Published var morePath: [MoreDestination]
+    @Published var periodMode: BudgetPeriodMode = .calendarMonth
+    @Published var privacyMasked: Bool = false
+
     @Published var paymentsMonth: String?
+    @Published var paymentsCycleID: String?
     @Published var paymentsCategory: String?
     @Published var paymentsQuery: String = ""
     @Published var paymentsAllMonths: Bool = false
     @Published var paymentsOnlyUncategorized: Bool = false
     @Published var paymentsSource: String? = nil
+    @Published var paymentsLayer: SpendingLayer? = nil
+    @Published var paymentsDateRange: ClosedRange<String>? = nil
+    @Published var paymentsDateRangeLabel: String? = nil
+
     @Published var monthsSelectedMonth: String?
+    @Published var monthsSelectedCycleID: String?
     @Published var activeSheet: ActiveSheet?
     @Published var hasCompletedInitialLoad: Bool
 
@@ -63,6 +93,7 @@ final class AppSession: ObservableObject {
         self.selectedTab = target.tab
         self.morePath = target.destination.map { [$0] } ?? []
         self.activeSheet = target.sheet
+        self.periodMode = target.periodMode
         if demo {
             let loaded = DemoData.load()
             self.demoData = loaded?.data
@@ -94,73 +125,149 @@ final class AppSession: ObservableObject {
         demoToday ?? JST.day(Date())
     }
 
-    /// Navigates to Payments with optional month, category, search query, source, or uncategorized filter.
+    /// Navigates to Payments with optional month/cycle, category, layer, date range, search query, source, or uncategorized filter.
     func openPayments(
-        month: String?,
-        category: String?,
+        month: String? = nil,
+        cycleID: String? = nil,
+        category: String? = nil,
         query: String? = nil,
         source: String? = nil,
+        layer: SpendingLayer? = nil,
+        dateRange: ClosedRange<String>? = nil,
+        dateRangeLabel: String? = nil,
         onlyUncategorized: Bool = false
     ) {
-        if let month {
-            paymentsMonth = month
-            paymentsAllMonths = false
-        } else {
+        if let dateRange {
+            paymentsDateRange = dateRange
+            paymentsDateRangeLabel = dateRangeLabel
             paymentsAllMonths = true
+        } else {
+            paymentsDateRange = nil
+            paymentsDateRangeLabel = nil
+            if let cycleID {
+                periodMode = .payCycle
+                paymentsCycleID = cycleID
+                paymentsAllMonths = false
+            } else if let month {
+                if month.hasPrefix("cycle:") {
+                    periodMode = .payCycle
+                    paymentsCycleID = month
+                } else {
+                    periodMode = .calendarMonth
+                    paymentsMonth = month
+                }
+                paymentsAllMonths = false
+            } else {
+                paymentsAllMonths = true
+            }
         }
         paymentsCategory = category
         paymentsQuery = query ?? ""
         paymentsSource = source
+        paymentsLayer = layer
         paymentsOnlyUncategorized = onlyUncategorized
         selectedTab = .payments
     }
 
-    /// Navigates to Months focused on a specific month.
+    /// Navigates to Months focused on a specific month or pay cycle.
     func openMonths(month: String?) {
         if let month {
-            monthsSelectedMonth = month
+            if month.hasPrefix("cycle:") {
+                periodMode = .payCycle
+                monthsSelectedCycleID = month
+            } else {
+                periodMode = .calendarMonth
+                monthsSelectedMonth = month
+            }
         }
         selectedTab = .months
     }
 
+    /// Handles `financeapp://` deep links from Control Center widgets, Lock Screen widgets, or Shortcuts.
+    @discardableResult
+    func handleDeepLink(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "financeapp" else { return false }
+        let host = (url.host ?? url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))).lowercased()
+        switch host {
+        case "quick-add", "add":
+            selectedTab = .now
+            activeSheet = .quickAdd
+            return true
+        case "scan-receipt", "scan", "receipt":
+            selectedTab = .now
+            activeSheet = .scanReceipt
+            return true
+        case "runway", "forecast":
+            selectedTab = .now
+            activeSheet = .runway
+            return true
+        case "review", "inbox":
+            selectedTab = .now
+            activeSheet = .reviewInbox
+            return true
+        case "ask":
+            selectedTab = .now
+            activeSheet = .ask
+            return true
+        case "payments":
+            selectedTab = .payments
+            return true
+        case "months":
+            selectedTab = .months
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func parseInitialScreen(
         from arguments: [String]
-    ) -> (tab: AppTab, destination: MoreDestination?, sheet: ActiveSheet?) {
+    ) -> (tab: AppTab, destination: MoreDestination?, sheet: ActiveSheet?, periodMode: BudgetPeriodMode) {
         guard let index = arguments.firstIndex(of: "-screen"),
               arguments.indices.contains(index + 1) else {
-            return (.now, nil, nil)
+            return (.now, nil, nil, .calendarMonth)
         }
         switch arguments[index + 1].lowercased() {
         case "now":
-            return (.now, nil, nil)
+            return (.now, nil, nil, .calendarMonth)
         case "payments":
-            return (.payments, nil, nil)
+            return (.payments, nil, nil, .calendarMonth)
         case "months":
-            return (.months, nil, nil)
+            return (.months, nil, nil, .calendarMonth)
+        case "months-cycle", "cycle":
+            return (.months, nil, nil, .payCycle)
         case "more":
-            return (.more, nil, nil)
+            return (.more, nil, nil, .calendarMonth)
         case "gmail":
-            return (.more, .gmail, nil)
+            return (.more, .gmail, nil, .calendarMonth)
         case "money-forward", "moneyforward":
-            return (.more, .moneyForward, nil)
+            return (.more, .moneyForward, nil, .calendarMonth)
         case "drive", "google-drive":
-            return (.more, .drive, nil)
+            return (.more, .drive, nil, .calendarMonth)
+        case "scanner-settings", "receipt-scanner":
+            return (.more, .receiptScanner, nil, .calendarMonth)
         case "notifications":
-            return (.more, .notifications, nil)
+            return (.more, .notifications, nil, .calendarMonth)
         case "local-data", "imports":
-            return (.more, .localData, nil)
+            return (.more, .localData, nil, .calendarMonth)
         case "sync-health":
-            return (.more, .syncHealth, nil)
+            return (.more, .syncHealth, nil, .calendarMonth)
         case "ask":
-            return (.now, nil, .ask)
+            return (.now, nil, .ask, .calendarMonth)
         case "targets", "plan":
-            return (.months, nil, .targets)
+            return (.months, nil, .targets, .calendarMonth)
         case "debt-payoff", "payoff":
-            return (.now, nil, .debtPayoff)
+            return (.now, nil, .debtPayoff, .calendarMonth)
         case "quick-add":
-            return (.now, nil, .quickAdd)
+            return (.now, nil, .quickAdd, .calendarMonth)
+        case "scan-receipt":
+            return (.now, nil, .scanReceipt, .calendarMonth)
+        case "review", "inbox":
+            return (.now, nil, .reviewInbox, .calendarMonth)
+        case "runway", "forecast":
+            return (.now, nil, .runway, .calendarMonth)
         default:
-            return (.now, nil, nil)
+            return (.now, nil, nil, .calendarMonth)
         }
     }
 

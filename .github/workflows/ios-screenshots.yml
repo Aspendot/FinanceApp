@@ -258,18 +258,18 @@ jobs:
             echo "Captured ${out} (${last_stats})"
           }
 
-          for screen in now payments months more targets ask notifications local-data; do
+          for screen in now payments months months-cycle more targets ask runway review scan-receipt scanner-settings; do
             capture "${screen}-light" "$screen" light large
           done
 
-          for screen in now payments months more targets ask; do
+          for screen in now payments months runway review more; do
             capture "${screen}-dark" "$screen" dark large
           done
 
           capture "now-light-ax5" now light accessibility-extra-extra-extra-large
           capture "payments-light-ax5" payments light accessibility-extra-extra-extra-large
           capture "months-light-ax5" months light accessibility-extra-extra-extra-large
-          capture "more-light-ax5" more light accessibility-extra-extra-extra-large
+          capture "runway-light-ax5" runway light accessibility-extra-extra-extra-large
 
           ls -lh screenshots
 

@@ -21,6 +21,7 @@ struct RootView: View {
         }
         .tint(Theme.accent)
         .preferredColorScheme(session.demoColorScheme)
+        .environment(\.privacyMasked, session.privacyMasked)
         .environmentObject(model)
         .environmentObject(session)
         .sheet(item: $session.activeSheet) { sheet in
@@ -28,6 +29,8 @@ struct RootView: View {
                 switch sheet {
                 case .quickAdd:
                     QuickAddSheet()
+                case .scanReceipt:
+                    ReceiptScanSheet()
                 case .ask:
                     AskFinanceSheet()
                 case .debtPayoff:
@@ -40,14 +43,32 @@ struct RootView: View {
                     } else {
                         NoDataView()
                     }
+                case .reviewInbox:
+                    ReviewInboxSheet()
+                case .runway:
+                    CashFlowRunwayView()
+                case .addReminder(let title, let date, let note):
+                    AddReminderSheet(defaultTitle: title, defaultDate: date, defaultNote: note)
+                case .subscriptionDetail(let sub):
+                    SubscriptionDetailSheet(subscription: sub)
+                case .debtDetail(let debt):
+                    DebtDetailSheet(debt: debt)
+                case .categoryDetail(let name, let periodID):
+                    CategoryDetailSheet(categoryName: name, periodID: periodID)
+                case .merchantDetail(let name, let periodID):
+                    MerchantDetailSheet(merchantName: name, periodID: periodID)
                 }
             }
             .tint(Theme.accent)
             .preferredColorScheme(session.demoColorScheme)
+            .environment(\.privacyMasked, session.privacyMasked)
             .environmentObject(model)
             .environmentObject(session)
         }
         .onOpenURL { url in
+            if session.handleDeepLink(url) {
+                return
+            }
             guard !session.isDemo, url.pathExtension.lowercased() == "csv" else { return }
             Task {
                 do {
@@ -78,6 +99,11 @@ struct RootView: View {
                     }
                 }
             } else if newPhase == .active {
+                if let action = SharedStore.consumePendingAction(),
+                   let url = URL(string: "financeapp://\(action)")
+                {
+                    session.handleDeepLink(url)
+                }
                 model.refreshRunLog()
                 Task {
                     await model.checkInbox()
@@ -85,6 +111,14 @@ struct RootView: View {
                     guard UIApplication.shared.applicationState == .active else { return }
                     await model.syncGmail()
                 }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .financePendingControlAction).receive(on: DispatchQueue.main)) { note in
+            guard !session.isDemo else { return }
+            let action = (note.object as? String) ?? SharedStore.consumePendingAction()
+            if let action, let url = URL(string: "financeapp://\(action)") {
+                _ = SharedStore.consumePendingAction()
+                session.handleDeepLink(url)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .backgroundGmailSyncUpdated).receive(on: DispatchQueue.main)) { _ in

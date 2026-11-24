@@ -65,6 +65,8 @@ enum SharedStore {
     }
 
     private static let snapshotKey = "widgetSnapshot"
+    private static let pendingActionKey = "pendingControlAction"
+    private static let pendingActionTimestampKey = "pendingControlActionAt"
 
     static func write(_ snapshot: WidgetSnapshot) {
         guard let defaults, let data = try? JSONEncoder().encode(snapshot) else { return }
@@ -75,4 +77,26 @@ enum SharedStore {
         guard let data = defaults?.data(forKey: snapshotKey) else { return nil }
         return try? JSONDecoder().decode(WidgetSnapshot.self, from: data)
     }
+
+    /// Records a deep-link action triggered from a Control Center or Lock Screen widget.
+    static func setPendingAction(_ action: String) {
+        let store = defaults ?? UserDefaults.standard
+        store.set(action, forKey: pendingActionKey)
+        store.set(Date().timeIntervalSince1970, forKey: pendingActionTimestampKey)
+    }
+
+    /// Consumes a recent pending action (within 30 seconds) once the app becomes active.
+    static func consumePendingAction() -> String? {
+        let store = defaults ?? UserDefaults.standard
+        guard let action = store.string(forKey: pendingActionKey) else { return nil }
+        let timestamp = store.double(forKey: pendingActionTimestampKey)
+        store.removeObject(forKey: pendingActionKey)
+        store.removeObject(forKey: pendingActionTimestampKey)
+        guard Date().timeIntervalSince1970 - timestamp < 30 else { return nil }
+        return action
+    }
+}
+
+extension Notification.Name {
+    static let financePendingControlAction = Notification.Name("financePendingControlAction")
 }

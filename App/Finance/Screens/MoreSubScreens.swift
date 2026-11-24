@@ -161,6 +161,20 @@ struct LocalDataSettingsView: View {
                 SettingsValueRow(label: "Manual entries", value: "\(mods.manualEntries.count)")
                 SettingsValueRow(label: "CSV-imported entries", value: "\(mods.importedEntries.count)")
                 SettingsValueRow(label: "Category overrides", value: "\(mods.categoryOverrides.count)")
+                SettingsValueRow(label: "Edited targets", value: "\(mods.targetOverrides.count)")
+                SettingsValueRow(label: "Edited debt balances", value: "\(mods.debtBalanceOverrides.count)")
+                SettingsValueRow(label: "Custom reminders", value: "\(mods.customReminders.count)")
+                if model.gmailConnected && model.driveScopeGranted && model.driveKeyPaired {
+                    Button("Push phone edits to Drive now") {
+                        Task {
+                            let status = await model.pushPhoneEditsNow()
+                            feedback = status
+                            isError = status.lowercased().contains("fail") || status.lowercased().contains("grant")
+                        }
+                    }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Theme.accent)
+                }
             } header: {
                 SectionLabel("On-device records")
             } footer: {
@@ -478,5 +492,182 @@ struct SyncHealthView: View {
         if let mf = run.newBankTransactions, mf > 0 { bits.append("\(mf) bank") }
         if run.newPayments > 0 { bits.append("\(run.newPayments) email") }
         return bits.isEmpty ? run.outcome.label : bits.joined(separator: " · ")
+    }
+}
+
+// MARK: - AI Vision & On-Device Receipt Scanner Settings
+
+struct ReceiptScannerSettingsView: View {
+    @EnvironmentObject private var session: AppSession
+
+    @State private var config: VisionScannerConfig = VisionScannerStore.load()
+    @State private var apiKeyInput = ""
+    @State private var hasStoredKey = false
+    @State private var feedback: String?
+
+    private var presetModels: [String] {
+        switch config.provider {
+        case .anthropic:
+            return ["claude-sonnet-4-5-20250929", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+        case .gemini:
+            return ["gemini-2.5-flash", "gemini-2.5-pro"]
+        case .openAICompatible:
+            return ["gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini"]
+        }
+    }
+
+    var body: some View {
+        List {
+            if let feedback {
+                Section {
+                    Text(feedback)
+                        .font(.footnote)
+                        .foregroundStyle(Theme.good)
+                }
+                .listRowBackground(Theme.surface)
+            }
+
+            Section {
+                Toggle("Use AI Vision when API key is set", isOn: $config.preferAIVision)
+                    .font(.subheadline)
+                    .foregroundStyle(Theme.ink)
+                    .tint(Theme.accent)
+
+                SettingsValueRow(
+                    label: "Active engine",
+                    value: (config.preferAIVision && hasStoredKey)
+                        ? config.provider.displayName
+                        : "Apple Vision (on-device)",
+                    valueColor: (config.preferAIVision && hasStoredKey) ? Theme.good : Theme.ink2
+                )
+            } header: {
+                SectionLabel("Scanner mode")
+            } footer: {
+                Text("EXIF and location metadata are stripped on-device before any image is sent. Offline scans fall back automatically to Apple Vision.")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
+            .listRowBackground(Theme.surface)
+
+            Section {
+                Picker("Provider", selection: $config.provider) {
+                    ForEach(VisionProvider.allCases) { provider in
+                        Text(provider.displayName).tag(provider)
+                    }
+                }
+                .font(.subheadline)
+                .foregroundStyle(Theme.ink)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Model ID")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Theme.muted)
+                    TextField(config.provider.defaultModel, text: $config.model)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(Theme.ink)
+                }
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(presetModels, id: \.self) { modelID in
+                            FilterChip(title: modelID, isSelected: config.model == modelID) {
+                                config.model = modelID
+                                VisionScannerStore.save(config)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if config.provider == .openAICompatible {
+                    TextField("Custom endpoint URL (optional)", text: $config.customEndpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(Theme.ink)
+                }
+            } header: {
+                SectionLabel("Vision model")
+            } footer: {
+                Text("Type any model ID supported by your provider (for example claude-sonnet-4-6, gemini-2.5-pro, or newer models as they release).")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
+            .listRowBackground(Theme.surface)
+
+            Section {
+                SettingsValueRow(
+                    label: "API key",
+                    value: hasStoredKey ? "Saved in Keychain" : "Not set",
+                    valueColor: hasStoredKey ? Theme.good : Theme.muted
+                )
+
+                SecureField("Paste \(config.provider.displayName) API key", text: $apiKeyInput)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(Theme.ink)
+
+                Button("Save API key") {
+                    do {
+                        try VisionKeyStore.saveKey(apiKeyInput, for: config.provider)
+                        apiKeyInput = ""
+                        hasStoredKey = VisionKeyStore.hasKey(for: config.provider)
+                        feedback = "API key saved to Keychain for \(config.provider.displayName)"
+                    } catch {
+                        feedback = error.localizedDescription
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Theme.muted : Theme.accent)
+                .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if hasStoredKey {
+                    Button("Remove API key", role: .destructive) {
+                        VisionKeyStore.clearKey(for: config.provider)
+                        hasStoredKey = false
+                        feedback = "API key removed"
+                    }
+                    .font(.subheadline.weight(.medium))
+                }
+            } header: {
+                SectionLabel("Keychain credentials")
+            } footer: {
+                Text("Stored strictly in this iPhone's Keychain (this device only, never synced or exported).")
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
+            .listRowBackground(Theme.surface)
+
+            Section {
+                PrimaryActionButton(title: "Open receipt scanner") {
+                    session.activeSheet = .scanReceipt
+                }
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+            }
+            .listRowBackground(Theme.surface)
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .background(Theme.page)
+        .navigationTitle("Receipt scanner")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            config = VisionScannerStore.load()
+            hasStoredKey = VisionKeyStore.hasKey(for: config.provider)
+        }
+        .onChange(of: config.provider) { _, newProvider in
+            if config.model.isEmpty || VisionProvider.allCases.map(\.defaultModel).contains(config.model) {
+                config.model = newProvider.defaultModel
+            }
+            VisionScannerStore.save(config)
+            hasStoredKey = VisionKeyStore.hasKey(for: newProvider)
+        }
+        .onChange(of: config) { _, updated in
+            VisionScannerStore.save(updated)
+        }
     }
 }

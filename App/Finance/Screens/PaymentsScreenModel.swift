@@ -27,7 +27,8 @@ enum PaymentSortOrder: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 }
 
-/// Derived view model for the Payments screen, supporting single-month or all-months search and rich filters.
+/// Derived view model for the Payments screen, supporting Calendar Months, Pay Cycles,
+/// date-range deep links, layer filters, all-months search, and swipe triage.
 struct PaymentsScreenModel: Sendable {
     struct DaySection: Identifiable, Sendable {
         var id: String { date }
@@ -43,10 +44,11 @@ struct PaymentsScreenModel: Sendable {
         let count: Int
     }
 
-    let months: [String]
-    let spansMultipleYears: Bool
-    let selectedMonth: String
-    let allMonths: Bool
+    let periodMode: BudgetPeriodMode
+    let periods: [BudgetPeriod]
+    let selectedPeriod: BudgetPeriod?
+    let selectedPeriodID: String
+    let allPeriods: Bool
     let categories: [CategoryOption]
     let sources: [String]
     let sections: [DaySection]
@@ -60,39 +62,47 @@ struct PaymentsScreenModel: Sendable {
 
     init(
         data: FinanceData,
-        selectedMonth: String?,
-        allMonths: Bool,
+        periodMode: BudgetPeriodMode,
+        selectedPeriodID: String?,
+        allPeriods: Bool,
         category: String?,
         source: String?,
+        layerFilter: SpendingLayer?,
+        dateRange: ClosedRange<String>?,
         statusFilter: PaymentStatusFilter,
         typeFilter: PaymentTypeFilter,
         sortOrder: PaymentSortOrder,
         query: String
     ) {
-        let allAvailableMonths = data.months
-        self.months = allAvailableMonths
-        let years = Set(allAvailableMonths.map { String($0.prefix(4)) })
-        self.spansMultipleYears = years.count > 1
-        self.allMonths = allMonths
+        self.periodMode = periodMode
+        let availablePeriods = data.periods(for: periodMode)
+        self.periods = availablePeriods
+        self.allPeriods = allPeriods || dateRange != nil
 
-        let resolvedMonth = selectedMonth.flatMap { allAvailableMonths.contains($0) ? $0 : nil }
-            ?? allAvailableMonths.last
-            ?? ""
-        self.selectedMonth = resolvedMonth
+        let resolvedPeriod = selectedPeriodID.flatMap { id in availablePeriods.first(where: { $0.id == id }) }
+            ?? availablePeriods.last
+        self.selectedPeriod = resolvedPeriod
+        self.selectedPeriodID = resolvedPeriod?.id ?? ""
 
         let incomeGroup = data.bundle.layerConfig.resolvedIncomeGroup ?? "Income"
-        let scopeRows: [NumberedRow<BudgetItem>]
-        if typeFilter == .income {
-            scopeRows = data.allRowsSorted.filter { row in
-                row.value.group == incomeGroup && (allMonths || row.value.date.hasPrefix(resolvedMonth))
+        let scopeRows: [NumberedRow<BudgetItem>] = data.allRowsSorted.filter { row in
+            let item = row.value
+            if typeFilter == .income {
+                guard item.group == incomeGroup else { return false }
+            } else {
+                guard item.group != incomeGroup else { return false }
             }
-        } else if allMonths {
-            scopeRows = data.allRowsSorted.filter { $0.value.group != incomeGroup }
-        } else {
-            scopeRows = data.paymentsByMonth[resolvedMonth] ?? []
+            if let dateRange {
+                return dateRange.contains(item.date)
+            }
+            if allPeriods {
+                return true
+            }
+            guard let resolvedPeriod else { return true }
+            return resolvedPeriod.contains(item.date)
         }
 
-        // Category pills and source filter options reflect the active month/scope.
+        // Category pills and source filter options reflect the active scope.
         var categoryTotals: [String: (sum: Int, count: Int)] = [:]
         var sourceSet = Set<String>()
         for row in scopeRows {
@@ -117,10 +127,12 @@ struct PaymentsScreenModel: Sendable {
 
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let foldedQuery = TextFold.key(trimmedQuery)
+        let bundleLayers = data.bundle.layers
 
         let filtered = scopeRows.filter { row in
             let item = row.value
-            let isSpending = data.layer(of: item) != nil
+            let layerKey = data.layer(of: item)
+            let isSpending = layerKey != nil
 
             switch typeFilter {
             case .payments:
@@ -131,6 +143,12 @@ struct PaymentsScreenModel: Sendable {
                 guard item.group == incomeGroup else { return false }
             case .nonSpending:
                 guard !isSpending && item.group != incomeGroup else { return false }
+            }
+
+            if let layerFilter {
+                guard let key = layerKey,
+                      SpendingLayer.resolve(key: key, bundleLayers: bundleLayers) == layerFilter
+                else { return false }
             }
 
             switch statusFilter {
