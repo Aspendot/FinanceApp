@@ -1411,8 +1411,14 @@ struct V06FeaturesTests {
         // 1. Strict 1-to-1 suppression: d-1 paired with a-1, d-2 survives!
         let pending = PendingBuilder.build(notices: notices, bundle: bundle, categorizer: Categorizer(rules: bundle.rules), config: bundle.layerConfig)
         #expect(pending.items.count == 2)
-        #expect(pending.items.contains(where: { $0.source == "Apple" && $0.merchant == "Cloud App Plan" && $0.fundingSource == "mufg_debit" }))
-        #expect(pending.items.contains(where: { $0.source == "Main Debit" && $0.merchant == "APPLE.COM/BILL" }))
+        let hasAppleCloudPlan = pending.items.contains { item in
+            item.source == "Apple" && item.merchant == "Cloud App Plan" && item.fundingSource == "mufg_debit"
+        }
+        let hasUnpairedDebit = pending.items.contains { item in
+            item.source == "Main Debit" && item.merchant == "APPLE.COM/BILL"
+        }
+        #expect(hasAppleCloudPlan)
+        #expect(hasUnpairedDebit)
 
         // 2. Pending Apple receipt settles the scheduled APPLE.COM/BILL timeline bill so cash isn't double-subtracted.
         let singleApple = [notices[0], notices[1]]
@@ -1795,8 +1801,10 @@ struct V06FeaturesTests {
             config: Self.sampleConfig, layers: Self.sampleLayers, startingCashOverride: 100_000
         )
         let janEvents = holForecast.points.flatMap(\.events).filter { $0.date.hasPrefix("2027-01-") }
-        #expect(janEvents.contains(where: { $0.title == "Utility Auto" && $0.date == "2027-01-12" })) // Rolled off Mon Jan 11 holiday!
-        #expect(janEvents.contains(where: { $0.title == "Cloud Fixed" && $0.date == "2027-01-11" }))  // Fixed calendar day!
+        let hasRolledUtility = janEvents.contains { $0.title == "Utility Auto" && $0.date == "2027-01-12" }
+        let hasFixedCloud = janEvents.contains { $0.title == "Cloud Fixed" && $0.date == "2027-01-11" }
+        #expect(hasRolledUtility) // Rolled off Mon Jan 11 holiday!
+        #expect(hasFixedCloud)    // Fixed calendar day!
 
         // 7. Usage-based subscription "Vendor API (metered)" matches plain vendor & API charges but not "VENDOR PRO".
         let apiSub = SubscriptionItem(
