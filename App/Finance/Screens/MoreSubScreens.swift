@@ -190,7 +190,7 @@ struct LocalDataSettingsView: View {
                     ForEach(mods.categoryOverrides) { ov in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(overrideTitle(ov))
+                                Text(MaskedMoney.redactText(overrideTitle(ov), masked: privacyMasked))
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(Theme.ink)
                                     .lineLimit(1)
@@ -220,7 +220,7 @@ struct LocalDataSettingsView: View {
                     ForEach(mods.customReminders) { rem in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(rem.title)
+                                Text(MaskedMoney.redactText(rem.title, masked: privacyMasked))
                                     .font(.subheadline.weight(.medium))
                                     .foregroundStyle(Theme.ink)
                                     .lineLimit(1)

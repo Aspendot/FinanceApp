@@ -112,7 +112,7 @@ struct CashFlowRunwayView: View {
         let lowest = forecast.scenarioLowest
         let hasDip = (lowest?.scenarioBalance ?? 0) < 20_000
 
-        return HeroVaultCard(accentTint: hasDip ? Theme.heroCoral : Theme.heroGlow) {
+        return HeroVaultCard(accentTint: (!privacyMasked && hasDip) ? Theme.heroCoral : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 14) {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 6) {
@@ -137,13 +137,13 @@ struct CashFlowRunwayView: View {
 
                 HeroMoneyText(
                     amount: displayAmount,
-                    color: displayAmount < 0 ? Theme.heroCoral : Theme.heroInk
+                    color: (!privacyMasked && displayAmount < 0) ? Theme.heroCoral : Theme.heroInk
                 )
 
                 if let activePoint {
                     if !activePoint.events.isEmpty {
                         let summary = activePoint.events
-                            .map { "\($0.title) \(MaskedMoney.payment($0.amount, masked: privacyMasked))" }
+                            .map { "\(MaskedMoney.redactText($0.title, masked: privacyMasked)) \(MaskedMoney.payment($0.amount, masked: privacyMasked))" }
                             .joined(separator: " · ")
                         Text(summary)
                             .font(.caption)
@@ -158,7 +158,7 @@ struct CashFlowRunwayView: View {
                     let delta = forecast.scenarioDelta
                     Text("What-If change: \(MaskedMoney.signed(delta, masked: privacyMasked)) vs current pace over 90 days.")
                         .font(.footnote)
-                        .foregroundStyle(delta >= 0 ? Theme.heroAccent : Theme.heroCoral)
+                        .foregroundStyle(privacyMasked ? Theme.heroInkMuted : (delta >= 0 ? Theme.heroAccent : Theme.heroCoral))
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     let deferredNote = forecast.excludedDeferredCardSources.isEmpty
@@ -230,14 +230,21 @@ struct CashFlowRunwayView: View {
                 }
             }
         }
+        .onChange(of: privacyMasked) { _, masked in
+            if masked {
+                editingStartingCash = false
+                startingCashInput = ""
+            }
+        }
     }
 
     private func startingTile(forecast: CashFlowSummary, fillHeight: Bool) -> some View {
         Button {
             guard !session.isDemo else { return }
-            startingCashInput = String(max(0, forecast.startingCashEstimate))
+            let nextEditing = !editingStartingCash
+            startingCashInput = (nextEditing && !privacyMasked) ? String(max(0, forecast.startingCashEstimate)) : ""
             withAnimation(.easeInOut(duration: 0.16)) {
-                editingStartingCash.toggle()
+                editingStartingCash = nextEditing
             }
         } label: {
             FrostedMetricTile(fillHeight: fillHeight) {
@@ -275,7 +282,7 @@ struct CashFlowRunwayView: View {
             Text(MaskedMoney.yen(lowVal, masked: privacyMasked))
                 .font(.subheadline.weight(.bold))
                 .monospacedDigit()
-                .foregroundStyle(isLow ? Theme.heroCoral : Theme.heroAccent)
+                .foregroundStyle((!privacyMasked && isLow) ? Theme.heroCoral : Theme.heroAccent)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
             Text(lowest.map { DayText.short($0.date) } ?? "—")
@@ -305,7 +312,7 @@ struct CashFlowRunwayView: View {
                 }
 
                 Chart {
-                    if yLow < 0 {
+                    if !privacyMasked && yLow < 0 {
                         RuleMark(y: .value("Zero", 0))
                             .foregroundStyle(Theme.bad.opacity(0.55))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -346,7 +353,7 @@ struct CashFlowRunwayView: View {
                         .lineStyle(StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
                     }
 
-                    if let low = forecast.scenarioLowest, low.scenarioBalance < 20_000 {
+                    if !privacyMasked, let low = forecast.scenarioLowest, low.scenarioBalance < 20_000 {
                         PointMark(
                             x: .value("Day", low.dayIndex),
                             y: .value("Low", low.scenarioBalance)
@@ -370,7 +377,7 @@ struct CashFlowRunwayView: View {
                             x: .value("Scrub", idx),
                             y: .value("Balance", pt.scenarioBalance)
                         )
-                        .foregroundStyle(pt.scenarioBalance < 0 ? Theme.bad : Theme.accent)
+                        .foregroundStyle((!privacyMasked && pt.scenarioBalance < 0) ? Theme.bad : Theme.accent)
                         .symbolSize(38)
                     }
                 }
@@ -470,8 +477,10 @@ struct CashFlowRunwayView: View {
                     if !scenario.isBaseline {
                         let d = forecast.scenarioDelta
                         QuietTag(
-                            "\(d >= 0 ? "+" : "")\(MaskedMoney.yen(d, masked: privacyMasked)) / 90d",
-                            tone: d >= 0 ? .good : .bad
+                            privacyMasked
+                                ? "\(MaskedMoney.yen(d, masked: true)) / 90d"
+                                : "\(d >= 0 ? "+" : "")\(MaskedMoney.yen(d, masked: false)) / 90d",
+                            tone: privacyMasked ? .neutral : (d >= 0 ? .good : .bad)
                         )
                     }
                 }
@@ -496,7 +505,7 @@ struct CashFlowRunwayView: View {
                                     HStack(spacing: 5) {
                                         Image(systemName: isOff ? "checkmark.circle.fill" : "circle")
                                             .font(.caption2)
-                                        Text("\(sub.entry.name) · \(MaskedMoney.yen(sub.entry.monthly, masked: privacyMasked))")
+                                        Text("\(MaskedMoney.redactText(sub.entry.name, masked: privacyMasked)) · \(MaskedMoney.yen(sub.entry.monthly, masked: privacyMasked))")
                                             .font(.caption.weight(.medium))
                                             .strikethrough(isOff)
                                     }
@@ -543,7 +552,7 @@ struct CashFlowRunwayView: View {
                         Text("−\(MaskedMoney.yen(Int(extraDebtPayment.rounded()), masked: privacyMasked))")
                             .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
-                            .foregroundStyle(extraDebtPayment > 0 ? Theme.warn : Theme.muted)
+                            .foregroundStyle(extraDebtPayment > 0 ? Theme.warnText : Theme.muted)
                     }
                     Slider(value: $extraDebtPayment, in: 0...60_000, step: 2_000)
                         .tint(Theme.warn)
@@ -581,7 +590,7 @@ struct CashFlowRunwayView: View {
                             }
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(ev.title)
+                                    Text(MaskedMoney.redactText(ev.title, masked: privacyMasked))
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(Theme.ink)
                                     HStack(spacing: 6) {
@@ -599,7 +608,7 @@ struct CashFlowRunwayView: View {
                                 Text(MaskedMoney.payment(ev.amount, masked: privacyMasked))
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
-                                    .foregroundStyle(ev.amount < 0 ? Theme.good : Theme.ink)
+                                    .foregroundStyle((!privacyMasked && ev.amount < 0) ? Theme.good : Theme.ink)
                             }
                         }
                     }

@@ -42,7 +42,7 @@ struct SubscriptionDetailSheet: View {
             }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
-            .navigationTitle(subscription.entry.name)
+            .navigationTitle(MaskedMoney.redactText(subscription.entry.name, masked: privacyMasked))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -56,10 +56,11 @@ struct SubscriptionDetailSheet: View {
             }
             .sheet(isPresented: $showingAddReminder) {
                 let nextDate = JST.addingDays(14, to: session.today) ?? session.today
+                let viaText = MaskedMoney.redactText(subscription.entry.via ?? "card", masked: privacyMasked)
                 AddReminderSheet(
-                    defaultTitle: "Review or cancel \(subscription.entry.name)",
+                    defaultTitle: "Review or cancel \(MaskedMoney.redactText(subscription.entry.name, masked: privacyMasked))",
                     defaultDate: nextDate,
-                    defaultNote: "\(Money.yen(subscription.entry.monthly))/mo via \(subscription.entry.via ?? "card")"
+                    defaultNote: privacyMasked ? "via \(viaText)" : "\(Money.yen(subscription.entry.monthly))/mo via \(viaText)"
                 )
             }
         }
@@ -70,7 +71,7 @@ struct SubscriptionDetailSheet: View {
         return HeroVaultCard(accentTint: subscription.isOff ? Theme.heroGlow : Theme.heroAccent) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    SectionLabel(sub.via ?? "Subscription", symbol: "repeat", color: Theme.heroInkMuted)
+                    SectionLabel(MaskedMoney.redactText(sub.via ?? "Subscription", masked: privacyMasked), symbol: "repeat", color: Theme.heroInkMuted)
                     Spacer()
                     if let status = subscription.displayStatus {
                         QuietTag(status, tone: .hero)
@@ -194,7 +195,7 @@ struct SubscriptionDetailSheet: View {
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.merchant)
+                                        Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                                             .font(.subheadline.weight(.medium))
                                             .foregroundStyle(Theme.ink)
                                             .lineLimit(1)
@@ -285,6 +286,12 @@ struct DebtDetailSheet: View {
             .sheet(isPresented: $showingPayoffCalculator) {
                 DebtPayoffSheet()
             }
+            .onChange(of: privacyMasked) { _, masked in
+                if masked {
+                    editingBalance = false
+                    balanceInput = ""
+                }
+            }
         }
     }
 
@@ -296,7 +303,7 @@ struct DebtDetailSheet: View {
                     Spacer()
                     Button(editingBalance ? "Cancel" : "Update balance") {
                         editingBalance.toggle()
-                        balanceInput = String(debt.balance)
+                        balanceInput = (editingBalance && !privacyMasked) ? String(debt.balance) : ""
                     }
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.heroAccent)
@@ -330,8 +337,17 @@ struct DebtDetailSheet: View {
                 if let limit = debt.limit, limit > 0 {
                     let ratio = min(1.0, max(0.0, Double(debt.balance) / Double(limit)))
                     let pct = Int((ratio * 100).rounded())
-                    ProgressMeter(ratio: ratio, tint: Theme.heroCoral, track: Color.white.opacity(0.15), height: 6)
-                    Text("\(pct)% of \(MaskedMoney.yen(limit, masked: privacyMasked)) limit used")
+                    ProgressMeter(
+                        ratio: privacyMasked ? 0 : ratio,
+                        tint: privacyMasked ? Theme.heroAccent : Theme.heroCoral,
+                        track: Color.white.opacity(0.15),
+                        height: 6
+                    )
+                    Text(
+                        privacyMasked
+                            ? "Limit \(MaskedMoney.yen(limit, masked: true))"
+                            : "\(pct)% of \(MaskedMoney.yen(limit, masked: false)) limit used"
+                    )
                         .font(.caption)
                         .foregroundStyle(Theme.heroInkMuted)
                 }
@@ -344,7 +360,7 @@ struct DebtDetailSheet: View {
                         Text(MaskedMoney.yen(history.estimatedMonthlyInterest, masked: privacyMasked))
                             .font(.subheadline.weight(.bold))
                             .monospacedDigit()
-                            .foregroundStyle(Theme.heroCoral)
+                            .foregroundStyle(privacyMasked ? Theme.heroInk : Theme.heroCoral)
                         Text(
                             history.hasExplicitRate
                                 ? String(format: "%.1f%% APR · estimate", history.annualRatePercent)
@@ -360,7 +376,7 @@ struct DebtDetailSheet: View {
                         Text(MaskedMoney.signed(history.ytdNetProgress, masked: privacyMasked))
                             .font(.subheadline.weight(.bold))
                             .monospacedDigit()
-                            .foregroundStyle(history.ytdNetProgress >= 0 ? Theme.heroAccent : Theme.heroCoral)
+                            .foregroundStyle(privacyMasked ? Theme.heroInk : (history.ytdNetProgress >= 0 ? Theme.heroAccent : Theme.heroCoral))
                         Text("Repaid minus borrowed")
                             .font(.caption2)
                             .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
@@ -474,7 +490,7 @@ struct DebtDetailSheet: View {
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.merchant)
+                                    Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                                         .font(.subheadline.weight(.medium))
                                         .foregroundStyle(Theme.ink)
                                         .lineLimit(1)
@@ -572,6 +588,12 @@ struct CategoryDetailSheet: View {
                     PaymentDetailSheet(item: inspected.item, data: data)
                 }
             }
+            .onChange(of: privacyMasked) { _, masked in
+                if masked {
+                    editingTarget = false
+                    targetInput = ""
+                }
+            }
         }
     }
 
@@ -612,7 +634,7 @@ struct CategoryDetailSheet: View {
                     Spacer()
                     Button(editingTarget ? "Cancel" : (history.currentTarget == nil ? "Set cap" : "Edit cap")) {
                         editingTarget.toggle()
-                        targetInput = String(history.currentTarget ?? history.averagePerPeriod)
+                        targetInput = (editingTarget && !privacyMasked) ? String(history.currentTarget ?? history.averagePerPeriod) : ""
                     }
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Theme.accent)
@@ -648,19 +670,21 @@ struct CategoryDetailSheet: View {
                     }
                 } else if let target = history.currentTarget, target > 0 {
                     let ratio = Double(max(0, history.selectedPeriodTotal)) / Double(target)
-                    let tint: Color = history.selectedPeriodTotal > target ? Theme.bad : (ratio >= 0.8 ? Theme.warn : Theme.good)
+                    let tint: Color = privacyMasked
+                        ? Theme.accent
+                        : (history.selectedPeriodTotal > target ? Theme.bad : (ratio >= 0.8 ? Theme.warn : Theme.good))
                     HStack {
                         Text("\(MaskedMoney.yen(history.selectedPeriodTotal, masked: privacyMasked)) spent")
                             .font(.subheadline.weight(.semibold))
                             .monospacedDigit()
-                            .foregroundStyle(history.selectedPeriodTotal > target ? Theme.bad : Theme.ink)
+                            .foregroundStyle((!privacyMasked && history.selectedPeriodTotal > target) ? Theme.bad : Theme.ink)
                         Spacer()
                         Text("Cap \(MaskedMoney.yen(target, masked: privacyMasked))")
                             .font(.caption.weight(.medium))
                             .monospacedDigit()
                             .foregroundStyle(Theme.muted)
                     }
-                    ProgressMeter(ratio: ratio, tint: tint, height: 7, paceRatio: pace)
+                    ProgressMeter(ratio: privacyMasked ? 0 : ratio, tint: tint, height: 7, paceRatio: pace)
                     if pace != nil {
                         Text("The vertical notch marks today's position in this period.")
                             .font(.caption2)
@@ -723,7 +747,7 @@ struct CategoryDetailSheet: View {
                             } label: {
                                 HStack {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(item.merchant)
+                                        Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                                             .font(.subheadline.weight(.medium))
                                             .foregroundStyle(Theme.ink)
                                             .lineLimit(1)
@@ -879,7 +903,7 @@ struct MerchantDetailSheet: View {
             }
             .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             .background(Theme.page)
-            .navigationTitle(merchantName)
+            .navigationTitle(MaskedMoney.redactText(merchantName, masked: privacyMasked))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -1015,7 +1039,7 @@ struct BankCashBreakdownSheet: View {
         NavigationStack {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: Theme.cardSpacing) {
-                    HeroVaultCard(accentTint: liveCash.cashLeftUntilPayday < 0 ? Theme.heroCoral : Theme.heroGlow) {
+                    HeroVaultCard(accentTint: (!privacyMasked && liveCash.cashLeftUntilPayday < 0) ? Theme.heroCoral : Theme.heroGlow) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
                                 SectionLabel("Live bank cash math", symbol: "building.columns.fill", color: Theme.heroInkMuted)
@@ -1026,7 +1050,7 @@ struct BankCashBreakdownSheet: View {
                             }
                             HeroMoneyText(
                                 amount: liveCash.cashLeftUntilPayday,
-                                color: liveCash.cashLeftUntilPayday < 0 ? Theme.heroCoral : Theme.heroInk
+                                color: (!privacyMasked && liveCash.cashLeftUntilPayday < 0) ? Theme.heroCoral : Theme.heroInk
                             )
                             if let payday {
                                 Text("Cash left until \(DayText.long(payday.next.date)) after all unsettled bills.")
@@ -1053,7 +1077,7 @@ struct BankCashBreakdownSheet: View {
                                         Text(MaskedMoney.yen(acc.estimatedBalance, masked: privacyMasked))
                                             .font(.subheadline.weight(.bold))
                                             .monospacedDigit()
-                                            .foregroundStyle(acc.estimatedBalance < 0 ? Theme.bad : Theme.good)
+                                            .foregroundStyle(privacyMasked ? Theme.ink : (acc.estimatedBalance < 0 ? Theme.bad : Theme.good))
                                     }
                                     breakdownSubRow(
                                         label: "Confirmed balance (through \(DayText.short(acc.asOf)))",
@@ -1104,6 +1128,13 @@ struct BankCashBreakdownSheet: View {
                                     color: Theme.good
                                 )
                             }
+                            if liveCash.estimatedInflowsSum > 0 {
+                                breakdownRow(
+                                    label: "Estimated inflows (not counted yet)",
+                                    value: MaskedMoney.signed(liveCash.estimatedInflowsSum, masked: privacyMasked),
+                                    color: Theme.muted
+                                )
+                            }
                             breakdownRow(
                                 label: "Unpaid scheduled bills (\(liveCash.remainingBillsCount))",
                                 value: MaskedMoney.signed(-liveCash.remainingBillsSum, masked: privacyMasked),
@@ -1125,7 +1156,7 @@ struct BankCashBreakdownSheet: View {
                                 Text(MaskedMoney.yen(liveCash.cashLeftUntilPayday, masked: privacyMasked))
                                     .font(.headline.weight(.bold))
                                     .monospacedDigit()
-                                    .foregroundStyle(liveCash.cashLeftUntilPayday < 0 ? Theme.bad : Theme.good)
+                                    .foregroundStyle(privacyMasked ? Theme.ink : (liveCash.cashLeftUntilPayday < 0 ? Theme.bad : Theme.good))
                             }
                             Text("Deferred credit card purchases are not subtracted here because they leave your bank on next month's scheduled card bill.")
                                 .font(.caption)

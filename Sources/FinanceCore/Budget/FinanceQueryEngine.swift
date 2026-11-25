@@ -17,7 +17,7 @@ public struct QueryAnswerRow: Sendable, Equatable, Identifiable {
 /// Exact, zero-hallucination answer produced by `FinanceQueryEngine`.
 public struct QueryAnswer: Sendable, Equatable {
     public enum Action: Sendable, Equatable {
-        case openPayments(month: String?, category: String?, query: String?)
+        case openPayments(month: String?, category: String?, query: String?, source: String? = nil)
         case openMonths(month: String?)
         case openNow
     }
@@ -133,15 +133,21 @@ public enum FinanceQueryEngine {
             return compareMonthsAnswer(m1: resolvedMonths[0], m2: resolvedMonths[1], context: context)
         }
 
-        // 2. Payday / remaining cash / unpaid bills.
-        if lower.contains("payday") || lower.contains("left until") || (containsWord("remaining", in: lower) && containsWord("bill", in: lower)) {
-            return paydayAnswer(context: context)
-        }
-        if (containsWord("bill", in: lower) || containsWord("bills", in: lower))
-            && (lower.contains("unpaid") || containsWord("due", in: lower) || containsWord("left", in: lower)
-                || lower.contains("coming") || lower.contains("upcoming") || containsWord("next", in: lower))
+        // 2. Unpaid / upcoming bills before generic payday overview so "Which bills are due before payday?"
+        //    returns the itemized bill list, while "How much is left after bills?" stays on the payday summary.
+        let asksCashRemaining = (lower.contains("how much") || lower.contains("cash"))
+            && (containsWord("left", in: lower) || containsWord("remaining", in: lower))
+            && !lower.contains("which") && !lower.contains("what bill")
+        if !asksCashRemaining,
+           (containsWord("bill", in: lower) || containsWord("bills", in: lower)),
+           (lower.contains("unpaid") || containsWord("due", in: lower) || containsWord("left", in: lower)
+               || lower.contains("coming") || lower.contains("upcoming") || containsWord("next", in: lower)
+               || containsWord("remaining", in: lower))
         {
             return upcomingBillsAnswer(context: context)
+        }
+        if lower.contains("payday") || lower.contains("left until") || asksCashRemaining {
+            return paydayAnswer(context: context)
         }
 
         // 3. Debt.
@@ -237,6 +243,63 @@ public enum FinanceQueryEngine {
 
     // MARK: - Specific answer builders
 
+    @inline(never)
+    private static func latestPaydayDate(in timeline: [TimelineEntry], today: String) -> String? {
+        var latest: String?
+        for entry in timeline {
+            guard entry.payday == true else { continue }
+            guard entry.done == true || entry.date < today else { continue }
+            if let current = latest {
+                if entry.date > current { latest = entry.date }
+            } else {
+                latest = entry.date
+            }
+        }
+        return latest
+    }
+
+    @inline(never)
+    private static func livePaydayAnswer(
+        payday: PaydayView,
+        live: LiveCashSummary,
+        breakdown: PaydayBreakdown
+    ) -> QueryAnswer {
+        var rows = [
+            QueryAnswerRow(label: "Estimated cash in banks", value: formatYen(live.estimatedBankCash)),
+            QueryAnswerRow(
+                label: "Unpaid bills left",
+                value: formatYen(live.remainingBillsSum),
+                detail: "\(live.remainingBillsCount) left"
+            ),
+        ]
+        if live.phoneCheckedBillsSum > 0 {
+            rows.append(QueryAnswerRow(
+                label: "Marked paid on phone",
+                value: formatYen(live.phoneCheckedBillsSum),
+                detail: "Awaiting bank debit"
+            ))
+        }
+        if live.remainingInflowsSum > 0 {
+            rows.append(QueryAnswerRow(label: "Expected inflows", value: signedYen(live.remainingInflowsSum)))
+        }
+        if live.estimatedInflowsSum > 0 {
+            rows.append(QueryAnswerRow(label: "Estimated inflows (not counted)", value: signedYen(live.estimatedInflowsSum), detail: "Unconfirmed"))
+        }
+        rows.append(QueryAnswerRow(label: "Day-to-day spent since payday", value: formatYen(breakdown.dayToDaySpentSincePayday)))
+        rows.append(QueryAnswerRow(label: "Cycle budget (income − bills)", value: formatYen(payday.left)))
+        if live.openBorrowedSum > 0 {
+            rows.append(QueryAnswerRow(label: "Left if credit room used", value: formatYen(live.cashLeftIfBorrowed)))
+        }
+        return QueryAnswer(
+            headline: formatYen(live.cashLeftUntilPayday),
+            subtitle: "Bank cash after unpaid bills · \(payday.daysToPayday) days to \(payday.next.date)",
+            rows: rows,
+            note: live.isEstimate ? "Estimate based on latest confirmed bank balances, post-balance bank rows, and unsettled debit notices." : nil,
+            actionTitle: "Open Now",
+            action: .openNow
+        )
+    }
+
     private static func paydayAnswer(context: Context) -> QueryAnswer {
         guard let payday = context.payday else {
             return QueryAnswer(
@@ -248,43 +311,13 @@ public enum FinanceQueryEngine {
         }
         let breakdown = SpendingInsights.paydayBreakdown(
             payday: payday,
-            lastPayday: context.timeline.filter { $0.payday == true && $0.date <= context.today }.map(\.date).max(),
+            lastPayday: latestPaydayDate(in: context.timeline, today: context.today),
             items: context.allItems,
             config: context.bundle.layerConfig,
             layers: context.bundle.layers
         )
         if let live = context.liveCash {
-            var rows = [
-                QueryAnswerRow(label: "Estimated cash in banks", value: formatYen(live.estimatedBankCash)),
-                QueryAnswerRow(
-                    label: "Unpaid bills left",
-                    value: formatYen(live.remainingBillsSum),
-                    detail: "\(live.remainingBillsCount) left"
-                ),
-            ]
-            if live.phoneCheckedBillsSum > 0 {
-                rows.append(QueryAnswerRow(
-                    label: "Marked paid on phone",
-                    value: formatYen(live.phoneCheckedBillsSum),
-                    detail: "Awaiting bank debit"
-                ))
-            }
-            if live.remainingInflowsSum > 0 {
-                rows.append(QueryAnswerRow(label: "Expected inflows", value: signedYen(live.remainingInflowsSum)))
-            }
-            rows.append(QueryAnswerRow(label: "Day-to-day spent since payday", value: formatYen(breakdown.dayToDaySpentSincePayday)))
-            rows.append(QueryAnswerRow(label: "Cycle budget (income − bills)", value: formatYen(payday.left)))
-            if live.openBorrowedSum > 0 {
-                rows.append(QueryAnswerRow(label: "Left if credit room used", value: formatYen(live.cashLeftIfBorrowed)))
-            }
-            return QueryAnswer(
-                headline: formatYen(live.cashLeftUntilPayday),
-                subtitle: "Bank cash after unpaid bills · \(payday.daysToPayday) days to \(payday.next.date)",
-                rows: rows,
-                note: live.isEstimate ? "Estimate based on latest confirmed bank balances, post-balance bank rows, and unsettled debit notices." : nil,
-                actionTitle: "Open Now",
-                action: .openNow
-            )
+            return livePaydayAnswer(payday: payday, live: live, breakdown: breakdown)
         }
         var rows = [
             QueryAnswerRow(label: "Money in", value: signedYen(payday.inSum)),
@@ -307,23 +340,38 @@ public enum FinanceQueryEngine {
     }
 
     private static func upcomingBillsAnswer(context: Context) -> QueryAnswer {
-        let unpaid = context.timeline.filter { entry in
-            entry.done != true && entry.event != true && entry.borrowed != true && entry.cardBilled != true && entry.amount > 0
-                && (context.payday.map { entry.date < $0.next.date } ?? true)
+        let clearedByBank = context.liveCash?.postBalanceMatchedKeys ?? []
+        let latestPayday = latestPaydayDate(in: context.timeline, today: context.today)
+        let unsettled = context.timeline.filter { entry in
+            let isActivePhoneHold = entry.done == true
+                && entry.phoneChecked == true
+                && LiveCashSummary.isPhoneCheckedHoldActive(for: entry, lastPayday: latestPayday, today: context.today)
+            let isUnsettled = entry.done != true || isActivePhoneHold
+            guard isUnsettled, entry.event != true, entry.borrowed != true, entry.cardBilled != true, entry.amount > 0 else {
+                return false
+            }
+            if BillCheckoff.matches(entry, in: clearedByBank) { return false }
+            return context.payday.map { entry.date < $0.next.date } ?? true
         }
-        let total = unpaid.reduce(0) { $0 + $1.amount }
-        let rows = unpaid.prefix(12).map { entry in
-            QueryAnswerRow(
+        let total = unsettled.reduce(0) { $0 + $1.amount }
+        let rows = unsettled.prefix(12).map { entry -> QueryAnswerRow in
+            var detailParts = [entry.date]
+            if entry.phoneChecked == true {
+                detailParts.append("marked paid on phone")
+            } else if entry.estimate == true {
+                detailParts.append("estimate")
+            }
+            return QueryAnswerRow(
                 label: entry.item,
                 value: formatYen(entry.amount),
-                detail: entry.estimate == true ? "\(entry.date) · estimate" : entry.date
+                detail: detailParts.joined(separator: " · ")
             )
         }
         return QueryAnswer(
             headline: formatYen(total),
-            subtitle: unpaid.isEmpty
-                ? "All scheduled bills before payday are marked paid."
-                : "\(unpaid.count) unpaid \(unpaid.count == 1 ? "bill" : "bills") left before payday",
+            subtitle: unsettled.isEmpty
+                ? "All scheduled bills before payday are confirmed paid."
+                : "\(unsettled.count) unsettled \(unsettled.count == 1 ? "bill" : "bills") left before payday",
             rows: rows,
             actionTitle: "Open Coming up",
             action: .openNow
@@ -494,7 +542,7 @@ public enum FinanceQueryEngine {
             subtitle: "\(source) spending in \(scopeText) · \(matches.count) payments",
             rows: rows,
             actionTitle: "Filter Payments",
-            action: .openPayments(month: effectiveMonth, category: nil, query: source)
+            action: .openPayments(month: effectiveMonth, category: nil, query: nil, source: source)
         )
     }
 
@@ -693,13 +741,21 @@ public enum FinanceQueryEngine {
     private static func extractMonths(from lower: String, availableMonths: [String], today: String) -> [String] {
         var found: [String] = []
         let todayMonth = String(today.prefix(7))
-        let latest = availableMonths.last ?? todayMonth
+        let previousMonth: String? = {
+            let parts = todayMonth.split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 2 else { return nil }
+            let total = parts[0] * 12 + (parts[1] - 1) - 1
+            guard total >= 0 else { return nil }
+            return String(format: "%04d-%02d", total / 12, (total % 12) + 1)
+        }()
 
         if lower.contains("this month") || lower.contains("current month") {
-            found.append(latest)
+            found.append(todayMonth)
         }
         if lower.contains("last month") || lower.contains("previous month") {
-            if let idx = availableMonths.firstIndex(of: latest), idx > 0 {
+            if let prev = previousMonth {
+                found.append(prev)
+            } else if let idx = availableMonths.firstIndex(of: todayMonth), idx > 0 {
                 found.append(availableMonths[idx - 1])
             }
         }

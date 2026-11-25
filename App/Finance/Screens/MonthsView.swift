@@ -165,7 +165,7 @@ struct MonthsView: View {
                     }
 
                     FlowLayout(horizontalSpacing: 8, verticalSpacing: 6) {
-                        if let delta = comp.deltaFromPrevious, let prev = comp.previousMonth {
+                        if !privacyMasked, let delta = comp.deltaFromPrevious, let prev = comp.previousMonth {
                             let isUp = delta > 0
                             let arrow = isUp ? "▲" : "▼"
                             let verb = isUp ? "vs" : "under"
@@ -173,7 +173,7 @@ struct MonthsView: View {
                                 ? DayText.shortMonth(prev + "-01")
                                 : prev
                             QuietTag(
-                                "\(arrow) \(MaskedMoney.yen(abs(delta), masked: privacyMasked)) \(verb) \(prevLabel)",
+                                "\(arrow) \(MaskedMoney.yen(abs(delta), masked: false)) \(verb) \(prevLabel)",
                                 tone: isUp ? .bad : .good
                             )
                         } else if comp.isInProgress {
@@ -185,13 +185,22 @@ struct MonthsView: View {
                     }
                 }
 
-                stackedChart(screen: screen)
-                    .frame(height: dynamicTypeSize.isAccessibilitySize ? 245 : 220)
-                    .padding(.top, 2)
-                    .accessibilityLabel(chartAccessibilitySummary(screen: screen))
-                    .accessibilityAdjustableAction { direction in
-                        stepPeriod(screen: screen, forward: direction == .increment)
-                    }
+                if privacyMasked {
+                    stackedChart(screen: screen)
+                        .frame(height: dynamicTypeSize.isAccessibilitySize ? 245 : 220)
+                        .padding(.top, 2)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Spending chart hidden in Privacy Mode.")
+                } else {
+                    stackedChart(screen: screen)
+                        .frame(height: dynamicTypeSize.isAccessibilitySize ? 245 : 220)
+                        .padding(.top, 2)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(chartAccessibilitySummary(screen: screen))
+                        .accessibilityAdjustableAction { direction in
+                            stepPeriod(screen: screen, forward: direction == .increment)
+                        }
+                }
 
                 HairlineDivider()
 
@@ -372,7 +381,18 @@ struct MonthsView: View {
         .sensoryFeedback(.selection, trigger: screen.selectedPeriodID)
 
         return Group {
-            if screen.periodIDs.count > 6 {
+            if privacyMasked {
+                VStack(spacing: 8) {
+                    Image(systemName: "eye.slash")
+                        .font(.title3)
+                        .foregroundStyle(Theme.muted)
+                    Text("Chart hidden in Privacy Mode")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Theme.muted)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.well.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else if screen.periodIDs.count > 6 {
                 baseChart
                     .chartScrollableAxes(.horizontal)
                     .chartXVisibleDomain(length: 6)
@@ -410,7 +430,7 @@ struct MonthsView: View {
                                         .foregroundStyle(Theme.ink2)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
-                                Text("\(MaskedMoney.yen(item.amount, masked: privacyMasked)) · \(pct)%")
+                                Text(privacyMasked ? MaskedMoney.yen(item.amount, masked: true) : "\(MaskedMoney.yen(item.amount, masked: false)) · \(pct)%")
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
                                     .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
@@ -430,7 +450,7 @@ struct MonthsView: View {
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
                                     .foregroundStyle(item.amount > 0 ? Theme.ink : Theme.muted)
-                                Text("\(pct)%")
+                                Text(privacyMasked ? "••%" : "\(pct)%")
                                     .font(.caption.weight(.medium))
                                     .monospacedDigit()
                                     .foregroundStyle(Theme.muted)
@@ -479,7 +499,7 @@ struct MonthsView: View {
                 HStack {
                     SectionLabel("Spent vs income", symbol: "scale.3d")
                     Spacer()
-                    if let rate = comp.savingsRate, (!comp.isInProgress || screen.periodMode == .payCycle) {
+                    if !privacyMasked, let rate = comp.savingsRate, (!comp.isInProgress || screen.periodMode == .payCycle) {
                         let pct = Int((rate * 100).rounded())
                         QuietTag(
                             pct >= 0 ? "Saved \(pct)%" : "Over by \(-pct)%",
@@ -491,7 +511,7 @@ struct MonthsView: View {
                 if dynamicTypeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: 10) {
                         MetricWell {
-                            summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
+                            summaryMetric(title: "Spent", amount: totals.total, color: (!privacyMasked && overspent) ? Theme.bad : Theme.ink)
                         }
                         MetricWell(tint: hasIncome ? Theme.good : nil) {
                             summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
@@ -500,7 +520,7 @@ struct MonthsView: View {
                 } else {
                     HStack(alignment: .top, spacing: 10) {
                         MetricWell {
-                            summaryMetric(title: "Spent", amount: totals.total, color: overspent ? Theme.bad : Theme.ink)
+                            summaryMetric(title: "Spent", amount: totals.total, color: (!privacyMasked && overspent) ? Theme.bad : Theme.ink)
                         }
                         MetricWell(tint: hasIncome ? Theme.good : nil) {
                             summaryMetric(title: "Income", amount: totals.income, color: hasIncome ? Theme.good : Theme.muted)
@@ -510,8 +530,8 @@ struct MonthsView: View {
 
                 if hasIncome {
                     ProgressMeter(
-                        ratio: ratio,
-                        tint: overspent ? Theme.bad : Theme.accent,
+                        ratio: privacyMasked ? 0 : ratio,
+                        tint: (!privacyMasked && overspent) ? Theme.bad : Theme.accent,
                         height: 8,
                         paceRatio: screen.activePeriodPace
                     )
@@ -549,15 +569,22 @@ struct MonthsView: View {
                     if hasIncome {
                         let leftPositive = totals.left >= 0
                         let hasExtraOutflows = totals.debt != 0 || totals.people != 0
-                        let leftLabel = leftPositive
-                            ? (hasExtraOutflows ? "Net left" : "Left after spending")
-                            : "Short by"
-                        MetricWell(tint: leftPositive ? Theme.good : Theme.bad) {
+                        let leftLabel: String = {
+                            if privacyMasked {
+                                return hasExtraOutflows ? "Net left" : "Left after spending"
+                            }
+                            return leftPositive
+                                ? (hasExtraOutflows ? "Net left" : "Left after spending")
+                                : "Short by"
+                        }()
+                        let wellTint: Color = privacyMasked ? Theme.accent : (leftPositive ? Theme.good : Theme.bad)
+                        let valueColor: Color = privacyMasked ? Theme.ink : (leftPositive ? Theme.good : Theme.bad)
+                        MetricWell(tint: wellTint) {
                             summaryDetailRow(
                                 title: leftLabel,
                                 value: MaskedMoney.signed(totals.left, masked: privacyMasked),
                                 accessibilityValue: MaskedMoney.accessibility(totals.left, signed: true, masked: privacyMasked),
-                                color: leftPositive ? Theme.good : Theme.bad,
+                                color: valueColor,
                                 emphasized: true
                             )
                         }
@@ -697,9 +724,11 @@ struct MonthsView: View {
                         ForEach(plan.watchList.prefix(3)) { row in
                             let target = row.entry.target ?? 0
                             let ratio = row.selectedMonthProgress ?? 0
-                            let tint: Color = row.selectedMonthSpent > target
-                                ? Theme.bad
-                                : (ratio >= 0.8 ? Theme.warn : Theme.good)
+                            let tint: Color = privacyMasked
+                                ? Theme.accent
+                                : (row.selectedMonthSpent > target
+                                    ? Theme.bad
+                                    : (ratio >= 0.8 ? Theme.warn : Theme.good))
                             Button {
                                 session.activeSheet = .categoryDetail(name: row.entry.category, periodID: screen.selectedPeriodID)
                             } label: {
@@ -717,9 +746,9 @@ struct MonthsView: View {
                                             Text("\(MaskedMoney.yen(row.selectedMonthSpent, masked: privacyMasked)) / \(MaskedMoney.yen(target, masked: privacyMasked))")
                                                 .font(.caption.weight(.semibold))
                                                 .monospacedDigit()
-                                                .foregroundStyle(row.selectedMonthSpent > target ? Theme.bad : Theme.ink2)
+                                                .foregroundStyle((!privacyMasked && row.selectedMonthSpent > target) ? Theme.bad : Theme.ink2)
                                         }
-                                        ProgressMeter(ratio: ratio, tint: tint, height: 5.5, paceRatio: screen.activePeriodPace)
+                                        ProgressMeter(ratio: privacyMasked ? 0 : ratio, tint: tint, height: 5.5, paceRatio: screen.activePeriodPace)
                                     }
                                 }
                                 .contentShape(Rectangle())
@@ -828,7 +857,7 @@ struct MonthsView: View {
                             }
                             VStack(alignment: .leading, spacing: 5) {
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                    Text(shop.merchant)
+                                    Text(MaskedMoney.redactText(shop.merchant, masked: privacyMasked))
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(Theme.ink)
                                         .lineLimit(1)
@@ -845,7 +874,7 @@ struct MonthsView: View {
                                     .font(.caption)
                                     .foregroundStyle(Theme.muted)
                                     .lineLimit(1)
-                                ProgressMeter(ratio: Double(shop.total) / Double(maxSum), tint: Theme.accent, height: 5.5)
+                                ProgressMeter(ratio: privacyMasked ? 0 : Double(shop.total) / Double(maxSum), tint: Theme.accent, height: 5.5)
                             }
                         }
                         .padding(.vertical, 8)
@@ -897,13 +926,13 @@ struct MonthsView: View {
                                         .font(.subheadline.weight(.semibold))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.ink)
-                                    Text("\(pct)%")
+                                    Text(privacyMasked ? "••%" : "\(pct)%")
                                         .font(.caption.weight(.medium))
                                         .monospacedDigit()
                                         .foregroundStyle(Theme.muted)
                                         .frame(minWidth: 32, alignment: .trailing)
                                 }
-                                ProgressMeter(ratio: Double(src.total) / Double(maxSum), tint: spec.tint, height: 6)
+                                ProgressMeter(ratio: privacyMasked ? 0 : Double(src.total) / Double(maxSum), tint: spec.tint, height: 6)
                             }
                         }
                         .padding(.vertical, 8)
@@ -947,7 +976,7 @@ struct MonthsView: View {
                                 .font(.body.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.ink)
-                            Text("\(bar.count) \(paymentWord) · \(percent)%")
+                            Text(privacyMasked ? "\(bar.count) \(paymentWord)" : "\(bar.count) \(paymentWord) · \(percent)%")
                                 .font(.caption)
                                 .foregroundStyle(Theme.muted)
                         }
@@ -966,7 +995,7 @@ struct MonthsView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.ink)
-                            Text("\(percent)%")
+                            Text(privacyMasked ? "••%" : "\(percent)%")
                                 .font(.caption.weight(.medium))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.muted)
@@ -978,7 +1007,7 @@ struct MonthsView: View {
                         }
                     }
 
-                    ProgressMeter(ratio: bar.barFraction, tint: bar.layer.color, height: 6)
+                    ProgressMeter(ratio: privacyMasked ? 0 : bar.barFraction, tint: bar.layer.color, height: 6)
                 }
             }
             .padding(.vertical, 8)
@@ -987,7 +1016,11 @@ struct MonthsView: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(bar.name), \(MaskedMoney.accessibility(bar.sum, masked: privacyMasked)), \(percent) percent, \(bar.count) \(paymentWord)")
+        .accessibilityLabel(
+            privacyMasked
+                ? "\(bar.name), \(MaskedMoney.accessibility(bar.sum, masked: true)), \(bar.count) \(paymentWord)"
+                : "\(bar.name), \(MaskedMoney.accessibility(bar.sum, masked: false)), \(percent) percent, \(bar.count) \(paymentWord)"
+        )
     }
 
     private func openPaymentsForLayer(_ layer: SpendingLayer, period: BudgetPeriod?) {

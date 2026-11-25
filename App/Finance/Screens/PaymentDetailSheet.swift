@@ -77,7 +77,7 @@ struct PaymentDetailSheet: View {
                         HStack(alignment: .center, spacing: 14) {
                             CategoryBadge(category: item.amount < 0 ? "Salary" : item.category, size: 48)
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(item.merchant)
+                                Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                                     .font(.headline.weight(.semibold))
                                     .foregroundStyle(Theme.ink)
                                     .textSelection(.enabled)
@@ -124,7 +124,7 @@ struct PaymentDetailSheet: View {
                     SettingsValueRow(label: "Group", value: item.group)
 
                     if let foreign = matchedNotice?.foreignAmount, !foreign.isEmpty {
-                        SettingsValueRow(label: "Original amount", value: foreign)
+                        SettingsValueRow(label: "Original amount", value: privacyMasked ? "•••" : foreign)
                     }
                     if let ref = matchedNotice?.reference, !ref.isEmpty {
                         SettingsValueRow(label: "Reference", value: ref, monospaced: true, selectable: true)

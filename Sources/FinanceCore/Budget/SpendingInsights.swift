@@ -501,15 +501,130 @@ public enum SpendingInsights {
         guard let lines else { return nil }
         let pattern = #"[¥￥]\s*([0-9][0-9,]*)"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        for line in lines {
-            let lower = line.lowercased()
-            // Skip lines that only mention interest or available credit rather than a payment.
-            if lower.contains("interest") || lower.contains("available") { continue }
-            let range = NSRange(line.startIndex..<line.endIndex, in: line)
-            if let match = regex.firstMatch(in: line, range: range),
-               let r = Range(match.range(at: 1), in: line),
-               let value = Int(line[r].replacingOccurrences(of: ",", with: "")), value > 0
-            {
+        let skipHints = [
+            "interest", "available", "usable", "limit", "used", "balance", "freed", "fee", "incl.", "principal",
+            "限度", "利用可能", "使える", "残高", "手数料"
+        ]
+        let paymentHints = [
+            "monthly", "repayment", "auto-debit", "debit", "bill", "payment", "minimum",
+            "毎月", "引き落とし", "返済", "請求"
+        ]
+        let paidRegex = try? NSRegularExpression(pattern: #"(?<![a-z])paid(?![a-z])|支払済|支払い済|完了"#, options: [.caseInsensitive])
+        let futurePayoffRegex = try? NSRegularExpression(
+            pattern: #"(?<![a-z])(?:until\s+)?paid\s+(?:off|in\s+full)(?![a-z])"#,
+            options: [.caseInsensitive]
+        )
+        // Split comma clauses only when the comma separates words/clauses (never inside grouped digits like 42,000).
+        let commaSplitRegex = try? NSRegularExpression(pattern: #",\s+(?=[A-Za-z¥￥\p{Han}\p{Hiragana}\p{Katakana}])"#)
+
+        func isMarkedAlreadyPaid(_ text: String) -> Bool {
+            guard let paidRegex else { return false }
+            let cleaned: String
+            if let futurePayoffRegex {
+                let r0 = NSRange(text.startIndex..<text.endIndex, in: text)
+                cleaned = futurePayoffRegex.stringByReplacingMatches(in: text, range: r0, withTemplate: "")
+            } else {
+                cleaned = text
+            }
+            let r = NSRange(cleaned.startIndex..<cleaned.endIndex, in: cleaned)
+            return paidRegex.firstMatch(in: cleaned, range: r) != nil
+        }
+
+        func bestPaymentAmount(in clause: String, requirePaymentHint: Bool) -> Int? {
+            let lower = clause.lowercased()
+            if isMarkedAlreadyPaid(clause) { return nil }
+            let hasPaymentHint = paymentHints.contains(where: { lower.contains($0) })
+            if requirePaymentHint && !hasPaymentHint { return nil }
+            if !hasPaymentHint && skipHints.contains(where: { lower.contains($0) }) { return nil }
+
+            let fullRange = NSRange(clause.startIndex..<clause.endIndex, in: clause)
+            let matches = regex.matches(in: clause, range: fullRange)
+            guard !matches.isEmpty else { return nil }
+
+            for match in matches {
+                guard let fullMatchRange = Range(match.range, in: clause),
+                      let valueRange = Range(match.range(at: 1), in: clause),
+                      let value = Int(clause[valueRange].replacingOccurrences(of: ",", with: "")),
+                      value > 0
+                else { continue }
+
+                // Inspect local text immediately preceding and following this yen figure within the clause
+                // so "Limit ¥250,000, monthly repayment ¥12,000" skips ¥250,000 and picks ¥12,000.
+                let prefixStart = clause.index(fullMatchRange.lowerBound, offsetBy: -32, limitedBy: clause.startIndex) ?? clause.startIndex
+                let localPrefix = String(clause[prefixStart..<fullMatchRange.lowerBound]).lowercased()
+                let suffixEnd = clause.index(fullMatchRange.upperBound, offsetBy: 24, limitedBy: clause.endIndex) ?? clause.endIndex
+                let localSuffix = String(clause[fullMatchRange.upperBound..<suffixEnd]).lowercased()
+
+                let lastPaymentPos = paymentHints.compactMap { localPrefix.range(of: $0, options: .backwards)?.upperBound }.max()
+                let lastSkipPos = skipHints.compactMap { localPrefix.range(of: $0, options: .backwards)?.upperBound }.max()
+                let suffixHasSkip = skipHints.contains { localSuffix.hasPrefix(" " + $0) || localSuffix.hasPrefix($0) }
+                let suffixHasPayment = paymentHints.contains { localSuffix.hasPrefix(" " + $0) || localSuffix.hasPrefix($0) }
+
+                if let skipPos = lastSkipPos {
+                    if let payPos = lastPaymentPos, payPos > skipPos {
+                        return value
+                    }
+                    continue
+                }
+                if suffixHasSkip && !suffixHasPayment && lastPaymentPos == nil {
+                    continue
+                }
+                if requirePaymentHint {
+                    if lastPaymentPos != nil || suffixHasPayment || matches.count == 1 {
+                        return value
+                    }
+                    continue
+                }
+                return value
+            }
+            return nil
+        }
+
+        let clauseSeparators = CharacterSet(charactersIn: ";·・•。")
+        let rawClauses: [String] = lines.flatMap { line -> [String] in
+            let primary = line.components(separatedBy: clauseSeparators)
+            return primary.flatMap { part -> [String] in
+                let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return [] }
+                if let commaSplitRegex {
+                    let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+                    let replaced = commaSplitRegex.stringByReplacingMatches(in: trimmed, range: range, withTemplate: "\u{001F}")
+                    return replaced
+                        .split(separator: "\u{001F}")
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                }
+                return [trimmed]
+            }
+        }
+        // Reattach standalone settled qualifiers (e.g. "Minimum ¥3,000, paid, ..." or "Apr bill ¥41,200 · paid")
+        // back onto the preceding clause so splitting never strips the "paid" flag off its amount,
+        // without misclassifying future payoff notes such as "paid off in March".
+        var clauses: [String] = []
+        for part in rawClauses {
+            let range = NSRange(part.startIndex..<part.endIndex, in: part)
+            let hasAmount = regex.firstMatch(in: part, range: range) != nil
+            let lowerPart = part.lowercased()
+            let isFuturePayoff = lowerPart.contains("paid off")
+                || lowerPart.contains("payoff")
+                || lowerPart.contains("paid in full")
+                || lowerPart.contains("until ")
+            if !hasAmount && !isFuturePayoff && isMarkedAlreadyPaid(part), !clauses.isEmpty {
+                clauses[clauses.count - 1] += " " + part
+            } else {
+                clauses.append(part)
+            }
+        }
+
+        // Pass 1: prefer clauses explicitly mentioning a monthly payment, repayment, auto-debit, or upcoming bill.
+        for clause in clauses {
+            if let value = bestPaymentAmount(in: clause, requirePaymentHint: true) {
+                return value
+            }
+        }
+        // Pass 2: fallback only when the clause does not describe credit room, limits, interest, paid bills, or balances.
+        for clause in clauses {
+            if let value = bestPaymentAmount(in: clause, requirePaymentHint: false) {
                 return value
             }
         }
@@ -697,14 +812,18 @@ public enum SpendingInsights {
         for entry in overdueBills.prefix(3) {
             let daysOver = max(1, todayNum - (JST.dayNumber(entry.date) ?? todayNum))
             let est = entry.estimate == true ? " (estimate)" : ""
-            let overdueText = "Overdue by \(daysOver) \(daysOver == 1 ? "day" : "days") (due \(entry.date))"
+            // Auto-matched bank debits commonly post 1–3 business days after the scheduled date.
+            let inPostingGrace = entry.match != nil && daysOver <= 3
+            let statusText = inPostingGrace
+                ? "Not posted yet · scheduled \(entry.date)"
+                : "Overdue by \(daysOver) \(daysOver == 1 ? "day" : "days") (due \(entry.date))"
             alerts.append(FinanceAlert(
                 id: "overdue:\(entry.date):\(entry.item):\(entry.amount)",
                 kind: .upcomingBillSoon,
-                severity: .urgent,
+                severity: inPostingGrace ? .warning : .urgent,
                 title: "\(entry.item) · ¥\(entry.amount.formatted())\(est)",
-                detail: entry.note.map { "\(overdueText) · \($0)" } ?? overdueText,
-                badge: "Overdue",
+                detail: entry.note.map { "\(statusText) · \($0)" } ?? statusText,
+                badge: inPostingGrace ? "Not posted" : "Overdue",
                 action: .openComingUp
             ))
         }

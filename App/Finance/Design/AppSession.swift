@@ -71,7 +71,7 @@ final class AppSession: ObservableObject {
     @Published var privacyMasked: Bool {
         didSet {
             if !isDemo {
-                UserDefaults.standard.set(privacyMasked, forKey: Self.privacyMaskedKey)
+                SharedStore.privacyMasked = privacyMasked
             }
         }
     }
@@ -108,7 +108,11 @@ final class AppSession: ObservableObject {
         self.morePath = target.destination.map { [$0] } ?? []
         self.activeSheet = target.sheet
         self.periodMode = target.periodMode
-        self.privacyMasked = demo ? false : UserDefaults.standard.bool(forKey: Self.privacyMaskedKey)
+        let initialPrivacyMasked = demo ? false : SharedStore.privacyMasked
+        self.privacyMasked = initialPrivacyMasked
+        if !demo {
+            SharedStore.privacyMasked = initialPrivacyMasked
+        }
         if demo {
             let loaded = DemoData.load()
             self.demoData = loaded?.data

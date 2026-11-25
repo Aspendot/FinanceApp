@@ -50,6 +50,77 @@ struct PaymentsScreenModel: Sendable {
         let sum: Int
     }
 
+    /// Cached scope slice independent of `query`, `category`, `source`, `layerFilter`, and `statusFilter`,
+    /// so typing in search never recomputes scope rows, category totals, or source pills per keystroke.
+    struct ScopeSnapshot: Sendable {
+        let periods: [BudgetPeriod]
+        let selectedPeriod: BudgetPeriod?
+        let selectedPeriodID: String
+        let allPeriods: Bool
+        let scopeRows: [NumberedRow<BudgetItem>]
+        let categories: [CategoryOption]
+        let sources: [String]
+
+        init(
+            data: FinanceData,
+            periodMode: BudgetPeriodMode,
+            selectedPeriodID: String?,
+            allPeriods: Bool,
+            dateRange: ClosedRange<String>?,
+            typeFilter: PaymentTypeFilter
+        ) {
+            let availablePeriods = data.periods(for: periodMode)
+            self.periods = availablePeriods
+            self.allPeriods = allPeriods || dateRange != nil
+
+            let resolvedPeriod = selectedPeriodID.flatMap { id in availablePeriods.first(where: { $0.id == id }) }
+                ?? availablePeriods.last
+            self.selectedPeriod = resolvedPeriod
+            self.selectedPeriodID = resolvedPeriod?.id ?? ""
+
+            let incomeGroup = data.bundle.layerConfig.resolvedIncomeGroup ?? "Income"
+            let rows: [NumberedRow<BudgetItem>] = data.allRowsSorted.filter { row in
+                let item = row.value
+                if typeFilter == .income {
+                    guard item.group == incomeGroup else { return false }
+                } else {
+                    guard item.group != incomeGroup else { return false }
+                }
+                if let dateRange {
+                    return dateRange.contains(item.date)
+                }
+                if allPeriods {
+                    return true
+                }
+                guard let resolvedPeriod else { return true }
+                return resolvedPeriod.contains(item.date)
+            }
+            self.scopeRows = rows
+
+            var categoryTotals: [String: (sum: Int, count: Int)] = [:]
+            var sourceSet = Set<String>()
+            for row in rows {
+                let item = row.value
+                sourceSet.insert(item.source)
+                var entry = categoryTotals[item.category, default: (0, 0)]
+                if data.layer(of: item) != nil {
+                    entry.sum += item.amount
+                } else if item.group == incomeGroup {
+                    entry.sum -= item.amount
+                }
+                entry.count += 1
+                categoryTotals[item.category] = entry
+            }
+            self.categories = categoryTotals
+                .map { CategoryOption(name: $0.key, spendingTotal: $0.value.sum, count: $0.value.count) }
+                .sorted {
+                    if $0.spendingTotal != $1.spendingTotal { return $0.spendingTotal > $1.spendingTotal }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            self.sources = sourceSet.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        }
+    }
+
     let periodMode: BudgetPeriodMode
     let periods: [BudgetPeriod]
     let selectedPeriod: BudgetPeriod?
@@ -79,58 +150,27 @@ struct PaymentsScreenModel: Sendable {
         statusFilter: PaymentStatusFilter,
         typeFilter: PaymentTypeFilter,
         sortOrder: PaymentSortOrder,
-        query: String
+        query: String,
+        cachedScope: ScopeSnapshot? = nil
     ) {
         self.periodMode = periodMode
-        let availablePeriods = data.periods(for: periodMode)
-        self.periods = availablePeriods
-        self.allPeriods = allPeriods || dateRange != nil
-
-        let resolvedPeriod = selectedPeriodID.flatMap { id in availablePeriods.first(where: { $0.id == id }) }
-            ?? availablePeriods.last
-        self.selectedPeriod = resolvedPeriod
-        self.selectedPeriodID = resolvedPeriod?.id ?? ""
+        let scope = cachedScope ?? ScopeSnapshot(
+            data: data,
+            periodMode: periodMode,
+            selectedPeriodID: selectedPeriodID,
+            allPeriods: allPeriods,
+            dateRange: dateRange,
+            typeFilter: typeFilter
+        )
+        self.periods = scope.periods
+        self.selectedPeriod = scope.selectedPeriod
+        self.selectedPeriodID = scope.selectedPeriodID
+        self.allPeriods = scope.allPeriods
+        self.categories = scope.categories
+        self.sources = scope.sources
 
         let incomeGroup = data.bundle.layerConfig.resolvedIncomeGroup ?? "Income"
-        let scopeRows: [NumberedRow<BudgetItem>] = data.allRowsSorted.filter { row in
-            let item = row.value
-            if typeFilter == .income {
-                guard item.group == incomeGroup else { return false }
-            } else {
-                guard item.group != incomeGroup else { return false }
-            }
-            if let dateRange {
-                return dateRange.contains(item.date)
-            }
-            if allPeriods {
-                return true
-            }
-            guard let resolvedPeriod else { return true }
-            return resolvedPeriod.contains(item.date)
-        }
-
-        // Category pills and source filter options reflect the active scope.
-        var categoryTotals: [String: (sum: Int, count: Int)] = [:]
-        var sourceSet = Set<String>()
-        for row in scopeRows {
-            let item = row.value
-            sourceSet.insert(item.source)
-            var entry = categoryTotals[item.category, default: (0, 0)]
-            if data.layer(of: item) != nil {
-                entry.sum += item.amount
-            } else if item.group == incomeGroup {
-                entry.sum -= item.amount
-            }
-            entry.count += 1
-            categoryTotals[item.category] = entry
-        }
-        self.categories = categoryTotals
-            .map { CategoryOption(name: $0.key, spendingTotal: $0.value.sum, count: $0.value.count) }
-            .sorted {
-                if $0.spendingTotal != $1.spendingTotal { return $0.spendingTotal > $1.spendingTotal }
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-        self.sources = sourceSet.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        let scopeRows = scope.scopeRows
 
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let foldedQuery = TextFold.key(trimmedQuery)

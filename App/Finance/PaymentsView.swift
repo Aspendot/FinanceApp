@@ -15,6 +15,7 @@ struct PaymentsView: View {
     @State private var localQuery: String = ""
     @State private var inspectedPayment: InspectedPayment?
     @State private var quickRecategorizePayment: InspectedPayment?
+    @State private var scopeCache = ScreenModelCache<String, PaymentsScreenModel.ScopeSnapshot>()
     @State private var screenCache = ScreenModelCache<String, PaymentsScreenModel>()
 
     private var activeData: FinanceData? {
@@ -29,7 +30,7 @@ struct PaymentsView: View {
         session.paymentsOnlyUncategorized ? .uncategorized : statusFilter
     }
 
-    private var screenCacheKey: String {
+    private var scopeCacheKey: String {
         guard let data = activeData else { return "" }
         let rangePart = session.paymentsDateRange.map { "\($0.lowerBound)..\($0.upperBound)" } ?? ""
         return [
@@ -37,19 +38,36 @@ struct PaymentsView: View {
             session.periodMode.rawValue,
             activeSelectedID ?? "",
             session.paymentsAllMonths ? "1" : "0",
+            rangePart,
+            typeFilter.rawValue,
+        ].joined(separator: "|")
+    }
+
+    private var screenCacheKey: String {
+        guard activeData != nil else { return "" }
+        return [
+            scopeCacheKey,
             session.paymentsCategory ?? "",
             session.paymentsSource ?? "",
             session.paymentsLayer.map { String($0.rawValue) } ?? "",
-            rangePart,
             effectiveStatus.rawValue,
-            typeFilter.rawValue,
             sortOrder.rawValue,
             localQuery,
         ].joined(separator: "|")
     }
 
     private func resolvedScreen(for data: FinanceData) -> PaymentsScreenModel {
-        screenCache.get(for: screenCacheKey) {
+        let scope = scopeCache.get(for: scopeCacheKey) {
+            PaymentsScreenModel.ScopeSnapshot(
+                data: data,
+                periodMode: session.periodMode,
+                selectedPeriodID: activeSelectedID,
+                allPeriods: session.paymentsAllMonths,
+                dateRange: session.paymentsDateRange,
+                typeFilter: typeFilter
+            )
+        }
+        return screenCache.get(for: screenCacheKey) {
             PaymentsScreenModel(
                 data: data,
                 periodMode: session.periodMode,
@@ -62,7 +80,8 @@ struct PaymentsView: View {
                 statusFilter: effectiveStatus,
                 typeFilter: typeFilter,
                 sortOrder: sortOrder,
-                query: localQuery
+                query: localQuery,
+                cachedScope: scope
             )
         }
     }
@@ -830,7 +849,7 @@ private struct QuickCategoryPickerSheet: View {
                     HStack(spacing: 10) {
                         CategoryBadge(category: item.category, size: 34)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.merchant)
+                            Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
@@ -915,6 +934,7 @@ struct PaymentRow: View {
     var showDateInSubtitle: Bool = false
 
     var body: some View {
+        let safeMerchant = MaskedMoney.redactText(item.merchant, masked: privacyMasked)
         let amountText = MaskedMoney.payment(item.amount, masked: privacyMasked)
         let amountColor = item.amount < 0 ? Theme.good : Theme.ink
         let subtitle = showDateInSubtitle
@@ -924,7 +944,7 @@ struct PaymentRow: View {
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(item.merchant)
+                    Text(safeMerchant)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -961,7 +981,7 @@ struct PaymentRow: View {
 
                     VStack(alignment: .leading, spacing: 3.5) {
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
-                            Text(item.merchant)
+                            Text(safeMerchant)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
@@ -999,7 +1019,7 @@ struct PaymentRow: View {
 
     private var accessibilityText: String {
         var parts = [
-            item.merchant,
+            MaskedMoney.redactText(item.merchant, masked: privacyMasked),
             privacyMasked ? "Hidden amount" : FinanceFormat.paymentAccessibility(item.amount),
             DayText.short(item.date),
             item.category,

@@ -115,6 +115,9 @@ struct LogPaymentIntent: AppIntent {
         try? await SyncEngine.shared.publishCurrentWidget()
         NotificationCenter.default.post(name: .backgroundGmailSyncUpdated, object: nil)
 
+        if SharedStore.privacyMasked {
+            return .result(dialog: IntentDialog("Payment logged in Finance."))
+        }
         return .result(dialog: IntentDialog("Logged \(Money.payment(amount)) at \(trimmedMerchant) under \(classified.category)."))
     }
 }
@@ -129,9 +132,16 @@ struct PaydaySummaryIntent: AppIntent {
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresAuthentication
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
+        if SharedStore.privacyMasked {
+            return .result(dialog: IntentDialog("Privacy Mode is on. Open Finance to view balances."))
+        }
         let notices = GmailSync.recentNotices()
         guard let data = await FinanceData.load(notices: notices) else {
             return .result(dialog: IntentDialog("No finance data is loaded yet."))
+        }
+        // Re-check live privacy setting after the async load so toggling Privacy Mode mid-run never leaks figures.
+        if SharedStore.privacyMasked {
+            return .result(dialog: IntentDialog("Privacy Mode is on. Open Finance to view balances."))
         }
         guard let payday = data.payday else {
             return .result(dialog: IntentDialog("No upcoming payday is in the current schedule."))
@@ -146,8 +156,14 @@ struct PaydaySummaryIntent: AppIntent {
         if let breakdown = data.paydayBreakdown, breakdown.dayToDaySpentSincePayday > 0 {
             parts.append("day-to-day spent \(Money.yen(breakdown.dayToDaySpentSincePayday))")
         }
-        if let nextBill = payday.outs.first(where: { $0.done != true && $0.amount > 0 }) {
-            parts.append("next bill \(nextBill.item) \(Money.yen(nextBill.amount)) on \(DayText.short(nextBill.date))")
+        let today = JST.day(Date())
+        let clearedByBank = data.liveCash?.postBalanceMatchedKeys ?? []
+        let openBills = payday.outs.filter {
+            $0.done != true && $0.cardBilled != true && $0.amount > 0 && !BillCheckoff.matches($0, in: clearedByBank)
+        }
+        if let nextBill = openBills.first(where: { $0.date >= today }) ?? openBills.first {
+            let prefix = nextBill.date < today ? "overdue bill" : "next bill"
+            parts.append("\(prefix) \(nextBill.item) \(Money.yen(nextBill.amount)) on \(DayText.short(nextBill.date))")
         }
         return .result(dialog: IntentDialog("\(parts.joined(separator: ". "))."))
     }

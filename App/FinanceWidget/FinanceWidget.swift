@@ -52,34 +52,84 @@ struct SnapshotProvider: TimelineProvider {
         return SnapshotEntry(date: now, snapshot: snap, hasGroup: SharedStore.groupID != nil)
     }
 
-    /// Recomputes `daysToPayday` and title from `paydayDate` in JST so countdowns never freeze overnight.
+    /// Applies live Privacy Mode masking, recomputes `daysToPayday` from `paydayDate` in JST so countdowns
+    /// never freeze overnight, and blanks expired figures once the target payday has passed.
     private static func adjustedSnapshot(_ raw: WidgetSnapshot, on date: Date) -> WidgetSnapshot {
-        guard let paydayDate = raw.paydayDate,
+        var copy = raw
+        let shouldMask = SharedStore.privacyMasked
+        if shouldMask {
+            copy.value = "¥•••,•••"
+            copy.compactValue = "¥•••"
+            copy.billsSum = nil
+            copy.leftSum = nil
+            copy.borrowedSum = nil
+            if let spentRange = copy.detail.range(of: " · spent ") {
+                copy.detail = String(copy.detail[..<spentRange.lowerBound])
+            }
+            copy.detail = redactYen(copy.detail)
+            copy.upcomingBills = copy.upcomingBills?.enumerated().map { idx, bill in
+                WidgetBill(
+                    id: "masked-\(idx)",
+                    title: redactYen(bill.title),
+                    date: bill.date,
+                    dateLabel: bill.dateLabel,
+                    amount: 0,
+                    isEstimate: bill.isEstimate
+                )
+            }
+            copy.isPrivacyMasked = true
+        }
+        guard let paydayDate = copy.paydayDate,
               let targetDay = dayNumber(paydayDate)
-        else { return raw }
+        else { return copy }
         let jst = TimeZone(secondsFromGMT: 9 * 3600)!
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = jst
         let c = cal.dateComponents([.year, .month, .day], from: date)
         guard let y = c.year, let m = c.month, let d = c.day,
               let todayNum = dayNumber(String(format: "%04d-%02d-%02d", y, m, d))
-        else { return raw }
+        else { return copy }
+        if todayNum > targetDay {
+            copy.title = "Payday passed"
+            copy.value = "–"
+            copy.compactValue = "–"
+            copy.detail = "Open Finance to refresh"
+            copy.daysToPayday = nil
+            copy.cycleProgress = 1.0
+            copy.billsSum = nil
+            copy.leftSum = nil
+            copy.borrowedSum = nil
+            copy.upcomingBills = []
+            return copy
+        }
         let remaining = max(0, targetDay - todayNum)
-        var copy = raw
         copy.daysToPayday = remaining
-        if raw.title.hasPrefix("Until payday") {
+        if copy.title.hasPrefix("Until payday") {
             let word = remaining == 1 ? "day" : "days"
             copy.title = "Until payday · \(remaining) \(word)"
         }
         return copy
     }
 
+    private static func redactYen(_ text: String) -> String {
+        SharedMoneyRedactor.redact(text)
+    }
+
     private static func dayNumber(_ text: String) -> Int? {
         let p = text.split(separator: "-", omittingEmptySubsequences: false)
         guard p.count == 3, p[0].count == 4, p[1].count == 2, p[2].count == 2,
               let y = Int(p[0]), let m = Int(p[1]), let d = Int(p[2]),
-              (1...12).contains(m), (1...31).contains(d)
+              (1...12).contains(m)
         else { return nil }
+        let maxDay: Int = {
+            switch m {
+            case 1, 3, 5, 7, 8, 10, 12: return 31
+            case 4, 6, 9, 11: return 30
+            case 2: return ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 29 : 28
+            default: return 0
+            }
+        }()
+        guard (1...maxDay).contains(d) else { return nil }
         let yy = m <= 2 ? y - 1 : y
         let era = (yy >= 0 ? yy : yy - 399) / 400
         let yoe = yy - era * 400
@@ -284,14 +334,16 @@ struct FinanceWidgetView: View {
                     Spacer(minLength: 0)
                 } else {
                     ForEach(bills.prefix(3)) { bill in
+                        let masked = entry.snapshot.isPrivacyMasked == true
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(alignment: .firstTextBaseline, spacing: 4) {
                                 Text(bill.title)
                                     .font(.caption.weight(.semibold))
                                     .foregroundStyle(WidgetPalette.ink)
-                                    .lineLimit(1)
+                                    .lineLimit(2)
+                                    .minimumScaleFactor(0.85)
                                 Spacer(minLength: 4)
-                                Text("¥" + bill.amount.formatted())
+                                Text(masked ? "¥•••,•••" : "¥" + bill.amount.formatted())
                                     .font(.caption.weight(.bold))
                                     .monospacedDigit()
                                     .foregroundStyle(WidgetPalette.ink)
@@ -316,9 +368,11 @@ struct FinanceWidgetView: View {
     private var accessoryRectangularBody: some View {
         let updated = entry.hasGroup ? Self.updatedLabel(entry.snapshot.updatedAt) : nil
         let nextBill = entry.snapshot.upcomingBills?.first
+        let masked = entry.snapshot.isPrivacyMasked == true
         let footer: String
         if let nextBill, entry.hasGroup {
-            footer = "Next: \(nextBill.title) ¥\(nextBill.amount.formatted())"
+            let billAmt = masked ? "¥•••,•••" : "¥\(nextBill.amount.formatted())"
+            footer = "Next: \(nextBill.title) \(billAmt)"
         } else {
             footer = updated ?? (entry.hasGroup ? entry.snapshot.detail : "App Group missing")
         }
@@ -414,6 +468,12 @@ struct FinanceWidgetView: View {
     }
 
     private static func yenSpeech(_ value: String) -> String {
+        if value.contains("•") {
+            return "Hidden amount"
+        }
+        if value == "–" || value == "-" {
+            return "unavailable"
+        }
         if value.hasPrefix("−¥") || value.hasPrefix("-¥") {
             return "minus \(value.dropFirst(2)) yen"
         }

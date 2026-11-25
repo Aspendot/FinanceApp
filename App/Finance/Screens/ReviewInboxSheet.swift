@@ -116,7 +116,7 @@ struct ReviewInboxSheet: View {
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(item.merchant)
+                        Text(MaskedMoney.redactText(item.merchant, masked: privacyMasked))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(Theme.ink)
                             .lineLimit(2)

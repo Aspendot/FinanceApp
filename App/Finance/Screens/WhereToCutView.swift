@@ -177,7 +177,7 @@ struct WhereToCutView: View {
                                 QuietTag(row.displayStatus, tone: QuietTag.Tone(statusTone: row.tone))
                             }
                             if let note = row.entry.note, !note.isEmpty {
-                                Text(note)
+                                Text(MaskedMoney.redactText(note, masked: privacyMasked))
                                     .font(.caption)
                                     .foregroundStyle(Theme.muted)
                                     .lineLimit(2)
@@ -190,7 +190,7 @@ struct WhereToCutView: View {
                 }
 
                 if dynamicTypeSize.isAccessibilitySize, let note = row.entry.note, !note.isEmpty {
-                    Text(note)
+                    Text(MaskedMoney.redactText(note, masked: privacyMasked))
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -206,10 +206,12 @@ struct WhereToCutView: View {
 
                 if let target = row.entry.target {
                     let ratio = row.selectedMonthProgress ?? 0
-                    let barColor: Color = row.selectedMonthSpent > target
-                        ? Theme.bad
-                        : (ratio >= 0.8 ? Theme.warn : Theme.good)
-                    ProgressMeter(ratio: ratio, tint: barColor, height: 6, paceRatio: activePace)
+                    let barColor: Color = privacyMasked
+                        ? Theme.accent
+                        : (row.selectedMonthSpent > target
+                            ? Theme.bad
+                            : (ratio >= 0.8 ? Theme.warn : Theme.good))
+                    ProgressMeter(ratio: privacyMasked ? 0 : ratio, tint: barColor, height: 6, paceRatio: activePace)
                 }
 
                 FlowLayout(horizontalSpacing: 16, verticalSpacing: 4) {
@@ -257,6 +259,8 @@ struct WhereToCutView: View {
 
 /// Compact multi-month bar sparkline with rounded bar caps and a dashed emerald target line.
 struct PlanSparkline: View {
+    @Environment(\.privacyMasked) private var privacyMasked
+
     let points: [PlanMonthPoint]
     let target: Int?
 
@@ -271,13 +275,13 @@ struct PlanSparkline: View {
                         let frac = CGFloat(max(0, pt.spent)) / CGFloat(ceiling)
                         RoundedRectangle(cornerRadius: 3.5, style: .continuous)
                             .fill(barColor(pt))
-                            .opacity(pt.isInProgress ? 0.65 : (pt.isSelected ? 1.0 : 0.48))
-                            .frame(height: max(pt.spent > 0 ? 4 : 1.5, geo.size.height * frac))
+                            .opacity(privacyMasked ? 0.35 : (pt.isInProgress ? 0.65 : (pt.isSelected ? 1.0 : 0.48)))
+                            .frame(height: privacyMasked ? 4 : max(pt.spent > 0 ? 4 : 1.5, geo.size.height * frac))
                             .frame(maxWidth: .infinity)
                     }
                 }
 
-                if let target, target > 0 {
+                if !privacyMasked, let target, target > 0 {
                     let y = geo.size.height * (1.0 - CGFloat(target) / CGFloat(ceiling))
                     Path { path in
                         path.move(to: CGPoint(x: 0, y: y))
@@ -291,6 +295,9 @@ struct PlanSparkline: View {
     }
 
     private func barColor(_ pt: PlanMonthPoint) -> Color {
+        if privacyMasked {
+            return Theme.muted
+        }
         if let target, pt.spent > target {
             return pt.isSelected ? Theme.bad : Theme.bad.opacity(0.65)
         }

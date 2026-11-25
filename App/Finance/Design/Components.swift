@@ -20,13 +20,11 @@ enum MaskedMoney {
     }
 
     static func payment(_ value: Int, masked: Bool) -> String {
-        guard masked else { return Money.payment(value) }
-        return value < 0 ? "+¥•••,•••" : "¥•••,•••"
+        masked ? "¥•••,•••" : Money.payment(value)
     }
 
     static func signed(_ value: Int, masked: Bool) -> String {
-        guard masked else { return Money.signed(value) }
-        return value < 0 ? "−¥•••,•••" : "+¥•••,•••"
+        masked ? "¥•••,•••" : Money.signed(value)
     }
 
     static func accessibility(_ value: Int, signed: Bool = false, masked: Bool) -> String {
@@ -37,22 +35,11 @@ enum MaskedMoney {
         masked ? "Hidden amount" : FinanceFormat.paymentAccessibility(value)
     }
 
-    private static let yenPattern = try? NSRegularExpression(pattern: #"[+−\-]?[¥￥]\s*[0-9][0-9,]*"#)
-    private static let wordYenPattern = try? NSRegularExpression(pattern: #"\b[0-9][0-9,]*\s*(?:yen|JPY|円)\b"#, options: [.caseInsensitive])
-
-    /// Redacts any inline yen figures inside alert, note, or Q&A strings when privacy mode is active.
+    /// Redacts any inline yen figures (ASCII, fullwidth, grouped spaces/NBSP, decimals, Japanese units,
+    /// CJK-adjacent, or JPY-prefixed) when privacy mode is active.
     static func redactText(_ text: String, masked: Bool) -> String {
         guard masked else { return text }
-        var out = text
-        if let regex = yenPattern {
-            let range = NSRange(out.startIndex..<out.endIndex, in: out)
-            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
-        }
-        if let regex = wordYenPattern {
-            let range = NSRange(out.startIndex..<out.endIndex, in: out)
-            out = regex.stringByReplacingMatches(in: out, options: [], range: range, withTemplate: "¥•••,•••")
-        }
-        return out
+        return SharedMoneyRedactor.redact(text)
     }
 }
 
@@ -350,6 +337,7 @@ struct HeroMoneyText: View {
     var body: some View {
         let scaled = min(size, 60)
         let prefix: String = {
+            if privacyMasked { return "¥" }
             if amount < 0 { return "−¥" }
             if signed && amount > 0 { return "+¥" }
             return "¥"
@@ -385,6 +373,7 @@ struct MetricMoneyText: View {
     var body: some View {
         let scaled = min(size, 38)
         let prefix: String = {
+            if privacyMasked { return "¥" }
             if amount < 0 { return "−¥" }
             if signed && amount > 0 { return "+¥" }
             return "¥"

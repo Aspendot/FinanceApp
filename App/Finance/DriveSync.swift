@@ -311,6 +311,7 @@ enum DriveSync {
 
     enum PushOutcome: Equatable, Sendable {
         case unchanged
+        case queued
         case pushed(bytes: Int)
         case needsConsent
     }

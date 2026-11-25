@@ -37,6 +37,15 @@ public struct BudgetItem: Codable, Sendable, Hashable {
     public var layer: String?
     /// True when built from a live notice rather than a statement bundle.
     public var isPending: Bool
+    /// Optional underlying funding card/debit source key (e.g. `"mufg_debit"`) preserved when an
+    /// aggregator receipt (such as Apple) supersedes a duplicate bank/debit notice.
+    public var fundingSource: String?
+    /// True when this item originated from a phone manual/CSV entry synced through the PC bundle,
+    /// so live bank statement matching never mistakes it for a bank-balance row.
+    public var isManual: Bool?
+    /// Optional bank/card approval reference (e.g. 6-digit debit approval code) exported by the PC
+    /// pipeline so snapshot and post-cutoff matching preserve debit identity even after merchant naming.
+    public var reference: String?
 
     public init(
         date: String,
@@ -46,7 +55,10 @@ public struct BudgetItem: Codable, Sendable, Hashable {
         group: String,
         category: String,
         layer: String? = nil,
-        isPending: Bool = false
+        isPending: Bool = false,
+        fundingSource: String? = nil,
+        isManual: Bool? = nil,
+        reference: String? = nil
     ) {
         self.date = date
         self.source = source
@@ -56,10 +68,13 @@ public struct BudgetItem: Codable, Sendable, Hashable {
         self.category = category
         self.layer = layer
         self.isPending = isPending
+        self.fundingSource = fundingSource
+        self.isManual = isManual
+        self.reference = reference
     }
 
     private enum CodingKeys: String, CodingKey {
-        case date, source, merchant, amount, group, category, layer, isPending
+        case date, source, merchant, amount, group, category, layer, isPending, fundingSource, isManual, reference
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,6 +87,9 @@ public struct BudgetItem: Codable, Sendable, Hashable {
         category = try c.decode(String.self, forKey: .category)
         layer = try c.decodeIfPresent(String.self, forKey: .layer)
         isPending = try c.decodeIfPresent(Bool.self, forKey: .isPending) ?? false
+        fundingSource = try c.decodeIfPresent(String.self, forKey: .fundingSource)
+        isManual = try c.decodeIfPresent(Bool.self, forKey: .isManual)
+        reference = try c.decodeIfPresent(String.self, forKey: .reference)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -86,6 +104,9 @@ public struct BudgetItem: Codable, Sendable, Hashable {
         if isPending {
             try c.encode(true, forKey: .isPending)
         }
+        try c.encodeIfPresent(fundingSource, forKey: .fundingSource)
+        try c.encodeIfPresent(isManual, forKey: .isManual)
+        try c.encodeIfPresent(reference, forKey: .reference)
     }
 }
 
@@ -126,12 +147,17 @@ public struct TimelineMatch: Codable, Sendable, Hashable {
 ///
 /// Negative amounts are money in; positive amounts are money out.
 public struct TimelineEntry: Codable, Sendable, Hashable {
+    /// Optional stable identifier exported by the PC pipeline so phone checkoffs survive re-estimates.
+    public var id: String?
     public var date: String
     public var item: String
     public var amount: Int
     public var note: String?
     public var payday: Bool?
     public var done: Bool?
+    /// True when marked paid only on the phone (awaiting bank confirmation), so cash remains held
+    /// and the user can still undo the checkoff after a PC bundle round-trip.
+    public var phoneChecked: Bool?
     public var next: Bool?
     public var borrowed: Bool?
     public var estimate: Bool?
@@ -146,14 +172,22 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
     public var cardBilled: Bool?
     /// Display yen amount for a `cardBilled` entry when `amount` is kept at 0 for backwards compatibility.
     public var billedAmount: Int?
+    /// True when bank holidays/weekends shift this entry's projection to a bank business day;
+    /// false for fixed-calendar-day card/debit subscriptions; nil for legacy bundles.
+    public var rollBusinessDay: Bool?
+    /// Optional nominal day-of-month (1...31) for recurring entries before holiday/weekend rolling,
+    /// so future forecast months anchor on the true billing/payday day rather than a shifted date.
+    public var nominalDay: Int?
 
     public init(
+        id: String? = nil,
         date: String,
         item: String,
         amount: Int,
         note: String? = nil,
         payday: Bool? = nil,
         done: Bool? = nil,
+        phoneChecked: Bool? = nil,
         next: Bool? = nil,
         borrowed: Bool? = nil,
         estimate: Bool? = nil,
@@ -162,14 +196,18 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         match: TimelineMatch? = nil,
         recurring: Bool? = nil,
         cardBilled: Bool? = nil,
-        billedAmount: Int? = nil
+        billedAmount: Int? = nil,
+        rollBusinessDay: Bool? = nil,
+        nominalDay: Int? = nil
     ) {
+        self.id = id
         self.date = date
         self.item = item
         self.amount = amount
         self.note = note
         self.payday = payday
         self.done = done
+        self.phoneChecked = phoneChecked
         self.next = next
         self.borrowed = borrowed
         self.estimate = estimate
@@ -179,21 +217,25 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         self.recurring = recurring
         self.cardBilled = cardBilled
         self.billedAmount = billedAmount
+        self.rollBusinessDay = rollBusinessDay
+        self.nominalDay = nominalDay
     }
 
     private enum CodingKeys: String, CodingKey {
-        case date, item, amount, note, payday, done, next, borrowed, estimate, event, label, match, recurring
-        case cardBilled, billedAmount
+        case id, date, item, amount, note, payday, done, phoneChecked, next, borrowed, estimate, event, label, match, recurring
+        case cardBilled, billedAmount, rollBusinessDay, nominalDay
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id)
         date = try c.decode(String.self, forKey: .date)
         item = try c.decode(String.self, forKey: .item)
         amount = try c.decodeIfPresent(Int.self, forKey: .amount) ?? 0
         note = try c.decodeIfPresent(String.self, forKey: .note)
         payday = try c.decodeIfPresent(Bool.self, forKey: .payday)
         done = try c.decodeIfPresent(Bool.self, forKey: .done)
+        phoneChecked = try c.decodeIfPresent(Bool.self, forKey: .phoneChecked)
         next = try c.decodeIfPresent(Bool.self, forKey: .next)
         borrowed = try c.decodeIfPresent(Bool.self, forKey: .borrowed)
         estimate = try c.decodeIfPresent(Bool.self, forKey: .estimate)
@@ -203,6 +245,8 @@ public struct TimelineEntry: Codable, Sendable, Hashable {
         recurring = try c.decodeIfPresent(Bool.self, forKey: .recurring)
         cardBilled = try c.decodeIfPresent(Bool.self, forKey: .cardBilled)
         billedAmount = try c.decodeIfPresent(Int.self, forKey: .billedAmount)
+        rollBusinessDay = try c.decodeIfPresent(Bool.self, forKey: .rollBusinessDay)
+        nominalDay = try c.decodeIfPresent(Int.self, forKey: .nominalDay)
     }
 }
 
@@ -234,19 +278,24 @@ public struct AccountBalance: Codable, Sendable, Equatable, Hashable {
     /// Debit card source keys whose unsettled notices immediately draw down this bank account.
     /// Deferred credit cards billed monthly are omitted so they aren't subtracted twice.
     public var debitNoticeSources: [String]?
+    /// Signed yen amounts (`+out`, `-in`) of bank rows dated on `asOf` that are already included
+    /// in `balance`, allowing later intraday rows on `asOf` to be detected without double-counting.
+    public var asOfRowAmounts: [Int]?
 
     public init(
         source: String,
         label: String,
         balance: Int,
         asOf: String,
-        debitNoticeSources: [String]? = nil
+        debitNoticeSources: [String]? = nil,
+        asOfRowAmounts: [Int]? = nil
     ) {
         self.source = source
         self.label = label
         self.balance = balance
         self.asOf = asOf
         self.debitNoticeSources = debitNoticeSources
+        self.asOfRowAmounts = asOfRowAmounts
     }
 }
 
@@ -257,25 +306,39 @@ public struct CreditRoom: Codable, Sendable, Equatable, Hashable {
     public var label: String
     /// Confirmed usable credit room in yen as of `asOf`.
     public var available: Int
+    /// Optional total credit limit in yen used as an upper cap when refunds arrive.
+    public var limit: Int?
     /// Optional date (`"YYYY-MM-DD"`) when `available` was verified.
     public var asOf: String?
     /// Optional card source keys whose charges strictly after `asOf` draw down `available` live.
     public var sourceKeys: [String]?
     /// Optional short context note.
     public var note: String?
+    /// Signed yen amounts (`+out`, `-in`) of card charges dated on `asOf` that are already reflected
+    /// in `available`, enabling same-day post-snapshot charges to draw down room without double-counting.
+    public var asOfRowAmounts: [Int]?
+    /// Optional ISO-8601 timestamp when a manual phone balance override was recorded, so same-day
+    /// charges received strictly after the override still draw down live credit room.
+    public var asOfTimestamp: String?
 
     public init(
         label: String,
         available: Int,
+        limit: Int? = nil,
         asOf: String? = nil,
         sourceKeys: [String]? = nil,
-        note: String? = nil
+        note: String? = nil,
+        asOfRowAmounts: [Int]? = nil,
+        asOfTimestamp: String? = nil
     ) {
         self.label = label
         self.available = available
+        self.limit = limit
         self.asOf = asOf
         self.sourceKeys = sourceKeys
         self.note = note
+        self.asOfRowAmounts = asOfRowAmounts
+        self.asOfTimestamp = asOfTimestamp
     }
 }
 
@@ -424,6 +487,9 @@ public struct LayerConfig: Codable, Sendable, Equatable {
             || group == debtGroup
             || lower == "excluded"
             || lower == "transfers"
+            || lower == "hidden"
+            || lower == "pass-through"
+            || lower == "self"
             || lower == "work"
     }
 
@@ -555,11 +621,20 @@ public struct StatementLineRule: Codable, Sendable, Equatable {
     public var referenceGroup: Int?
     /// 1-based capture group index for a merchant name or prefix, if present.
     public var merchantGroup: Int?
+    /// Optional `BudgetItem.source` label override for rows matching this rule (e.g. a debit sub-channel)
+    /// so phone-confirmed items share the same source label as PC-exported items.
+    public var itemSource: String?
 
-    public init(pattern: String, referenceGroup: Int? = nil, merchantGroup: Int? = nil) {
+    public init(
+        pattern: String,
+        referenceGroup: Int? = nil,
+        merchantGroup: Int? = nil,
+        itemSource: String? = nil
+    ) {
         self.pattern = pattern
         self.referenceGroup = referenceGroup
         self.merchantGroup = merchantGroup
+        self.itemSource = itemSource
     }
 }
 
@@ -595,6 +670,9 @@ public struct DataBundle: Codable, Sendable, Equatable {
     public var accountBalances: [AccountBalance]?
     /// Optional standing usable credit room snapshots (not tied to a calendar date in Coming up).
     public var creditRooms: [CreditRoom]?
+    /// Per-fingerprint counts of phone deletions already applied when the PC built this bundle,
+    /// so the phone never subtracts the same tombstone a second time against surviving duplicates.
+    public var appliedPhoneDeletions: [String: Int]?
 
     public init(
         format: String = DataBundle.supportedFormat,
@@ -617,7 +695,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
         noticeSourceMatches: [String: [String]]? = nil,
         statementLineRules: [String: [StatementLineRule]]? = nil,
         accountBalances: [AccountBalance]? = nil,
-        creditRooms: [CreditRoom]? = nil
+        creditRooms: [CreditRoom]? = nil,
+        appliedPhoneDeletions: [String: Int]? = nil
     ) {
         self.format = format
         self.generatedAt = generatedAt
@@ -640,12 +719,14 @@ public struct DataBundle: Codable, Sendable, Equatable {
         self.statementLineRules = statementLineRules
         self.accountBalances = accountBalances
         self.creditRooms = creditRooms
+        self.appliedPhoneDeletions = appliedPhoneDeletions
     }
 
     private enum CodingKeys: String, CodingKey {
         case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
         case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
         case discreetCategories, noticeSourceMatches, statementLineRules, accountBalances, creditRooms
+        case appliedPhoneDeletions
     }
 
     public init(from decoder: Decoder) throws {
@@ -675,6 +756,7 @@ public struct DataBundle: Codable, Sendable, Equatable {
         statementLineRules = try c.decodeIfPresent([String: [StatementLineRule]].self, forKey: .statementLineRules)
         accountBalances = try c.decodeIfPresent([AccountBalance].self, forKey: .accountBalances)
         creditRooms = try c.decodeIfPresent([CreditRoom].self, forKey: .creditRooms)
+        appliedPhoneDeletions = try c.decodeIfPresent([String: Int].self, forKey: .appliedPhoneDeletions)
     }
 
     /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.

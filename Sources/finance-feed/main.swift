@@ -134,10 +134,30 @@ func match(_ noticesPath: String, _ rowsPath: String, _ coveragePath: String, _ 
         else { return false }
         return start <= d && d <= end + slack
     }
-    let notices = try lines(noticesPath).map { try decoder.decode(Notice.self, from: Data($0.utf8)) }
-        .filter { inside($0.source, $0.day, slack: 1) }
-    let rows = try lines(rowsPath).map { try decoder.decode(StatementRow.self, from: Data($0.utf8)) }
-        .filter { inside($0.source, $0.date) }
+    var skippedNotices = 0
+    let notices: [Notice] = try lines(noticesPath).compactMap { line in
+        do {
+            return try decoder.decode(Notice.self, from: Data(line.utf8))
+        } catch {
+            skippedNotices += 1
+            return nil
+        }
+    }.filter { inside($0.source, $0.day, slack: 1) }
+    if skippedNotices > 0 {
+        fputs("warning: skipped \(skippedNotices) malformed notice line(s) in \(noticesPath)\n", stderr)
+    }
+    var skippedRows = 0
+    let rows: [StatementRow] = try lines(rowsPath).compactMap { line in
+        do {
+            return try decoder.decode(StatementRow.self, from: Data(line.utf8))
+        } catch {
+            skippedRows += 1
+            return nil
+        }
+    }.filter { inside($0.source, $0.date) }
+    if skippedRows > 0 {
+        fputs("warning: skipped \(skippedRows) malformed statement row(s) in \(rowsPath)\n", stderr)
+    }
     let report = Matcher.match(notices: notices, rows: rows)
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .prettyPrinted, .withoutEscapingSlashes]

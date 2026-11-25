@@ -52,13 +52,22 @@ public struct SubscriptionHistory: Sendable, Equatable {
         config: LayerConfig? = nil,
         layers: [LayerDefinition] = []
     ) -> SubscriptionHistory {
-        let recentMonths = Array(months.suffix(12))
-        let monthSet = Set(recentMonths)
         let currentMonth = String(today.prefix(7))
+        let recentMonths: [String] = {
+            let anchor = max(currentMonth, months.last ?? currentMonth)
+            let parts = anchor.split(separator: "-").compactMap { Int($0) }
+            guard parts.count == 2 else { return Array(months.suffix(12)) }
+            let total = parts[0] * 12 + (parts[1] - 1)
+            return (0..<12).reversed().map { offset -> String in
+                let t = total - offset
+                return String(format: "%04d-%02d", t / 12, (t % 12) + 1)
+            }
+        }()
+        let monthSet = Set(recentMonths)
 
         let matched = allItems
             .filter { item in
-                Self.matchesItem(item, for: sub.entry, config: config, layers: layers, allowAnnualMultiplier: true)
+                Self.matchesItem(item, for: sub.entry, config: config, layers: layers, allowAnnualMultiplier: true, includeRefunds: true)
             }
             .sorted { ($0.date, $0.amount) > ($1.date, $1.amount) }
 
@@ -73,21 +82,22 @@ public struct SubscriptionHistory: Sendable, Equatable {
         let points = recentMonths.map { m in
             PlanMonthPoint(
                 month: m,
-                spent: byMonth[m, default: 0],
+                spent: max(0, byMonth[m, default: 0]),
                 isSelected: m == recentMonths.last,
                 isInProgress: m == currentMonth
             )
         }
 
-        let last12Spend = points.reduce(0) { $0 + $1.spent }
-        let avg: Int? = matched.isEmpty
+        let last12Spend = max(0, matched.filter { monthSet.contains(String($0.date.prefix(7))) }.reduce(0) { $0 + $1.amount })
+        let positiveMatched = matched.filter { $0.amount > 0 }
+        let avg: Int? = positiveMatched.isEmpty
             ? nil
-            : Int((Double(matched.reduce(0) { $0 + $1.amount }) / Double(matched.count)).rounded())
+            : Int((Double(positiveMatched.reduce(0) { $0 + $1.amount }) / Double(positiveMatched.count)).rounded())
 
         var priceDelta: Int? = nil
-        if matched.count >= 2 {
-            let latest = matched[0].amount
-            let prior = Array(matched.dropFirst().prefix(5)).map(\.amount).sorted()
+        if positiveMatched.count >= 2 {
+            let latest = positiveMatched[0].amount
+            let prior = Array(positiveMatched.dropFirst().prefix(5)).map(\.amount).sorted()
             let median = prior[prior.count / 2]
             if abs(latest - median) >= 50 && Double(latest) / Double(max(1, median)) < 3.0 {
                 priceDelta = latest - median
@@ -101,7 +111,7 @@ public struct SubscriptionHistory: Sendable, Equatable {
             last12MonthsSpend: last12Spend,
             annualRunRate: sub.entry.monthly * 12,
             averageCharge: avg,
-            lastChargeDate: matched.first?.date,
+            lastChargeDate: positiveMatched.first?.date,
             priceChangeDelta: priceDelta
         )
     }
@@ -114,9 +124,14 @@ public struct SubscriptionHistory: Sendable, Equatable {
         for entry: SubscriptionEntry,
         config: LayerConfig? = nil,
         layers: [LayerDefinition] = [],
-        allowAnnualMultiplier: Bool = true
+        allowAnnualMultiplier: Bool = true,
+        includeRefunds: Bool = false
     ) -> Bool {
-        guard item.amount > 0 else { return false }
+        if includeRefunds {
+            guard item.amount != 0 else { return false }
+        } else {
+            guard item.amount > 0 else { return false }
+        }
         if let config, config.isNotSpending(group: item.group) {
             return false
         }
@@ -141,20 +156,44 @@ public struct SubscriptionHistory: Sendable, Equatable {
         }
         guard tokenHit else { return false }
 
-        // Prevent shopping purchases (e.g. Amazon retail orders) from matching digital subscription entries.
+        // Prevent retail shopping orders from matching digital subscription entries.
         let groupLower = item.group.lowercased()
         let catLower = item.category.lowercased()
         if groupLower == "shopping" || catLower.contains("online shopping") {
-            let subLower = entry.name.lowercased()
-            if subLower.contains("prime") || subLower.contains("aws") || subLower.contains("google") || subLower.contains("line") {
+            return false
+        }
+
+        let subLower = entry.name.lowercased()
+        let isYearly = (entry.status ?? "").lowercased().contains("year") || subLower.contains("yearly")
+        let isUsageBased = subLower.contains("api") || subLower.contains("usage") || subLower.contains("cloud")
+            || subLower.contains("aws") || subLower.contains("metered")
+        if isUsageBased {
+            // Prevent a metered/API entry (including zero-baseline entries such as "Vendor API (metered)")
+            // from absorbing a separate fixed-tier consumer plan from the same vendor (e.g. "VENDOR PRO"
+            // or "VENDOR PLUS") while still matching plain vendor descriptors (e.g. "VENDOR", "CLOUDCORP").
+            let wordSeps = CharacterSet.alphanumerics.inverted
+            let entryWords = Set(subLower.components(separatedBy: wordSeps).filter { !$0.isEmpty })
+            let merchantWords = Set(item.merchant.lowercased().components(separatedBy: wordSeps).filter { !$0.isEmpty })
+            let fixedTierWords: Set<String> = ["pro", "plus", "max", "team", "family", "premium", "membership", "subscription", "sub"]
+            let conflictingTiers = fixedTierWords.subtracting(entryWords)
+            if !exactBaseHit && !merchantWords.isDisjoint(with: conflictingTiers) {
+                return false
+            }
+            if !exactBaseHit && catLower.contains("subscription")
+                && !catLower.contains("api") && !catLower.contains("usage") && !catLower.contains("cloud")
+            {
+                return false
+            }
+        } else {
+            // Prevent a fixed consumer plan (e.g. "Vendor Plus") from absorbing metered API/cloud
+            // charges in an API/cloud category or explicitly labeled "API".
+            if !exactBaseHit && (catLower.contains("api") || catLower.contains("cloud") || catLower.contains("usage")) {
                 return false
             }
         }
 
         if entry.monthly > 0 {
-            let ratio = Double(item.amount) / Double(entry.monthly)
-            let isYearly = (entry.status ?? "").lowercased().contains("year") || entry.name.lowercased().contains("yearly")
-            let isUsageBased = entry.name.lowercased().contains("api") || entry.name.lowercased().contains("povo") || entry.name.lowercased().contains("aws")
+            let ratio = Double(abs(item.amount)) / Double(entry.monthly)
             if isYearly {
                 return allowAnnualMultiplier ? (ratio >= 0.4 && ratio <= 14.0) : (ratio >= 0.4 && ratio <= 2.5)
             }
@@ -183,18 +222,18 @@ public struct SubscriptionHistory: Sendable, Equatable {
         let foldedFull = TextFold.key(name)
         var out: [String] = []
 
-        // Full base phrase before "(" is often a strong multi-word match (e.g. "jpnight", "amazonprime", "lineスタンダード").
+        // Full base phrase before "(" is often a strong multi-word match (e.g. "cloudsuite", "sampleplan").
         let base = name.split(separator: "(").first.map(String.init) ?? name
         let foldedBase = TextFold.key(base)
         if foldedBase.count >= 4, !stopWords.contains(foldedBase) {
             out.append(foldedBase)
         }
-        // Keep combined phrase including short parentheticals like "with (dating)" -> "withdating".
+        // Keep combined phrase including short parentheticals like "Example (social)" -> "examplesocial".
         if foldedFull.count >= 6 && foldedFull.count <= 24, !stopWords.contains(foldedFull) {
             out.append(foldedFull)
         }
 
-        // Tokenize BOTH outside and inside parentheses so "(Anthropic)" and "(billed by KDDI)" are captured.
+        // Tokenize BOTH outside and inside parentheses so "(Vendor)" and "(billed by Carrier)" are captured.
         let separators = CharacterSet(charactersIn: " /・+()（）「」『』,、:：-–—·•")
         for rawPart in name.components(separatedBy: separators) {
             let token = TextFold.key(rawPart)
@@ -210,7 +249,7 @@ public struct SubscriptionHistory: Sendable, Equatable {
             ("rakutenmobile", ["ラクテンモバイル", "楽天モバイル"]),
             ("googleai", ["googleg", "googlep", "googleone"]),
             ("youtube", ["googlep", "googleg", "youtube"]),
-            ("chatgpt", ["chatgpt", "openai"]),
+            ("chatgpt", ["chatgpt"]),
             ("icloud", ["icloud"]),
             ("netflix", ["ネツトフリツクス"]),
             ("spotify", ["スポテイフアイ"]),

@@ -154,7 +154,7 @@ struct NowView: View {
                 }
             }
             .confirmationDialog(
-                selectedBill?.item ?? "Scheduled item",
+                MaskedMoney.redactText(selectedBill?.item ?? "Scheduled item", masked: privacyMasked),
                 isPresented: Binding(
                     get: { selectedBill != nil },
                     set: { if !$0 { selectedBill = nil } }
@@ -162,11 +162,20 @@ struct NowView: View {
                 titleVisibility: .visible
             ) {
                 if let bill = selectedBill {
-                    let isPhoneChecked = session.resolvedData(from: model)?.phoneCheckedBillKeys
-                        .contains(BillCheckoff.key(for: bill)) ?? false
-                    let matchingReminder = model.localModifications.customReminders.first {
-                        BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: bill)
-                    }
+                    let isPhoneChecked = bill.phoneChecked == true
+                        || (session.resolvedData(from: model).map { BillCheckoff.matches(bill, in: $0.phoneCheckedBillKeys) } ?? false)
+                    let matchingReminderID: UUID? = {
+                        if let matched = model.localModifications.customReminders.first(where: {
+                            BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: bill)
+                                || BillCheckoff.legacyKey(for: $0.asTimelineEntry()) == BillCheckoff.legacyKey(for: bill)
+                        }) {
+                            return matched.id
+                        }
+                        if let rawID = bill.id, rawID.hasPrefix("rem:") {
+                            return UUID(uuidString: String(rawID.dropFirst(4)))
+                        }
+                        return nil
+                    }()
                     if bill.event != true && bill.cardBilled != true && bill.amount > 0 && (bill.done != true || isPhoneChecked) {
                         Button(isPhoneChecked ? "Mark unpaid" : "Mark paid on phone") {
                             let target = bill
@@ -182,11 +191,11 @@ struct NowView: View {
                             session.openPayments(month: nil, category: nil, query: query)
                         }
                     }
-                    if let reminder = matchingReminder {
+                    if let reminderID = matchingReminderID {
                         Button("Delete reminder", role: .destructive) {
                             selectedBill = nil
                             guard !session.isDemo else { return }
-                            Task { try? await model.removeCustomReminder(id: reminder.id) }
+                            Task { try? await model.removeCustomReminder(id: reminderID) }
                         }
                     }
                     Button("Cancel", role: .cancel) {
@@ -458,9 +467,11 @@ struct NowView: View {
         let target = row.entry.target ?? 0
         let ratio = row.currentMonthProgress ?? 0
         let pct = Int((ratio * 100).rounded())
-        let tint: Color = row.isOverCapCurrentMonth
-            ? Theme.bad
-            : (row.isNearCapCurrentMonth ? Theme.warn : Theme.good)
+        let tint: Color = privacyMasked
+            ? Theme.accent
+            : (row.isOverCapCurrentMonth
+                ? Theme.bad
+                : (row.isNearCapCurrentMonth ? Theme.warn : Theme.good))
 
         return Button {
             session.activeSheet = .categoryDetail(name: row.entry.category, periodID: currentMonth)
@@ -476,10 +487,14 @@ struct NowView: View {
                             Text(row.entry.category)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
-                            Text("\(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked)) / \(MaskedMoney.yen(target, masked: privacyMasked)) · \(pct)%")
+                            Text(
+                                privacyMasked
+                                    ? "\(MaskedMoney.yen(row.currentMonthSpent, masked: true)) / \(MaskedMoney.yen(target, masked: true))"
+                                    : "\(MaskedMoney.yen(row.currentMonthSpent, masked: false)) / \(MaskedMoney.yen(target, masked: false)) · \(pct)%"
+                            )
                                 .font(.caption.weight(.semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink2)
+                                .foregroundStyle((!privacyMasked && row.isOverCapCurrentMonth) ? Theme.bad : Theme.ink2)
                         }
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -492,7 +507,7 @@ struct NowView: View {
                                 Text(MaskedMoney.yen(row.currentMonthSpent, masked: privacyMasked))
                                     .font(.subheadline.weight(.semibold))
                                     .monospacedDigit()
-                                    .foregroundStyle(row.isOverCapCurrentMonth ? Theme.bad : Theme.ink)
+                                    .foregroundStyle((!privacyMasked && row.isOverCapCurrentMonth) ? Theme.bad : Theme.ink)
                                 Text("/ \(MaskedMoney.yen(target, masked: privacyMasked))")
                                     .font(.caption)
                                     .monospacedDigit()
@@ -502,7 +517,7 @@ struct NowView: View {
                             .fixedSize(horizontal: true, vertical: false)
                         }
                     }
-                    ProgressMeter(ratio: ratio, tint: tint, height: 6, paceRatio: pace)
+                    ProgressMeter(ratio: privacyMasked ? 0 : ratio, tint: tint, height: 6, paceRatio: pace)
                 }
             }
             .contentShape(Rectangle())
@@ -560,9 +575,14 @@ struct NowView: View {
                             HairlineDivider()
                                 .padding(.vertical, 10)
                         }
+                        let customReminderKeys = Set(model.localModifications.customReminders.map {
+                            BillCheckoff.key(for: $0.asTimelineEntry())
+                        })
                         ComingUpDayRow(
                             day: day,
+                            today: session.today,
                             phoneCheckedBillKeys: screen.phoneCheckedBillKeys,
+                            customReminderKeys: customReminderKeys,
                             todayCashBalance: day.isToday ? screen.todayCashBalance : nil,
                             onTapCashNow: {
                                 if screen.liveCash != nil {
@@ -570,12 +590,7 @@ struct NowView: View {
                                 }
                             },
                             onSelectEntry: { entry in
-                                let isCustomReminder = model.localModifications.customReminders.contains {
-                                    BillCheckoff.key(for: $0.asTimelineEntry()) == BillCheckoff.key(for: entry)
-                                }
-                                if entry.event != true || isCustomReminder {
-                                    selectedBill = entry
-                                }
+                                selectedBill = entry
                             }
                         )
                     }
@@ -608,7 +623,7 @@ struct NowView: View {
 
                 if showAfterPayday, let afterNote = screen.afterNote, !afterNote.isEmpty {
                     HairlineDivider()
-                    Text(afterNote)
+                    Text(MaskedMoney.redactText(afterNote, masked: privacyMasked))
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -731,13 +746,14 @@ struct NowView: View {
     }
 
     private func pendingPreviewRow(_ item: BudgetItem, counted: Bool) -> some View {
+        let safeMerchant = MaskedMoney.redactText(item.merchant, masked: privacyMasked)
         let amountText = MaskedMoney.payment(item.amount, masked: privacyMasked)
         let amountColor = item.amount < 0 ? Theme.good : Theme.ink
 
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.merchant)
+                    Text(safeMerchant)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -766,7 +782,7 @@ struct NowView: View {
                     CategoryBadge(category: item.category, size: 36)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(item.merchant)
+                            Text(safeMerchant)
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
                                 .lineLimit(1)
@@ -793,7 +809,7 @@ struct NowView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(item.merchant), \(MaskedMoney.paymentAccessibility(item.amount, masked: privacyMasked)), pending, \(DayText.short(item.date)), \(item.category), \(item.source)")
+        .accessibilityLabel("\(safeMerchant), \(MaskedMoney.paymentAccessibility(item.amount, masked: privacyMasked)), pending, \(DayText.short(item.date)), \(item.category), \(item.source)")
     }
 
     // MARK: - Debts & Good to know
@@ -872,7 +888,7 @@ struct NowView: View {
                                         .fill(Theme.accent)
                                         .frame(width: 5, height: 5)
                                         .padding(.top, 6)
-                                    Text(note)
+                                    Text(MaskedMoney.redactText(note, masked: privacyMasked))
                                         .font(.caption)
                                         .foregroundStyle(Theme.ink2)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -896,7 +912,7 @@ struct NowView: View {
                     Text(MaskedMoney.yen(debt.balance, masked: privacyMasked))
                         .font(.body.weight(.semibold))
                         .monospacedDigit()
-                        .foregroundStyle(Theme.bad)
+                        .foregroundStyle(privacyMasked ? Theme.ink : Theme.bad)
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                         .allowsTightening(true)
@@ -910,17 +926,25 @@ struct NowView: View {
                     Text(MaskedMoney.yen(debt.balance, masked: privacyMasked))
                         .font(.subheadline.weight(.semibold))
                         .monospacedDigit()
-                        .foregroundStyle(Theme.bad)
+                        .foregroundStyle(privacyMasked ? Theme.ink : Theme.bad)
                 }
             }
 
             if let limit = debt.limit, limit > 0 {
                 let ratio = min(1.0, max(0.0, Double(debt.balance) / Double(limit)))
                 let pct = Int((ratio * 100).rounded())
-                ProgressMeter(ratio: ratio, tint: Theme.bad, height: 6)
+                ProgressMeter(
+                    ratio: privacyMasked ? 0 : ratio,
+                    tint: privacyMasked ? Theme.accent : Theme.bad,
+                    height: 6
+                )
 
                 HStack {
-                    Text("\(pct)% of \(MaskedMoney.yen(limit, masked: privacyMasked)) limit used")
+                    Text(
+                        privacyMasked
+                            ? "Limit \(MaskedMoney.yen(limit, masked: true))"
+                            : "\(pct)% of \(MaskedMoney.yen(limit, masked: false)) limit used"
+                    )
                         .font(.caption)
                         .monospacedDigit()
                         .foregroundStyle(Theme.muted)
@@ -943,8 +967,12 @@ struct NowView: View {
     private func debtAccessibilityLabel(_ debt: DebtEntry) -> String {
         var parts = [debt.name, MaskedMoney.accessibility(debt.balance, masked: privacyMasked)]
         if let limit = debt.limit, limit > 0 {
-            let pct = Int((Double(debt.balance) / Double(limit) * 100).rounded())
-            parts.append("\(pct) percent of \(MaskedMoney.accessibility(limit, masked: privacyMasked)) limit")
+            if privacyMasked {
+                parts.append("limit \(MaskedMoney.accessibility(limit, masked: true))")
+            } else {
+                let pct = Int((Double(debt.balance) / Double(limit) * 100).rounded())
+                parts.append("\(pct) percent of \(MaskedMoney.accessibility(limit, masked: false)) limit")
+            }
         }
         if let lines = debt.lines, !lines.isEmpty {
             parts.append(MaskedMoney.redactText(lines.joined(separator: ", "), masked: privacyMasked))
@@ -1062,10 +1090,12 @@ struct NowView: View {
 
     private func subscriptionRow(_ item: SubscriptionItem) -> some View {
         let sub = item.entry
+        let safeName = MaskedMoney.redactText(sub.name, masked: privacyMasked)
+        let safeVia = sub.via.map { MaskedMoney.redactText($0, masked: privacyMasked) }
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(sub.name)
+                    Text(safeName)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1076,7 +1106,7 @@ struct NowView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.5)
                         .allowsTightening(true)
-                    if let via = sub.via, !via.isEmpty {
+                    if let via = safeVia, !via.isEmpty {
                         Text(via)
                             .font(.caption)
                             .foregroundStyle(Theme.muted)
@@ -1095,7 +1125,7 @@ struct NowView: View {
                     )
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text(sub.name)
+                            Text(safeName)
                                 .font(.subheadline.weight(.medium))
                                 .foregroundStyle(Theme.ink)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -1107,7 +1137,7 @@ struct NowView: View {
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                         HStack(alignment: .center, spacing: 6) {
-                            if let via = sub.via, !via.isEmpty {
+                            if let via = safeVia, !via.isEmpty {
                                 Text(via)
                                     .font(.caption)
                                     .foregroundStyle(Theme.muted)
@@ -1123,7 +1153,7 @@ struct NowView: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(sub.name), \(MaskedMoney.accessibility(sub.monthly, masked: privacyMasked)) per month\(sub.via.map { ", via \($0)" } ?? "")\(item.displayStatus.map { ", \($0)" } ?? "")")
+        .accessibilityLabel("\(safeName), \(MaskedMoney.accessibility(sub.monthly, masked: privacyMasked)) per month\(safeVia.map { ", via \($0)" } ?? "")\(item.displayStatus.map { ", \($0)" } ?? "")")
     }
 }
 
@@ -1220,7 +1250,7 @@ struct PaydayHeroCard: View {
     }
 
     var body: some View {
-        HeroVaultCard(accentTint: heroLeft < 0 ? Theme.heroCoral : Theme.heroGlow) {
+        HeroVaultCard(accentTint: (!privacyMasked && heroLeft < 0) ? Theme.heroCoral : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 16) {
                 // Header + Sculpted Cycle Ring (long-press hero balance toggles train privacy mask)
                 Group {
@@ -1229,13 +1259,20 @@ struct PaydayHeroCard: View {
                             SectionLabel("Until payday", symbol: "calendar", color: Theme.heroInkMuted)
                             HeroMoneyText(
                                 amount: heroLeft,
-                                color: heroLeft < 0 ? Theme.heroCoral : Theme.heroInk
+                                color: (!privacyMasked && heroLeft < 0) ? Theme.heroCoral : Theme.heroInk
                             )
                             if openBorrowedTotal > 0 {
                                 Text("With credit: \(MaskedMoney.yen(totalWithCredit, masked: privacyMasked))")
                                     .font(.footnote.weight(.semibold))
                                     .monospacedDigit()
                                     .foregroundStyle(Theme.heroAccent)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            if let estIn = liveCash?.estimatedInflowsSum, estIn > 0 {
+                                Text("Est. inflows not counted: \(MaskedMoney.signed(estIn, masked: privacyMasked))")
+                                    .font(.caption)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.heroInkMuted)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
@@ -1260,7 +1297,7 @@ struct PaydayHeroCard: View {
                                 }
                                 HeroMoneyText(
                                     amount: heroLeft,
-                                    color: heroLeft < 0 ? Theme.heroCoral : Theme.heroInk
+                                    color: (!privacyMasked && heroLeft < 0) ? Theme.heroCoral : Theme.heroInk
                                 )
                                 if openBorrowedTotal > 0 {
                                     HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -1274,6 +1311,21 @@ struct PaydayHeroCard: View {
                                     }
                                     .fixedSize(horizontal: false, vertical: true)
                                 }
+                                if let estIn = liveCash?.estimatedInflowsSum, estIn > 0 {
+                                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                        Text("Est. inflows:")
+                                            .font(.caption)
+                                            .foregroundStyle(Theme.heroInkMuted)
+                                        Text(MaskedMoney.signed(estIn, masked: privacyMasked))
+                                            .font(.caption.weight(.semibold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(Theme.heroInk)
+                                        Text("(not counted)")
+                                            .font(.caption2)
+                                            .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
+                                    }
+                                    .fixedSize(horizontal: false, vertical: true)
+                                }
                                 Text(heroSubtitle)
                                     .font(.footnote)
                                     .foregroundStyle(Theme.heroInkMuted)
@@ -1284,7 +1336,7 @@ struct PaydayHeroCard: View {
                                 progress: cycleProgress,
                                 valueText: payday.daysToPayday == 0 ? "0" : "\(payday.daysToPayday)",
                                 unitText: payday.daysToPayday == 1 ? "day" : "days",
-                                fillColor: heroLeft < 0 ? Theme.heroCoral : Theme.heroAccent,
+                                fillColor: (!privacyMasked && heroLeft < 0) ? Theme.heroCoral : Theme.heroAccent,
                                 size: 62,
                                 lineWidth: 4.5
                             )
@@ -1378,7 +1430,7 @@ struct PaydayHeroCard: View {
                                         Text(MaskedMoney.yen(payday.left, masked: privacyMasked))
                                             .font(.subheadline.weight(.bold))
                                             .monospacedDigit()
-                                            .foregroundStyle(payday.left < 0 ? Theme.heroCoral : Theme.heroAccent)
+                                            .foregroundStyle((!privacyMasked && payday.left < 0) ? Theme.heroCoral : Theme.heroAccent)
                                     }
                                     if pendingCount > 0 {
                                         QuietTag("\(pendingCount) pending", tone: .hero)
@@ -1415,7 +1467,7 @@ struct PaydayHeroCard: View {
                                         Text(MaskedMoney.yen(payday.left, masked: privacyMasked))
                                             .font(.subheadline.weight(.bold))
                                             .monospacedDigit()
-                                            .foregroundStyle(payday.left < 0 ? Theme.heroCoral : Theme.heroAccent)
+                                            .foregroundStyle((!privacyMasked && payday.left < 0) ? Theme.heroCoral : Theme.heroAccent)
                                     }
                                 }
                             }
@@ -1483,7 +1535,7 @@ struct PaydayHeroCard: View {
                 Text(MaskedMoney.yen(live.estimatedBankCash, masked: privacyMasked))
                     .font(.subheadline.weight(.bold))
                     .monospacedDigit()
-                    .foregroundStyle(live.estimatedBankCash < 0 ? Theme.heroCoral : Theme.heroAccent)
+                    .foregroundStyle((!privacyMasked && live.estimatedBankCash < 0) ? Theme.heroCoral : Theme.heroAccent)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 Text(bankAccountsFootnote(live))
@@ -1505,7 +1557,7 @@ struct PaydayHeroCard: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                 if let firstIn = payday.ins.first {
-                    Text(payday.ins.count == 1 ? firstIn.item : "\(payday.ins.count) inflows")
+                    Text(payday.ins.count == 1 ? MaskedMoney.redactText(firstIn.item, masked: privacyMasked) : "\(payday.ins.count) inflows")
                         .font(.caption2)
                         .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
                         .lineLimit(1)
@@ -1517,10 +1569,13 @@ struct PaydayHeroCard: View {
     private func bankAccountsFootnote(_ live: LiveCashSummary) -> String {
         var parts: [String]
         if live.accounts.count == 1, let only = live.accounts.first {
-            parts = [only.label]
+            parts = ["\(only.label) · as of \(DayText.short(only.asOf))"]
         } else {
             parts = live.accounts.map { acc in
                 "\(acc.label) \(MaskedMoney.yen(acc.estimatedBalance, masked: privacyMasked))"
+            }
+            if let earliestAsOf = live.accounts.map(\.asOf).min() {
+                parts.append("as of \(DayText.short(earliestAsOf))")
             }
         }
         if live.pendingDebitOutflow > 0 {
@@ -1584,10 +1639,10 @@ struct SplitBar: View {
                 color: onHeroSurface ? Color.white.opacity(0.45) : Theme.ink2
             ))
         }
-        if left > 0 {
+        if left > 0 || (privacyMasked && left < 0) {
             result.append(Part(
                 id: "Left",
-                amount: left,
+                amount: abs(left),
                 color: onHeroSurface ? Theme.heroAccent : Theme.good
             ))
         } else if left < 0 {
@@ -1601,7 +1656,9 @@ struct SplitBar: View {
             result.append(Part(
                 id: "Borrowed",
                 amount: borrowed,
-                color: onHeroSurface ? Theme.heroCoral : Theme.bad
+                color: privacyMasked
+                    ? (onHeroSurface ? Color.white.opacity(0.32) : Theme.muted)
+                    : (onHeroSurface ? Theme.heroCoral : Theme.bad)
             ))
         }
         return result
@@ -1615,7 +1672,9 @@ struct SplitBar: View {
             GeometryReader { geo in
                 let gap: CGFloat = activeParts.count > 1 ? 3 : 0
                 let available = max(0, geo.size.width - gap * CGFloat(max(0, activeParts.count - 1)))
-                let rawWidths = activeParts.map { max(8, available * CGFloat($0.amount) / CGFloat(total)) }
+                let rawWidths: [CGFloat] = privacyMasked
+                    ? activeParts.map { _ in activeParts.isEmpty ? 0 : available / CGFloat(activeParts.count) }
+                    : activeParts.map { max(8, available * CGFloat($0.amount) / CGFloat(total)) }
                 let sumWidths = max(1, rawWidths.reduce(0, +))
                 let scale = sumWidths > available ? (available / sumWidths) : 1.0
                 ZStack(alignment: .leading) {
@@ -1744,7 +1803,9 @@ struct ComingUpDayRow: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.privacyMasked) private var privacyMasked
     let day: NowScreenModel.TimelineDay
+    let today: String
     let phoneCheckedBillKeys: Set<String>
+    var customReminderKeys: Set<String> = []
     var todayCashBalance: ComingUpRunningBalance? = nil
     var onTapCashNow: () -> Void = {}
     let onSelectEntry: (TimelineEntry) -> Void
@@ -1886,18 +1947,35 @@ struct ComingUpDayRow: View {
     }
 
     private func todayCashBar(_ cash: ComingUpRunningBalance) -> some View {
-        let nowTint: Color = cash.cashNow < 0 ? Theme.bad : Theme.good
+        let nowTint: Color = (!privacyMasked && cash.cashNow < 0) ? Theme.bad : Theme.good
+        let startColor: Color = (!privacyMasked && cash.startingTodayCash < 0) ? Theme.bad : Theme.ink2
+        let barWash: Color = (!privacyMasked && cash.cashNow < 0) ? Theme.badWash : Theme.goodWash
+        let barStroke: Color = (!privacyMasked && cash.cashNow < 0) ? Theme.bad : Theme.good
         let holdLabel: String? = {
+            var pieces: [String] = []
             if cash.overdueUnpaidSum > 0 && cash.pastPhoneHeldSum > 0 {
-                return "After \(MaskedMoney.yen(cash.priorHeldSum, masked: privacyMasked)) overdue & pending"
+                pieces.append("−\(MaskedMoney.yen(cash.priorHeldSum, masked: privacyMasked)) prior bills")
+            } else if cash.overdueUnpaidSum > 0 {
+                pieces.append("−\(MaskedMoney.yen(cash.overdueUnpaidSum, masked: privacyMasked)) prior unpaid")
+            } else if cash.pastPhoneHeldSum > 0 {
+                pieces.append("−\(MaskedMoney.yen(cash.pastPhoneHeldSum, masked: privacyMasked)) awaiting debit")
             }
-            if cash.overdueUnpaidSum > 0 {
-                return "After \(MaskedMoney.yen(cash.overdueUnpaidSum, masked: privacyMasked)) overdue"
+            if cash.pastPendingInflowsSum > 0 {
+                pieces.append("+\(MaskedMoney.yen(cash.pastPendingInflowsSum, masked: privacyMasked)) expected in")
             }
-            if cash.pastPhoneHeldSum > 0 {
-                return "After \(MaskedMoney.yen(cash.pastPhoneHeldSum, masked: privacyMasked)) pending debit"
+            guard !pieces.isEmpty else { return nil }
+            return "After " + pieces.joined(separator: " · ")
+        }()
+        let holdAccessibilityText: String? = {
+            var pieces: [String] = []
+            if cash.priorHeldSum > 0 {
+                pieces.append("prior bills \(MaskedMoney.accessibility(cash.priorHeldSum, masked: privacyMasked))")
             }
-            return nil
+            if cash.pastPendingInflowsSum > 0 {
+                pieces.append("expected inflows \(MaskedMoney.accessibility(cash.pastPendingInflowsSum, masked: privacyMasked))")
+            }
+            guard !pieces.isEmpty else { return nil }
+            return "adjusted for " + pieces.joined(separator: " and ") + ", starting today \(MaskedMoney.accessibility(cash.startingTodayCash, masked: privacyMasked))"
         }()
         let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
 
@@ -1917,7 +1995,7 @@ struct ComingUpDayRow: View {
                         Text("\(holdLabel): \(MaskedMoney.yen(cash.startingTodayCash, masked: privacyMasked))")
                             .font(.caption2)
                             .monospacedDigit()
-                            .foregroundStyle(cash.startingTodayCash < 0 ? Theme.bad : Theme.muted)
+                            .foregroundStyle(startColor)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
@@ -1936,20 +2014,21 @@ struct ComingUpDayRow: View {
                             .foregroundStyle(nowTint)
                         Image(systemName: "chevron.right")
                             .font(.system(size: 8.5, weight: .bold))
-                            .foregroundStyle(Theme.muted.opacity(0.65))
+                            .foregroundStyle(Theme.ink2.opacity(0.75))
                             .accessibilityHidden(true)
                     }
                     if let holdLabel {
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Text(holdLabel)
                                 .font(.caption2)
-                                .foregroundStyle(Theme.muted)
-                                .lineLimit(1)
+                                .foregroundStyle(Theme.ink2)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                             Spacer(minLength: 6)
                             Text(MaskedMoney.yen(cash.startingTodayCash, masked: privacyMasked))
                                 .font(.caption2.weight(.semibold))
                                 .monospacedDigit()
-                                .foregroundStyle(cash.startingTodayCash < 0 ? Theme.bad : Theme.muted)
+                                .foregroundStyle(startColor)
                                 .fixedSize(horizontal: true, vertical: false)
                         }
                     }
@@ -1959,12 +2038,12 @@ struct ComingUpDayRow: View {
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                (cash.cashNow < 0 ? Theme.badWash : Theme.goodWash),
+                barWash,
                 in: shape
             )
             .overlay(
                 shape.strokeBorder(
-                    (cash.cashNow < 0 ? Theme.bad : Theme.good).opacity(colorScheme == .dark ? 0.28 : 0.22),
+                    barStroke.opacity(colorScheme == .dark ? 0.28 : 0.22),
                     lineWidth: 0.6
                 )
             )
@@ -1974,8 +2053,14 @@ struct ComingUpDayRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             "Cash now, \(MaskedMoney.accessibility(cash.cashNow, masked: privacyMasked))"
-            + (holdLabel != nil ? ", after prior unpaid bills \(MaskedMoney.accessibility(cash.startingTodayCash, masked: privacyMasked))" : "")
+            + (holdAccessibilityText.map { ", \($0)" } ?? "")
         )
+    }
+
+    private func isInteractiveEntry(_ entry: TimelineEntry) -> Bool {
+        if entry.event != true { return true }
+        if let id = entry.id, id.hasPrefix("rem:") { return true }
+        return BillCheckoff.matches(entry, in: customReminderKeys)
     }
 
     @ViewBuilder
@@ -1987,37 +2072,53 @@ struct ComingUpDayRow: View {
                 .accessibilityLabel("Today, \(DayText.long(day.date)), nothing scheduled")
         } else {
             ForEach(day.entries) { row in
-                Button {
-                    onSelectEntry(row.value)
-                } label: {
-                    timelineEntryRow(row.value, remainingBalance: row.remainingBalance)
-                        .opacity(isEntryDimmed(row.value) ? 0.56 : 1.0)
-                        .contentShape(Rectangle())
+                let dimmed = isEntryDimmed(row.value)
+                if isInteractiveEntry(row.value) {
+                    Button {
+                        onSelectEntry(row.value)
+                    } label: {
+                        timelineEntryRow(row.value, remainingBalance: row.remainingBalance, dimmed: dimmed)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    timelineEntryRow(row.value, remainingBalance: row.remainingBalance, dimmed: dimmed)
                 }
-                .buttonStyle(.plain)
             }
         }
     }
 
-    private func timelineEntryRow(_ entry: TimelineEntry, remainingBalance: Int?) -> some View {
+    private func timelineEntryRow(_ entry: TimelineEntry, remainingBalance: Int?, dimmed: Bool) -> some View {
         let isEvent = entry.event == true
         let isCardBilled = entry.cardBilled == true
         let moneyIn = entry.amount < 0 && entry.borrowed != true
         let isBorrowed = entry.borrowed == true
         let displayAmount = isCardBilled ? (entry.billedAmount ?? entry.amount) : entry.amount
         let amountText = (isEvent || displayAmount == 0) ? "" : MaskedMoney.payment(displayAmount, masked: privacyMasked)
+        let titleColor: Color = dimmed ? Theme.ink2 : Theme.ink
         let amountColor: Color = {
             if isCardBilled { return Theme.muted }
+            if dimmed { return Theme.ink2 }
+            if privacyMasked { return Theme.ink }
             if isBorrowed { return Theme.bad }
             if moneyIn { return Theme.good }
             return Theme.ink
         }()
 
-        let isPhoneChecked = phoneCheckedBillKeys.contains(BillCheckoff.key(for: entry))
-        let isOverdue = day.isPast && !day.isToday && entry.done != true && !isEvent && !isBorrowed && !isCardBilled && entry.amount > 0
+        let isPhoneChecked = entry.phoneChecked == true || BillCheckoff.matches(entry, in: phoneCheckedBillKeys)
+        let isPastUnpaid = day.isPast && !day.isToday && entry.done != true && !isEvent && !isBorrowed && !isCardBilled && entry.amount > 0
+        let daysOverdue: Int = {
+            guard isPastUnpaid,
+                  let todayNum = JST.dayNumber(today),
+                  let entryNum = JST.dayNumber(entry.date) else { return 0 }
+            return max(1, todayNum - entryNum)
+        }()
+        let inPostingGrace = isPastUnpaid && entry.match != nil && daysOverdue <= 3
         let tags: [(String, QuietTag.Tone)] = {
             var list: [(String, QuietTag.Tone)] = []
-            if isOverdue { list.append(("Overdue", .bad)) }
+            if isPastUnpaid {
+                list.append(inPostingGrace ? ("Not posted yet", .warn) : ("Overdue", .bad))
+            }
             if isEvent { list.append(("Event", .accent)) }
             if isCardBilled { list.append(("On card bill", .neutral)) }
             if entry.payday == true { list.append(("Payday", .good)) }
@@ -2038,18 +2139,21 @@ struct ComingUpDayRow: View {
 
         let balanceColor: Color = {
             guard let balance = remainingBalance else { return Theme.muted }
+            if privacyMasked { return Theme.ink2.opacity(0.82) }
             if balance < 0 { return Theme.bad }
             if balance < 20_000 { return Theme.warnText }
             if moneyIn { return Theme.good }
             return Theme.ink2.opacity(0.82)
         }()
 
+        let displayTitle = MaskedMoney.redactText(entry.item, masked: privacyMasked)
+
         return Group {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(entry.item)
+                    Text(displayTitle)
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(Theme.ink)
+                        .foregroundStyle(titleColor)
                         .fixedSize(horizontal: false, vertical: true)
                     if !amountText.isEmpty {
                         Text(amountText)
@@ -2087,9 +2191,9 @@ struct ComingUpDayRow: View {
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(entry.item)
+                        Text(displayTitle)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Theme.ink)
+                            .foregroundStyle(titleColor)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 8)
                         if !amountText.isEmpty {
@@ -2140,7 +2244,7 @@ struct ComingUpDayRow: View {
     }
 
     private func entryAccessibilityLabel(_ entry: TimelineEntry, tags: [String], remainingBalance: Int?) -> String {
-        var parts = [DayText.long(day.date), entry.item]
+        var parts = [DayText.long(day.date), MaskedMoney.redactText(entry.item, masked: privacyMasked)]
         let displayAmount = entry.cardBilled == true ? (entry.billedAmount ?? entry.amount) : entry.amount
         if entry.event != true && displayAmount != 0 {
             parts.append(MaskedMoney.paymentAccessibility(displayAmount, masked: privacyMasked))

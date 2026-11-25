@@ -7,6 +7,125 @@ extension Notification.Name {
     static let backgroundGmailSyncUpdated = Notification.Name("backgroundGmailSyncUpdated")
 }
 
+enum PaymentNotificationAddOutcome: Sendable, Equatable {
+    case delivered
+    case supersededByPrivacyToggle
+    case cancelled
+}
+
+/// FIFO coordinator serializing payment notification adds and clears with monotonic generation
+/// invalidation so turning on Privacy Mode can never leave an in-flight unmasked alert delivered.
+actor PaymentNotificationCoordinator {
+    static let shared = PaymentNotificationCoordinator()
+    private var privacyClearGeneration: UInt64 = 0
+    private var hardClearGeneration: UInt64 = 0
+    private var lastOperation: Task<Void, Never>?
+    private var maskedIdentifiers = Set<String>()
+
+    func clear(preserveMasked: Bool = false) async {
+        // Ignore a delayed privacy-ON clear if Privacy Mode was already turned back off before
+        // this task entered the coordinator, so newly delivered unmasked alerts are not dropped.
+        if preserveMasked && !SharedStore.privacyMasked {
+            return
+        }
+        privacyClearGeneration &+= 1
+        if !preserveMasked {
+            hardClearGeneration &+= 1
+            maskedIdentifiers.removeAll()
+        }
+        let previous = lastOperation
+        // Register the queued clear synchronously BEFORE any await so any subsequent masked add
+        // chains strictly AFTER this clear while existing unmasked alerts are still wiped immediately.
+        let immediateSweep = Task {
+            await self.performClear(preserveMasked: preserveMasked)
+        }
+        let op = Task {
+            await previous?.value
+            await immediateSweep.value
+            await self.performClear(preserveMasked: preserveMasked)
+        }
+        lastOperation = op
+        await op.value
+    }
+
+    func add(request: UNNotificationRequest, wasPrivacyMasked: Bool) async throws -> PaymentNotificationAddOutcome {
+        let privacyToken = privacyClearGeneration
+        let hardToken = hardClearGeneration
+        let previous = lastOperation
+        let op = Task<Result<PaymentNotificationAddOutcome, any Error>, Never> {
+            await previous?.value
+            do {
+                let outcome = try await self.performAdd(
+                    privacyToken: privacyToken,
+                    hardToken: hardToken,
+                    request: request,
+                    wasPrivacyMasked: wasPrivacyMasked
+                )
+                return .success(outcome)
+            } catch {
+                return .failure(error)
+            }
+        }
+        lastOperation = Task { _ = await op.value }
+        return try await op.value.get()
+    }
+
+    private func performClear(preserveMasked: Bool) async {
+        if preserveMasked && !SharedStore.privacyMasked {
+            return
+        }
+        let ids = Array(await PaymentNotifications.outstandingIDs())
+        if preserveMasked && !SharedStore.privacyMasked {
+            return
+        }
+        let removable = preserveMasked
+            ? ids.filter { !maskedIdentifiers.contains($0) }
+            : ids
+        guard !removable.isEmpty else { return }
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: removable)
+        center.removeDeliveredNotifications(withIdentifiers: removable)
+        if !preserveMasked {
+            for id in removable {
+                maskedIdentifiers.remove(id)
+            }
+        }
+    }
+
+    private func performAdd(
+        privacyToken: UInt64,
+        hardToken: UInt64,
+        request: UNNotificationRequest,
+        wasPrivacyMasked: Bool
+    ) async throws -> PaymentNotificationAddOutcome {
+        guard hardToken == hardClearGeneration else { return .cancelled }
+        if !wasPrivacyMasked {
+            guard privacyToken == privacyClearGeneration, !SharedStore.privacyMasked else {
+                return .supersededByPrivacyToggle
+            }
+            maskedIdentifiers.remove(request.identifier)
+        } else {
+            maskedIdentifiers.insert(request.identifier)
+        }
+        let center = UNUserNotificationCenter.current()
+        try await center.add(request)
+        if hardToken != hardClearGeneration {
+            center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+            center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+            if wasPrivacyMasked {
+                maskedIdentifiers.remove(request.identifier)
+            }
+            return .cancelled
+        }
+        if !wasPrivacyMasked && (privacyToken != privacyClearGeneration || SharedStore.privacyMasked) {
+            center.removePendingNotificationRequests(withIdentifiers: [request.identifier])
+            center.removeDeliveredNotifications(withIdentifiers: [request.identifier])
+            return .supersededByPrivacyToggle
+        }
+        return .delivered
+    }
+}
+
 /// Local notifications for newly seen pending payments and confirmed bank deposits.
 enum PaymentNotifications {
     static let categoryIdentifier = "finance.payment"
@@ -31,8 +150,23 @@ enum PaymentNotifications {
         }
     }
 
-    static func request(for alert: PendingPaymentAlert) -> UNNotificationRequest {
+    static func request(for alert: PendingPaymentAlert, privacyMasked: Bool = SharedStore.privacyMasked) -> UNNotificationRequest {
         let content = UNMutableNotificationContent()
+        if privacyMasked {
+            if alert.isDecline == true {
+                content.title = "Payment declined · \(alert.sourceLabel)"
+                content.body = "Open Finance to review."
+                return request(id: "decline-\(alert.messageID)", content: content)
+            }
+            if alert.isConfirmed == true {
+                content.title = "New deposit · \(alert.sourceLabel)"
+                content.body = "Open Finance to view."
+                return request(id: "bank-\(alert.messageID)", content: content)
+            }
+            content.title = "New payment · \(alert.sourceLabel)"
+            content.body = "Pending · open Finance to view."
+            return request(id: "payment-\(alert.messageID)", content: content)
+        }
         let hasShop = !alert.merchant.isEmpty && alert.merchant != PendingBuilder.missingMerchantPlaceholder
         let amount = Money.payment(alert.amount)
         if alert.isDecline == true {
@@ -86,11 +220,12 @@ enum PaymentNotifications {
             .map(\.identifier))
     }
 
-    static func clear() async {
-        let ids = Array(await outstandingIDs())
-        let center = UNUserNotificationCenter.current()
-        center.removePendingNotificationRequests(withIdentifiers: ids)
-        center.removeDeliveredNotifications(withIdentifiers: ids)
+    static func clear(preserveMasked: Bool = false) async {
+        await PaymentNotificationCoordinator.shared.clear(preserveMasked: preserveMasked)
+    }
+
+    static func add(_ request: UNNotificationRequest, wasPrivacyMasked: Bool) async throws -> PaymentNotificationAddOutcome {
+        try await PaymentNotificationCoordinator.shared.add(request: request, wasPrivacyMasked: wasPrivacyMasked)
     }
 }
 
@@ -100,6 +235,7 @@ actor SyncEngine {
     static let shared = SyncEngine()
 
     private static let lookbackDays = 7
+    private static let maxLookbackDays = 30
     private static let batchSize = 8
     private static let noticeHistoryLimit = 300
     private static let maxDetailedAlerts = 300
@@ -107,6 +243,9 @@ actor SyncEngine {
 
     private var inFlight = false
     private var pushInFlight = false
+    private var signingOut = false
+    private var pendingPushNeeded = false
+    private var pendingPushForce = false
     private var sessionGeneration: UInt64 = 0
 
     private enum RaceOutcome<T: Sendable>: Sendable {
@@ -261,7 +400,6 @@ actor SyncEngine {
             PaymentNotifications.registerCategory()
             let outstanding = await PaymentNotifications.outstandingIDs()
             guard Self.canDeliver(until: deadline) else { return }
-            let center = UNUserNotificationCenter.current()
             try reconcileQueue()
             var failedAlerts = Set<String>()
             var deliveryError: (any Error)?
@@ -277,6 +415,7 @@ actor SyncEngine {
                     try save(nextState)
                 }
 
+                let isPrivacyMasked = SharedStore.privacyMasked
                 let request: UNNotificationRequest
                 let alertID: String?
                 if let summary = nextState.pendingSummary {
@@ -285,7 +424,7 @@ actor SyncEngine {
                     nextState.pendingSummary = nil
                 } else if let index = nextState.alertQueue.firstIndex(where: { !failedAlerts.contains($0.messageID) }) {
                     let alert = nextState.alertQueue.remove(at: index)
-                    request = PaymentNotifications.request(for: alert)
+                    request = PaymentNotifications.request(for: alert, privacyMasked: isPrivacyMasked)
                     alertID = alert.messageID
                 } else {
                     break
@@ -293,8 +432,16 @@ actor SyncEngine {
 
                 if !outstanding.contains(request.identifier) {
                     do {
-                        try await center.add(request)
-                        postedAlertCount += 1
+                        switch try await PaymentNotifications.add(request, wasPrivacyMasked: isPrivacyMasked) {
+                        case .delivered:
+                            postedAlertCount += 1
+                        case .supersededByPrivacyToggle:
+                            // Privacy Mode toggled while building/adding this alert (even if toggled right back off):
+                            // leave it queued so the next loop iteration re-posts it using the live privacy setting.
+                            continue
+                        case .cancelled:
+                            return
+                        }
                     } catch {
                         guard let alertID else { throw error }
                         failedAlerts.insert(alertID)
@@ -359,70 +506,113 @@ actor SyncEngine {
     }
 
     func withSignIn<T: Sendable>(_ operation: @MainActor @Sendable () async throws -> T) async throws -> T {
-        guard !inFlight else { throw GmailSync.SyncProblem.busy }
+        guard !inFlight && !pushInFlight else { throw GmailSync.SyncProblem.busy }
         inFlight = true
-        defer { inFlight = false }
+        defer {
+            inFlight = false
+            if pendingPushNeeded {
+                let queuedForce = pendingPushForce
+                Task { _ = await self.pushLocalModificationsNow(force: queuedForce) }
+            }
+        }
         return try await operation()
     }
 
     /// Uploads encrypted `phone-edits.fnb` to Google Drive immediately when Drive sync is paired.
-    /// Serialized against concurrent pushes and gated on `sessionGeneration` so sign-out cannot be undone.
+    /// Queues a follow-up drain if edits arrive while another push or full sync is in flight so newer
+    /// local changes are never silently dropped as `.unchanged`.
     func pushLocalModificationsNow(force: Bool = false) async -> Result<DriveSync.PushOutcome, any Error> {
-        guard !pushInFlight, !inFlight else {
-            return .success(.unchanged)
+        if signingOut {
+            return .failure(GoogleDriveClientError.notSignedIn)
+        }
+        if pushInFlight || inFlight {
+            pendingPushNeeded = true
+            pendingPushForce = pendingPushForce || force
+            return .success(.queued)
         }
         pushInFlight = true
         defer { pushInFlight = false }
-        let generation = sessionGeneration
 
-        guard let clientID = GmailSync.clientID else {
-            return .failure(GoogleDriveClientError.notSignedIn)
-        }
-        let tokenStore = KeychainTokenStore()
-        guard let tokens = try? tokenStore.load(),
-              tokens.scope == nil || tokens.hasScope(GoogleOAuth.driveAppDataScope),
-              let driveKey = try? DriveSync.loadKey()
-        else {
-            return .failure(GoogleDriveClientError.missingDriveScope)
-        }
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 30
-        let session = URLSession(configuration: config)
-        defer { session.invalidateAndCancel() }
-        let client = GoogleDriveClient(
-            clientID: clientID,
-            tokenStore: tokenStore,
-            transport: URLSessionHTTPTransport(session: session),
-            retryPolicy: RetryPolicy(maxRetries: 1, initialDelay: .seconds(1), maxDelay: .seconds(2))
-        )
-        let mods = LocalDataStore.loadModifications()
-        do {
-            let outcome = try await DriveSync.pushLocalModifications(
-                client: client,
-                key: driveKey,
-                modifications: mods,
-                force: force,
-                now: Date()
-            )
-            // If the user signed out while this push was suspended, re-clear state rather than resurrecting it.
-            if sessionGeneration != generation {
-                try? DriveSyncStore.clearState()
-                try? KeychainTokenStore().clear()
+        var nextForce = force
+        var lastResult: Result<DriveSync.PushOutcome, any Error> = .success(.unchanged)
+        var consecutiveErrors = 0
+
+        while true {
+            pendingPushNeeded = false
+            pendingPushForce = false
+            let generation = sessionGeneration
+
+            guard let clientID = GmailSync.clientID else {
                 return .failure(GoogleDriveClientError.notSignedIn)
             }
-            return .success(outcome)
-        } catch {
-            return .failure(error)
+            let tokenStore = KeychainTokenStore()
+            guard let tokens = try? tokenStore.load(),
+                  tokens.scope == nil || tokens.hasScope(GoogleOAuth.driveAppDataScope),
+                  let driveKey = try? DriveSync.loadKey()
+            else {
+                return .failure(GoogleDriveClientError.missingDriveScope)
+            }
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 15
+            config.timeoutIntervalForResource = 30
+            let session = URLSession(configuration: config)
+            let client = GoogleDriveClient(
+                clientID: clientID,
+                tokenStore: tokenStore,
+                transport: URLSessionHTTPTransport(session: session),
+                retryPolicy: RetryPolicy(maxRetries: 1, initialDelay: .seconds(1), maxDelay: .seconds(2))
+            )
+            let mods = LocalDataStore.loadModifications()
+            do {
+                let outcome = try await DriveSync.pushLocalModifications(
+                    client: client,
+                    key: driveKey,
+                    modifications: mods,
+                    force: nextForce,
+                    now: Date()
+                )
+                session.invalidateAndCancel()
+                // If the user signed out while this push was suspended, re-clear state rather than resurrecting it.
+                if sessionGeneration != generation {
+                    try? DriveSyncStore.clearState()
+                    try? KeychainTokenStore().clear()
+                    return .failure(GoogleDriveClientError.notSignedIn)
+                }
+                consecutiveErrors = 0
+                lastResult = .success(outcome)
+            } catch {
+                session.invalidateAndCancel()
+                // If newer edits arrived while this upload failed, give them one fresh upload attempt
+                // rather than silently dropping the queued flag.
+                consecutiveErrors += 1
+                if pendingPushNeeded && !inFlight && sessionGeneration == generation && consecutiveErrors <= 1 {
+                    nextForce = pendingPushForce
+                    continue
+                }
+                return .failure(error)
+            }
+
+            guard pendingPushNeeded && !inFlight else {
+                return lastResult
+            }
+            nextForce = pendingPushForce
         }
     }
 
     /// Clears Google Keychain tokens, stored Gmail sync state and widget data during sign-out.
     func clearForSignOut() async throws {
-        guard !inFlight else { throw GmailSync.SyncProblem.busy }
+        guard !inFlight && !pushInFlight else { throw GmailSync.SyncProblem.busy }
         inFlight = true
+        signingOut = true
+        pendingPushNeeded = false
+        pendingPushForce = false
         sessionGeneration &+= 1
-        defer { inFlight = false }
+        defer {
+            signingOut = false
+            pendingPushNeeded = false
+            pendingPushForce = false
+            inFlight = false
+        }
         try KeychainTokenStore().clear()
         FinanceData.publishWidget(.placeholder, force: true)
         await PaymentNotifications.clear()
@@ -430,12 +620,13 @@ actor SyncEngine {
         try DriveSyncStore.clearState()
     }
 
-    func publishCurrentWidget() throws {
+    nonisolated func publishCurrentWidget(force: Bool = false) throws {
         let hasCredentials = try GmailSync.hasCredentials()
         let notices = hasCredentials ? try SyncStorage.loadState().notices : []
         let mfState = (try? MoneyForwardStore.loadState()) ?? MoneyForwardState()
         let localMods = LocalDataStore.loadModifications()
         let now = Date()
+        let masked = SharedStore.privacyMasked
         if let bytes = try BundleInbox.readStoredData() {
             let bundle = try DataBundle.decode(from: bytes)
             let finance = FinanceData(
@@ -446,9 +637,9 @@ actor SyncEngine {
                 localModifications: localMods,
                 today: JST.day(now)
             )
-            FinanceData.publishWidget(finance.widgetSnapshot)
+            FinanceData.publishWidget(finance.widgetSnapshot(privacyMasked: masked), force: force)
         } else if hasCredentials {
-            FinanceData.publishWidget(FinanceData.noticeOnlySnapshot(notices: notices, now: now))
+            FinanceData.publishWidget(FinanceData.noticeOnlySnapshot(notices: notices, now: now, privacyMasked: masked), force: force)
         }
     }
 
@@ -488,9 +679,15 @@ actor SyncEngine {
             return report
         }
 
-        guard !inFlight else { return record(outcome: .busy) }
+        guard !inFlight && !pushInFlight else { return record(outcome: .busy) }
         inFlight = true
-        defer { inFlight = false }
+        defer {
+            inFlight = false
+            if pendingPushNeeded {
+                let queuedForce = pendingPushForce
+                Task { _ = await self.pushLocalModificationsNow(force: queuedForce) }
+            }
+        }
 
         let deadline = timeLimit.map { start.advanced(by: .seconds($0)) }
         if Task.isCancelled { return record(outcome: .cancelled) }
@@ -651,10 +848,15 @@ actor SyncEngine {
                             try tokenStore.save(latest)
                         }
                     }
+                    let dynamicLookback = Self.gmailLookbackDays(
+                        lastSyncAt: initialSyncState.lastSyncAt,
+                        bundle: bundle,
+                        now: startedAt
+                    )
                     return try await NoticeSync.sync(
                         client: gmailClient,
                         state: initialSyncState,
-                        lookbackDays: Self.lookbackDays,
+                        lookbackDays: dynamicLookback,
                         batchSize: Self.batchSize,
                         deadline: softDeadline,
                         onBatch: { batch in
@@ -728,7 +930,8 @@ actor SyncEngine {
                 )
                 await BillReminderScheduler.sync(
                     timeline: finance.timeline,
-                    preferences: LocalDataStore.loadNotificationPreferences()
+                    preferences: LocalDataStore.loadNotificationPreferences(),
+                    privacyMasked: SharedStore.privacyMasked
                 )
             }
         }
@@ -971,6 +1174,28 @@ actor SyncEngine {
             stateChanged: changed,
             error: failure
         )
+    }
+
+    private static func gmailLookbackDays(
+        lastSyncAt: Date?,
+        bundle: DataBundle?,
+        now: Date
+    ) -> Int {
+        var needed = lookbackDays
+        if let lastSyncAt {
+            let elapsedDays = Int(ceil(max(0, now.timeIntervalSince(lastSyncAt)) / 86_400))
+            needed = max(needed, elapsedDays + 2)
+        }
+        if let bundle, let todayNum = JST.dayNumber(JST.day(now)) {
+            let noticeSourceKeys = ["mufg_debit", "docomo_debit", "merpay", "apple"]
+            let earliestEnd = noticeSourceKeys
+                .compactMap { bundle.coverage[$0]?.end }
+                .min() ?? bundle.asOf
+            if let endNum = JST.dayNumber(earliestEnd) {
+                needed = max(needed, (todayNum - endNum) + 2)
+            }
+        }
+        return min(maxLookbackDays, max(lookbackDays, needed))
     }
 
     private static func moneyForwardStartDate(

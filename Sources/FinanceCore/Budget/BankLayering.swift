@@ -91,13 +91,17 @@ public struct BankLayeringResult: Sendable, Equatable {
 ///    `bundle.noticeSourceMatches`). Ties stay unresolved.
 /// 4. Effective coverage extends to the newest mapped row. Unmatched post-bundle notices stay pending.
 public enum BankLayering {
-    /// Allowed day offsets (`bankTransaction.date - notice.day`) when matching notices to bank rows.
+    /// Allowed day offsets (`bankTransaction.date - notice.day`) when notices carry an explicit purchase date.
     public static let matchDayOffsets: ClosedRange<Int> = 0...3
+    /// Allowed day offsets for notices lacking a purchase timestamp/date (only email receipt date),
+    /// allowing late-night purchases whose email arrives after midnight (`-1` day) to reconcile cleanly.
+    public static let receiptOnlyMatchDayOffsets: ClosedRange<Int> = -1...4
 
     private struct CompiledStatementRule: @unchecked Sendable {
         let regex: NSRegularExpression
         let referenceGroup: Int?
         let merchantGroup: Int?
+        let itemSource: String?
 
         init?(_ rule: StatementLineRule) {
             guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: [.caseInsensitive]) else {
@@ -106,9 +110,10 @@ public enum BankLayering {
             self.regex = regex
             self.referenceGroup = rule.referenceGroup
             self.merchantGroup = rule.merchantGroup
+            self.itemSource = rule.itemSource
         }
 
-        func parse(_ text: String) -> (reference: String?, merchant: String?)? {
+        func parse(_ text: String) -> (reference: String?, merchant: String?, itemSource: String?)? {
             let fullRange = NSRange(text.startIndex..<text.endIndex, in: text)
             guard let match = regex.firstMatch(in: text, options: [], range: fullRange) else {
                 return nil
@@ -120,7 +125,7 @@ public enum BankLayering {
                 let value = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
                 return value.isEmpty ? nil : value
             }
-            return (capture(referenceGroup), capture(merchantGroup))
+            return (capture(referenceGroup), capture(merchantGroup), itemSource)
         }
     }
 
@@ -128,6 +133,7 @@ public enum BankLayering {
         let transaction: BankTransaction
         let sourceID: String
         let sourceLabel: String
+        let itemSource: String
         let dayNumber: Int
         /// Approval/reference number extracted by a bundle `StatementLineRule`, if any.
         let parsedReference: String?
@@ -135,6 +141,8 @@ public enum BankLayering {
         /// (which may be `nil` when the bank line format carries no merchant), or the raw
         /// description when no rule matched.
         let matchMerchant: String?
+        /// True when a `StatementLineRule` matched this bank row.
+        let matchedStatementRule: Bool
     }
 
     private struct Rank: Comparable, Equatable {
@@ -192,11 +200,17 @@ public enum BankLayering {
             let label = bundle.sourceLabels[sourceID] ?? sourceID
             var parsedRef: String? = nil
             var matchMerchant: String? = tx.description
+            var resolvedItemSource = label
+            var matchedRule = false
             if let rules = compiledLineRules[sourceID] {
                 for rule in rules {
                     if let parsed = rule.parse(tx.description) {
                         parsedRef = parsed.reference
                         matchMerchant = parsed.merchant
+                        if let customSource = parsed.itemSource, !customSource.isEmpty {
+                            resolvedItemSource = customSource
+                        }
+                        matchedRule = true
                         break
                     }
                 }
@@ -205,9 +219,11 @@ public enum BankLayering {
                 transaction: tx,
                 sourceID: sourceID,
                 sourceLabel: label,
+                itemSource: resolvedItemSource,
                 dayNumber: day,
                 parsedReference: parsedRef,
-                matchMerchant: matchMerchant
+                matchMerchant: matchMerchant,
+                matchedStatementRule: matchedRule
             ))
         }
 
@@ -225,7 +241,323 @@ public enum BankLayering {
             }
         }
 
+        // Snapshot-day intraday tracking: when an AccountBalance exports `asOfRowAmounts`, we know
+        // the exact multiset of signed amounts already included in the bundle on that account's `asOf` date,
+        // so any later intraday row on `asOf` is emitted into `bankItems` & `bankRows` instead of vanishing.
+        var snapshotAmountsBySource: [String: (asOf: String, counts: [Int: Int])] = [:]
+        for account in bundle.accountBalances ?? [] {
+            guard let amounts = account.asOfRowAmounts else { continue }
+            var counts: [Int: Int] = [:]
+            for a in amounts { counts[a, default: 0] += 1 }
+            snapshotAmountsBySource[account.source] = (account.asOf, counts)
+        }
+
         var (candidates, unmatched) = PendingBuilder.postBundleCandidates(notices: notices, bundle: bundle)
+
+        // Map every bundle item's source label (including `"<Account> bank"` ledger channels and
+        // statement-line `itemSource` aliases) to its underlying bank/account sourceID so snapshot
+        // and post-cutoff deduplication match real bank rows accurately without colliding across accounts.
+        var itemSourceToAccountIDs: [String: Set<String>] = [:]
+        var accountAsOfBySource: [String: String] = [:]
+        for (srcID, label) in bundle.sourceLabels {
+            itemSourceToAccountIDs[srcID, default: []].insert(srcID)
+            itemSourceToAccountIDs[label, default: []].insert(srcID)
+            itemSourceToAccountIDs["\(label) bank", default: []].insert(srcID)
+        }
+        for account in bundle.accountBalances ?? [] {
+            let bankID = account.source
+            accountAsOfBySource[bankID] = account.asOf
+            itemSourceToAccountIDs[bankID, default: []].insert(bankID)
+            itemSourceToAccountIDs[account.label, default: []].insert(bankID)
+            itemSourceToAccountIDs["\(account.label) bank", default: []].insert(bankID)
+            if let label = bundle.sourceLabels[bankID] {
+                itemSourceToAccountIDs[label, default: []].insert(bankID)
+                itemSourceToAccountIDs["\(label) bank", default: []].insert(bankID)
+            }
+            for debitKey in account.debitNoticeSources ?? [] where !debitKey.isEmpty {
+                itemSourceToAccountIDs[debitKey, default: []].insert(bankID)
+                if let debitLabel = bundle.sourceLabels[debitKey], !debitLabel.isEmpty {
+                    itemSourceToAccountIDs[debitLabel, default: []].insert(bankID)
+                }
+            }
+        }
+        for (noticeSrc, bankSrcs) in bundle.noticeSourceMatches ?? [:] {
+            for bankID in bankSrcs where !bankID.isEmpty {
+                itemSourceToAccountIDs[noticeSrc, default: []].insert(bankID)
+                if let label = bundle.sourceLabels[noticeSrc], !label.isEmpty {
+                    itemSourceToAccountIDs[label, default: []].insert(bankID)
+                }
+            }
+        }
+        for (srcID, rules) in bundle.statementLineRules ?? [:] {
+            for rule in rules {
+                if let itemSrc = rule.itemSource, !itemSrc.isEmpty {
+                    itemSourceToAccountIDs[itemSrc, default: []].insert(srcID)
+                }
+            }
+        }
+
+        // Only confirmed statement/ledger bundle items (never phone manual entries) reflect bank balances.
+        let appleSourceLabels: Set<String> = {
+            var set: Set<String> = ["apple", "Apple"]
+            if let lbl = bundle.sourceLabels["apple"], !lbl.isEmpty { set.insert(lbl) }
+            return set
+        }()
+        func normalizedApprovalRef(_ raw: String?) -> String? {
+            guard let raw else { return nil }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+
+        func extractUnnamedApprovalRef(from merchant: String) -> String? {
+            let full = TextFold.key(merchant)
+            guard full.contains("nonameyet") else { return nil }
+            let base = TextFold.key(PendingBuilder.stripTrailingAnnotation(merchant))
+            guard base.count >= 6 else { return nil }
+            let suffix = String(base.suffix(6))
+            guard suffix.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return suffix
+        }
+
+        func refsCompatible(_ rowRef: String?, _ existingRef: String?) -> Bool {
+            guard let r = rowRef, !r.isEmpty, let e = existingRef, !e.isEmpty else { return true }
+            return r == e
+        }
+
+        var bundleMerchantsByAccountDateAmount: [String: [(rawMerchant: String, full: String, base: String, rawBase: String, isAppleSource: Bool, reference: String?)]] = [:]
+        for item in bundle.items where item.isManual != true {
+            let rawBase = PendingBuilder.stripTrailingAnnotation(item.merchant)
+            let full = TextFold.key(item.merchant)
+            let base = TextFold.key(rawBase)
+            let isApple = appleSourceLabels.contains(item.source)
+            let itemRef = normalizedApprovalRef(item.reference) ?? extractUnnamedApprovalRef(from: item.merchant)
+            let targets = itemSourceToAccountIDs[item.source] ?? [item.source]
+            for accountID in targets {
+                bundleMerchantsByAccountDateAmount["\(accountID)|\(item.date)|\(item.amount)", default: []]
+                    .append((rawMerchant: item.merchant, full: full, base: base, rawBase: rawBase, isAppleSource: isApple, reference: itemRef))
+            }
+        }
+
+        func effectiveRowRawMerchant(_ row: MappedRow, resolvedNoticeMerchant: String? = nil) -> String {
+            if let resolved = resolvedNoticeMerchant, !resolved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return resolved
+            }
+            if let m = row.matchMerchant {
+                return m
+            }
+            // A statement line matched by a merchantless rule (e.g. Docomo `"デビット 123456"`) carries no
+            // shop name in the bank text itself.
+            return row.matchedStatementRule ? "" : row.transaction.description
+        }
+
+        func snapshotMerchantMatches(
+            rawRow: String,
+            rawRowBase: String,
+            rowFull: String,
+            rowBase: String,
+            existing: (rawMerchant: String, full: String, base: String, rawBase: String, isAppleSource: Bool, reference: String?)
+        ) -> Bool {
+            if PendingBuilder.merchantsMatchForBoundaryDedupe(
+                rawA: rawRowBase,
+                foldedFullA: rowFull,
+                foldedBaseA: rowBase,
+                rawB: existing.rawBase,
+                foldedFullB: existing.full,
+                foldedBaseB: existing.base
+            ) {
+                return true
+            }
+            let a = rowBase.isEmpty ? rowFull : rowBase
+            let b = existing.base.isEmpty ? existing.full : existing.base
+            let aPlain = a.replacingOccurrences(of: "-", with: "")
+            let bPlain = b.replacingOccurrences(of: "-", with: "")
+            if !aPlain.isEmpty && aPlain == bPlain {
+                return true
+            }
+            // Allow PC-annotated bank rows whose FIRST parenthetical embeds the verbatim bank
+            // description after `" · "` (e.g. `"Rent (Dec 2026 lease · <bank text>)"`, handling
+            // balanced, unbalanced, padded, full-width `（）`, or unclosed trailing parens, while
+            // ignoring any second trailing note such as `"(confirmed · CO)"`). Match strictly
+            // against the full folded bank description `rowFull` (never stripped `a`, so
+            // `"Transfer Cafe (WEST)"` never collapses onto `"Transfer Cafe"`).
+            var normalizedExisting = existing.rawMerchant
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "（", with: " (")
+                .replacingOccurrences(of: "）", with: ")")
+            while normalizedExisting.contains("  (") {
+                normalizedExisting = normalizedExisting.replacingOccurrences(of: "  (", with: " (")
+            }
+            if let openRange = normalizedExisting.range(of: " (") {
+                let rowFullPlain = rowFull.replacingOccurrences(of: "-", with: "")
+                let strippedExisting = PendingBuilder.stripTrailingAnnotation(normalizedExisting)
+                var firstBody: Substring? = nil
+                if strippedExisting != normalizedExisting,
+                   normalizedExisting.hasPrefix(strippedExisting) {
+                    if strippedExisting.hasSuffix(")"),
+                       let baseOpen = strippedExisting.range(of: " (") {
+                        let baseEnd = strippedExisting.index(before: strippedExisting.endIndex)
+                        if baseOpen.upperBound < baseEnd {
+                            firstBody = strippedExisting[baseOpen.upperBound..<baseEnd]
+                        }
+                    } else {
+                        let tailStart = normalizedExisting.index(normalizedExisting.startIndex, offsetBy: strippedExisting.count)
+                        let tail = normalizedExisting[tailStart...]
+                        var depth = 0
+                        var groupStart: String.Index? = nil
+                        var idx = tail.startIndex
+                        while idx < tail.endIndex {
+                            let ch = tail[idx]
+                            if ch == "(" {
+                                if depth == 0 { groupStart = tail.index(after: idx) }
+                                depth += 1
+                            } else if ch == ")" {
+                                depth -= 1
+                                if depth == 0, let start = groupStart {
+                                    firstBody = tail[start..<idx]
+                                    break
+                                }
+                            }
+                            idx = tail.index(after: idx)
+                        }
+                    }
+                }
+                if firstBody == nil || !(firstBody!.contains(" · ")) {
+                    let endIdx = normalizedExisting.hasSuffix(")")
+                        ? normalizedExisting.index(before: normalizedExisting.endIndex)
+                        : normalizedExisting.endIndex
+                    if openRange.upperBound < endIdx {
+                        firstBody = normalizedExisting[openRange.upperBound..<endIdx]
+                    }
+                }
+                if let body = firstBody, let sepRange = body.range(of: " · ") {
+                    let embeddedBankText = body[sepRange.upperBound...]
+                    let segKey = TextFold.key(String(embeddedBankText))
+                    if !segKey.isEmpty, !rowFull.isEmpty {
+                        let segPlain = segKey.replacingOccurrences(of: "-", with: "")
+                        if segKey == rowFull || (!rowFullPlain.isEmpty && segPlain == rowFullPlain) {
+                            return true
+                        }
+                    }
+                }
+            }
+            return false
+        }
+
+        // Pre-classify snapshot-day (`account.asOf`, even when `account.asOf < coverage.end`) rows BEFORE
+        // notice matching so:
+        //  - Covered morning rows are excluded from `matchNotices` (never swallowing a partial-feed
+        //    same-shop repeat, never tying with an afternoon repeat, and never accepting `-1` overnight matches).
+        //  - Genuine intraday post-snapshot rows (including partial-feed rows with a distinct merchant in
+        //    any script, such as `"NEW CAFE"` vs `"旧店"`) stay eligible for notice matching, emission into
+        //    `bankItems`, and `LiveCashSummary` deduction.
+        var coveredSnapshotRowIDs = Set<String>()
+        var intradayPostSnapshotTxIDs = Set<String>()
+        for (sourceID, snap) in snapshotAmountsBySource {
+            let cutoff = bundle.coverage[sourceID]?.end ?? bundle.asOf
+            guard snap.asOf <= cutoff else { continue }
+            var remainingSnap = snap.counts
+            var remainingMerchantsByAmount: [Int: [(rawMerchant: String, full: String, base: String, rawBase: String, isAppleSource: Bool, reference: String?)]] = [:]
+            for amt in snap.counts.keys {
+                remainingMerchantsByAmount[amt] = bundleMerchantsByAccountDateAmount["\(sourceID)|\(snap.asOf)|\(amt)"] ?? []
+            }
+            let sameDay = mappedRows.filter { $0.sourceID == sourceID && $0.transaction.date == snap.asOf }
+
+            // Pass 1a: claim rows whose 6-digit approval reference matches a bundle item's reference
+            // (works for both unnamed placeholders and merchant-enriched debit items).
+            for row in sameDay {
+                let amt = row.transaction.amount
+                guard let rem = remainingSnap[amt], rem > 0,
+                      var pool = remainingMerchantsByAmount[amt], !pool.isEmpty,
+                      let rowRef = normalizedApprovalRef(row.parsedReference),
+                      let refIdx = pool.firstIndex(where: { $0.reference == rowRef })
+                else { continue }
+                pool.remove(at: refIdx)
+                remainingMerchantsByAmount[amt] = pool
+                remainingSnap[amt] = rem - 1
+                coveredSnapshotRowIDs.insert(row.transaction.id)
+            }
+
+            // Pass 1b: claim rows whose merchant strictly matches a ref-compatible bundle item.
+            for row in sameDay where !coveredSnapshotRowIDs.contains(row.transaction.id) {
+                let amt = row.transaction.amount
+                guard let rem = remainingSnap[amt], rem > 0,
+                      var pool = remainingMerchantsByAmount[amt], !pool.isEmpty else { continue }
+                let rowRef = normalizedApprovalRef(row.parsedReference)
+                let rawRow = effectiveRowRawMerchant(row)
+                let rawRowBase = PendingBuilder.stripTrailingAnnotation(rawRow)
+                let rowFull = TextFold.key(rawRow)
+                let rowBase = TextFold.key(rawRowBase)
+                guard !rowFull.isEmpty else { continue }
+                if let matchIdx = pool.firstIndex(where: { existing in
+                    refsCompatible(rowRef, existing.reference) && snapshotMerchantMatches(
+                        rawRow: rawRow,
+                        rawRowBase: rawRowBase,
+                        rowFull: rowFull,
+                        rowBase: rowBase,
+                        existing: existing
+                    )
+                }) {
+                    pool.remove(at: matchIdx)
+                    remainingMerchantsByAmount[amt] = pool
+                    remainingSnap[amt] = rem - 1
+                    coveredSnapshotRowIDs.insert(row.transaction.id)
+                }
+            }
+
+            // Pass 2: claim only genuinely unattributed slots — excluded/hidden bank rows not exported
+            // into `bundle.items` (`pool.isEmpty`), merchantless bank lines (`rowFull.isEmpty`, e.g. Docomo
+            // `"デビット 123456"`) whose approval ref does not conflict with an existing item's ref,
+            // empty-merchant bundle items, or generic Apple bank lines (`APPLE.CO`) replaced by an
+            // itemized `"Apple"` entry. Distinct non-empty merchants or distinct approval refs never collapse.
+            for row in sameDay where !coveredSnapshotRowIDs.contains(row.transaction.id) {
+                let amt = row.transaction.amount
+                guard let rem = remainingSnap[amt], rem > 0 else { continue }
+                let rawRow = effectiveRowRawMerchant(row)
+                let rowFull = TextFold.key(rawRow)
+                let rowRef = normalizedApprovalRef(row.parsedReference)
+                var pool = remainingMerchantsByAmount[amt] ?? []
+                if pool.isEmpty {
+                    remainingSnap[amt] = rem - 1
+                    coveredSnapshotRowIDs.insert(row.transaction.id)
+                } else if rowFull.isEmpty {
+                    if let compatIdx = pool.firstIndex(where: { refsCompatible(rowRef, $0.reference) }) {
+                        pool.remove(at: compatIdx)
+                        remainingMerchantsByAmount[amt] = pool
+                        remainingSnap[amt] = rem - 1
+                        coveredSnapshotRowIDs.insert(row.transaction.id)
+                    }
+                } else {
+                    let rowIsApple = PendingBuilder.isAppleBillingDescriptor(rawRow)
+                    if let compatIdx = pool.firstIndex(where: { existing in
+                        refsCompatible(rowRef, existing.reference)
+                            && (existing.full.isEmpty || (rowIsApple && existing.isAppleSource))
+                    }) {
+                        pool.remove(at: compatIdx)
+                        remainingMerchantsByAmount[amt] = pool
+                        remainingSnap[amt] = rem - 1
+                        coveredSnapshotRowIDs.insert(row.transaction.id)
+                    }
+                }
+            }
+
+            for row in sameDay where !coveredSnapshotRowIDs.contains(row.transaction.id) {
+                intradayPostSnapshotTxIDs.insert(row.transaction.id)
+            }
+        }
+
+        let matchableRows = coveredSnapshotRowIDs.isEmpty
+            ? mappedRows
+            : mappedRows.filter { !coveredSnapshotRowIDs.contains($0.transaction.id) }
+
+        // Only strictly post-cutoff rows and genuinely new intraday post-snapshot rows may match at offset `-1`.
+        var negativeOffsetEligibleRowIDs = Set<String>()
+        for row in matchableRows {
+            let cutoff = bundle.coverage[row.sourceID]?.end ?? bundle.asOf
+            if row.transaction.date > cutoff || intradayPostSnapshotTxIDs.contains(row.transaction.id) {
+                negativeOffsetEligibleRowIDs.insert(row.transaction.id)
+            }
+        }
+
         if notices.contains(where: { $0.kind == .cancellation }) {
             // Keep the reversal pending when the purchase already appears in bank history.
             let beforeCancellation = PendingBuilder.postBundleCandidates(
@@ -233,7 +565,10 @@ public enum BankLayering {
             ).candidates
             let purchaseIDs = Set(beforeCancellation.filter { $0.notice.kind == .purchase }.map { $0.notice.messageID })
             let confirmed = matchNotices(
-                candidates: beforeCancellation, rows: mappedRows, noticeSourceMatches: bundle.noticeSourceMatches
+                candidates: beforeCancellation,
+                rows: matchableRows,
+                noticeSourceMatches: bundle.noticeSourceMatches,
+                negativeOffsetEligibleRowIDs: negativeOffsetEligibleRowIDs
             )
             let confirmedPurchases = Set(confirmed.pairs.map(\.noticeID)).intersection(purchaseIDs)
             if !confirmedPurchases.isEmpty {
@@ -243,9 +578,12 @@ public enum BankLayering {
             }
         }
 
-        // Covered bank rows still reconcile cross-source notices after the bundle advances.
+        // Covered bank rows (except snapshot-covered cutoff rows) still reconcile cross-source notices.
         let matchOutput = matchNotices(
-            candidates: candidates, rows: mappedRows, noticeSourceMatches: bundle.noticeSourceMatches
+            candidates: candidates,
+            rows: matchableRows,
+            noticeSourceMatches: bundle.noticeSourceMatches,
+            negativeOffsetEligibleRowIDs: negativeOffsetEligibleRowIDs
         )
         let matchedNoticeIDs = Set(matchOutput.pairs.map(\.noticeID))
         let candidatesByID = Dictionary(candidates.map { ($0.notice.messageID, $0) }, uniquingKeysWith: { first, _ in first })
@@ -259,20 +597,90 @@ public enum BankLayering {
             uniquingKeysWith: { first, _ in first }
         )
 
+        // Detect any post-cutoff row that is ALREADY present as a confirmed row in `bundle.items` so
+        // `bankItems` never emits a duplicate ledger entry. Cash balance adjustments in `LiveCashSummary`
+        // strictly follow `AccountBalance.asOf` (never suppressing valid post-`asOf` bank rows).
+        var postCutoffBundlePool = bundleMerchantsByAccountDateAmount
+        var alreadyCoveredPostCutoffIDs = Set<String>()
+        let candidatePreBakedRows = mappedRows.filter { row in
+            let cutoff = bundle.coverage[row.sourceID]?.end ?? bundle.asOf
+            return row.transaction.date > cutoff
+        }
+        // Pass A1: exact approval-reference match (both named and unnamed debits).
+        for row in candidatePreBakedRows {
+            let key = "\(row.sourceID)|\(row.transaction.date)|\(row.transaction.amount)"
+            guard var pool = postCutoffBundlePool[key], !pool.isEmpty,
+                  let ref = normalizedApprovalRef(row.parsedReference),
+                  let refIdx = pool.firstIndex(where: { $0.reference == ref })
+            else { continue }
+            pool.remove(at: refIdx)
+            postCutoffBundlePool[key] = pool
+            alreadyCoveredPostCutoffIDs.insert(row.transaction.id)
+        }
+        // Pass A2: strict merchant match on ref-compatible bundle items.
+        for row in candidatePreBakedRows where !alreadyCoveredPostCutoffIDs.contains(row.transaction.id) {
+            let key = "\(row.sourceID)|\(row.transaction.date)|\(row.transaction.amount)"
+            guard var pool = postCutoffBundlePool[key], !pool.isEmpty else { continue }
+            let rowRef = normalizedApprovalRef(row.parsedReference)
+            let rawRow = effectiveRowRawMerchant(row, resolvedNoticeMerchant: merchantByTransaction[row.transaction.id])
+            let rawRowBase = PendingBuilder.stripTrailingAnnotation(rawRow)
+            let rowFull = TextFold.key(rawRow)
+            let rowBase = TextFold.key(rawRowBase)
+            guard !rowFull.isEmpty else { continue }
+            if let hitIdx = pool.firstIndex(where: { existing in
+                refsCompatible(rowRef, existing.reference) && PendingBuilder.merchantsMatchForBoundaryDedupe(
+                    rawA: rawRowBase,
+                    foldedFullA: rowFull,
+                    foldedBaseA: rowBase,
+                    rawB: existing.rawBase,
+                    foldedFullB: existing.full,
+                    foldedBaseB: existing.base
+                )
+            }) {
+                pool.remove(at: hitIdx)
+                postCutoffBundlePool[key] = pool
+                alreadyCoveredPostCutoffIDs.insert(row.transaction.id)
+            }
+        }
+        // Pass B: fallback for merchantless bank rows (e.g. Docomo `"デビット 123456"` with no paired notice)
+        // whose approval ref does not conflict with an existing item's ref, or empty-merchant bundle rows.
+        for row in candidatePreBakedRows where !alreadyCoveredPostCutoffIDs.contains(row.transaction.id) {
+            let key = "\(row.sourceID)|\(row.transaction.date)|\(row.transaction.amount)"
+            guard var pool = postCutoffBundlePool[key], !pool.isEmpty else { continue }
+            let rawRow = effectiveRowRawMerchant(row, resolvedNoticeMerchant: merchantByTransaction[row.transaction.id])
+            let rowFull = TextFold.key(rawRow)
+            let rowRef = normalizedApprovalRef(row.parsedReference)
+            if let hitIdx = pool.firstIndex(where: { existing in
+                refsCompatible(rowRef, existing.reference) && (rowFull.isEmpty || existing.full.isEmpty)
+            }) {
+                pool.remove(at: hitIdx)
+                postCutoffBundlePool[key] = pool
+                alreadyCoveredPostCutoffIDs.insert(row.transaction.id)
+            }
+        }
+
         let allBankRows = mappedRows.map { row in
             TimelineReconciler.BankRow(
                 source: row.sourceLabel,
                 date: row.transaction.date,
                 amount: row.transaction.amount,
-                description: row.transaction.description
+                description: row.transaction.description,
+                isPostSnapshotIntraday: intradayPostSnapshotTxIDs.contains(row.transaction.id),
+                resolvedMerchant: merchantByTransaction[row.transaction.id]
             )
         }
 
         var bankItems: [BudgetItem] = []
         var bankTransactionIDs: [String] = []
         var bankRows: [TimelineReconciler.BankRow] = []
-        for row in mappedRows where row.transaction.date > (bundle.coverage[row.sourceID]?.end ?? bundle.asOf) {
-            let merchant = merchantByTransaction[row.transaction.id] ?? row.transaction.description
+        for row in mappedRows {
+            let cutoff = bundle.coverage[row.sourceID]?.end ?? bundle.asOf
+            let isPostCutoff = row.transaction.date > cutoff && !alreadyCoveredPostCutoffIDs.contains(row.transaction.id)
+            let isIntradayNew = intradayPostSnapshotTxIDs.contains(row.transaction.id)
+            guard isPostCutoff || isIntradayNew else { continue }
+
+            let fallbackMerchant = (row.matchedStatementRule ? row.matchMerchant : nil) ?? row.transaction.description
+            let merchant = merchantByTransaction[row.transaction.id] ?? fallbackMerchant
             let (group, category) = categorizer.categorize(
                 merchant: merchant,
                 amount: row.transaction.amount,
@@ -281,7 +689,7 @@ public enum BankLayering {
             let layer = config.layer(group: group, category: category, layers: bundle.layers)
             bankItems.append(BudgetItem(
                 date: row.transaction.date,
-                source: row.sourceLabel,
+                source: row.itemSource,
                 merchant: merchant,
                 amount: row.transaction.amount,
                 group: group,
@@ -294,7 +702,9 @@ public enum BankLayering {
                 source: row.sourceLabel,
                 date: row.transaction.date,
                 amount: row.transaction.amount,
-                description: row.transaction.description
+                description: row.transaction.description,
+                isPostSnapshotIntraday: isIntradayNew,
+                resolvedMerchant: merchantByTransaction[row.transaction.id]
             ))
         }
 
@@ -317,10 +727,37 @@ public enum BankLayering {
         )
     }
 
+    /// Returns the Japan-time hour (0...23) from an ISO-8601 timestamp (`+09:00`, `Z`, or `±HH:MM`).
+    private static func jstHour(from isoTimestamp: String) -> Int? {
+        guard let tIndex = isoTimestamp.firstIndex(of: "T") else { return nil }
+        let afterT = String(isoTimestamp[isoTimestamp.index(after: tIndex)...])
+        let timeChars = afterT.prefix(8)
+        let hm = timeChars.split(separator: ":")
+        guard hm.count >= 2, let rawHour = Int(hm[0]), let rawMin = Int(hm[1]),
+              (0...23).contains(rawHour), (0...59).contains(rawMin)
+        else { return nil }
+        let rest = afterT.dropFirst(min(8, afterT.count))
+        var offsetMinutes = 9 * 60
+        if rest.contains("Z") || rest.contains("z") {
+            offsetMinutes = 0
+        } else if let signIdx = rest.firstIndex(where: { $0 == "+" || $0 == "-" }) {
+            let sign = rest[signIdx] == "-" ? -1 : 1
+            let tzParts = rest[rest.index(after: signIdx)...].split(separator: ":")
+            if let tzH = tzParts.first.flatMap({ Int($0.prefix(2)) }) {
+                let tzM = tzParts.count >= 2 ? (Int(tzParts[1].prefix(2)) ?? 0) : 0
+                offsetMinutes = sign * (tzH * 60 + tzM)
+            }
+        }
+        let totalJSTMinutes = rawHour * 60 + rawMin + (9 * 60 - offsetMinutes)
+        let normalized = ((totalJSTMinutes % 1440) + 1440) % 1440
+        return normalized / 60
+    }
+
     private static func matchNotices(
         candidates: [PendingBuilder.CandidateNotice],
         rows: [MappedRow],
-        noticeSourceMatches: [String: [String]]?
+        noticeSourceMatches: [String: [String]]?,
+        negativeOffsetEligibleRowIDs: Set<String>
     ) -> (pairs: [BankMatchPair], ambiguous: [AmbiguousGroup]) {
         guard !candidates.isEmpty, !rows.isEmpty else { return ([], []) }
 
@@ -329,17 +766,37 @@ public enum BankLayering {
         let rowsByAmount = Dictionary(grouping: sortedRows, by: { $0.transaction.amount })
         let rowByID = Dictionary(sortedRows.map { ($0.transaction.id, $0) }, uniquingKeysWith: { a, _ in a })
 
-        func allowedSources(for noticeSourceID: String) -> Set<String> {
-            var set: Set<String> = [noticeSourceID]
-            if let extras = noticeSourceMatches?[noticeSourceID] {
+        func allowedSources(for candidate: PendingBuilder.CandidateNotice) -> Set<String> {
+            var set: Set<String> = [candidate.sourceID]
+            if let extras = noticeSourceMatches?[candidate.sourceID] {
                 for extra in extras where !extra.isEmpty {
                     set.insert(extra)
+                }
+            }
+            if let funding = candidate.fundingSourceID, !funding.isEmpty {
+                set.insert(funding)
+                if let fundingExtras = noticeSourceMatches?[funding] {
+                    for extra in fundingExtras where !extra.isEmpty {
+                        set.insert(extra)
+                    }
                 }
             }
             return set
         }
 
+        func referenceConflict(_ candidate: PendingBuilder.CandidateNotice, _ row: MappedRow) -> Bool {
+            // Apple receipts store an Apple Order ID while bank debit lines store a 6-digit VISA
+            // approval number; those namespaces are unrelated and must never conflict.
+            if candidate.sourceID == "apple" { return false }
+            guard let noticeRef = candidate.notice.reference?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !noticeRef.isEmpty,
+                  let rowRef = row.parsedReference, !rowRef.isEmpty
+            else { return false }
+            return noticeRef != rowRef
+        }
+
         func referenceAgrees(_ candidate: PendingBuilder.CandidateNotice, _ row: MappedRow) -> Bool {
+            if candidate.sourceID == "apple" { return false }
             guard let noticeRef = candidate.notice.reference?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !noticeRef.isEmpty,
                   let rowRef = row.parsedReference, !rowRef.isEmpty
@@ -351,6 +808,9 @@ public enum BankLayering {
             guard let rowMerchant = row.matchMerchant else { return false }
             let a = TextFold.key(candidate.notice.merchant ?? "")
             let b = TextFold.key(rowMerchant)
+            if candidate.sourceID == "apple" && PendingBuilder.isAppleBillingDescriptor(rowMerchant) {
+                return true
+            }
             guard !a.isEmpty, !b.isEmpty else { return false }
             if a.hasPrefix(b) || b.hasPrefix(a) { return true }
             let aPlain = a.replacingOccurrences(of: "-", with: "")
@@ -359,12 +819,51 @@ public enum BankLayering {
             return aPlain.hasPrefix(bPlain) || bPlain.hasPrefix(aPlain)
         }
 
-        func noticeSignature(_ candidate: PendingBuilder.CandidateNotice) -> String {
-            "\(candidate.sourceID)|\(candidate.amount)|\(candidate.day)|\(candidate.notice.reference ?? "")|\(TextFold.key(candidate.notice.merchant ?? ""))"
+        func merchantClearlyConflicts(_ candidate: PendingBuilder.CandidateNotice, _ row: MappedRow) -> Bool {
+            guard candidate.sourceID != "apple",
+                  row.matchedStatementRule,
+                  !referenceAgrees(candidate, row),
+                  let rowMerchant = row.matchMerchant
+            else { return false }
+            let a = TextFold.key(candidate.notice.merchant ?? "")
+            let b = TextFold.key(rowMerchant)
+            guard !a.isEmpty, !b.isEmpty, !merchantAgrees(candidate, row) else { return false }
+            let aHasASCII = a.contains { $0.isASCII && $0.isLetter }
+            let bHasASCII = b.contains { $0.isASCII && $0.isLetter }
+            let aHasNonASCII = a.contains { !$0.isASCII }
+            let bHasNonASCII = b.contains { !$0.isASCII }
+            let bothPureASCII = aHasASCII && !aHasNonASCII && bHasASCII && !bHasNonASCII
+            let bothNonASCII = aHasNonASCII && bHasNonASCII
+            return bothPureASCII || bothNonASCII
         }
 
-        func rowSignature(_ row: MappedRow) -> String {
-            "\(row.sourceID)|\(row.transaction.amount)|\(row.transaction.date)|\(row.parsedReference ?? "")|\(TextFold.key(row.matchMerchant ?? ""))"
+        func nonEmptyRef(_ raw: String?) -> String? {
+            guard let t = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+            return t
+        }
+
+        func areInterchangeableGroup(_ ns: [PendingBuilder.CandidateNotice], _ rs: [MappedRow]) -> Bool {
+            guard !ns.isEmpty, !rs.isEmpty else { return false }
+            // Only distinguish items by reference when BOTH sides carry references in the same namespace
+            // (so MUFG bank approval numbers without notice refs, or Merpay tx IDs without bank refs,
+            // never turn identical same-day purchases into double-counted ambiguous ties).
+            let comparableRefs = ns.allSatisfy { nonEmptyRef($0.notice.reference) != nil && $0.sourceID != "apple" }
+                && rs.allSatisfy { nonEmptyRef($0.parsedReference) != nil }
+
+            func nSig(_ candidate: PendingBuilder.CandidateNotice) -> String {
+                let refPart = comparableRefs ? (nonEmptyRef(candidate.notice.reference) ?? "") : ""
+                if candidate.sourceID == "apple" || PendingBuilder.isAppleBillingDescriptor(candidate.notice.merchant ?? "") {
+                    return "apple_billing|\(candidate.amount)|\(candidate.day)|\(refPart)"
+                }
+                return "\(candidate.sourceID)|\(candidate.amount)|\(candidate.day)|\(refPart)|\(TextFold.key(candidate.notice.merchant ?? ""))"
+            }
+
+            func rSig(_ row: MappedRow) -> String {
+                let refPart = comparableRefs ? (nonEmptyRef(row.parsedReference) ?? "") : ""
+                return "\(row.sourceID)|\(row.transaction.amount)|\(row.transaction.date)|\(refPart)|\(TextFold.key(row.matchMerchant ?? ""))"
+            }
+
+            return Set(ns.map(nSig)).count == 1 && Set(rs.map(rSig)).count == 1
         }
 
         func makePair(_ candidate: PendingBuilder.CandidateNotice, _ row: MappedRow, _ rule: MatchRule) -> BankMatchPair {
@@ -385,14 +884,40 @@ public enum BankLayering {
 
         func rowCandidates(for candidate: PendingBuilder.CandidateNotice) -> [(row: MappedRow, rank: Rank)] {
             guard let noticeDay = JST.dayNumber(candidate.day) else { return [] }
-            let targets = allowedSources(for: candidate.sourceID)
-            return (rowsByAmount[candidate.amount] ?? []).compactMap { row in
+            let targets = allowedSources(for: candidate)
+            let isReceiptDateOnly = candidate.notice.occurredAt == nil && candidate.notice.occurredOn == nil
+            let allowedRange = isReceiptDateOnly ? receiptOnlyMatchDayOffsets : matchDayOffsets
+
+            var amountBuckets = rowsByAmount[candidate.amount] ?? []
+            if let parts = candidate.notice.parts, !parts.isEmpty {
+                let creditSlice = (parts["credit"] ?? 0) + (parts["deferred"] ?? 0)
+                if creditSlice > 0 && creditSlice != candidate.amount, let extra = rowsByAmount[creditSlice] {
+                    amountBuckets.append(contentsOf: extra)
+                }
+            }
+
+            return amountBuckets.compactMap { row in
                 guard openRows.contains(row.transaction.id), targets.contains(row.sourceID) else { return nil }
+                if referenceConflict(candidate, row) { return nil }
+                // Apple receipts only reconcile against recognized Apple billing descriptors (never "PINEAPPLE CAFE").
+                if candidate.sourceID == "apple" {
+                    guard PendingBuilder.isAppleBillingDescriptor(row.matchMerchant ?? row.transaction.description) else { return nil }
+                }
+                // Do not reconcile a statement-parsed bank line against a notice with a clearly different same-script merchant.
+                if merchantClearlyConflicts(candidate, row) { return nil }
                 let offset = row.dayNumber - noticeDay
-                guard matchDayOffsets.contains(offset) else { return nil }
+                guard allowedRange.contains(offset) else { return nil }
+                // Allow the `-1` day offset for email-only notices (which can arrive overnight at 00:03
+                // or in a next-morning batch around 09:02 JST) strictly against post-bundle/intraday bank
+                // rows, never against already-covered pre-cutoff rows.
+                if offset < 0 {
+                    guard isReceiptDateOnly, negativeOffsetEligibleRowIDs.contains(row.transaction.id) else {
+                        return nil
+                    }
+                }
                 let refMatch = referenceAgrees(candidate, row)
                 let merchantMatch = merchantAgrees(candidate, row)
-                return (row, Rank(reference: refMatch ? 0 : 1, merchant: merchantMatch ? 0 : 1, distance: offset))
+                return (row, Rank(reference: refMatch ? 0 : 1, merchant: merchantMatch ? 0 : 1, distance: abs(offset)))
             }
         }
 
@@ -442,8 +967,7 @@ public enum BankLayering {
                 let rowsInSet = best.compactMap { openRows.contains($0) ? rowByID[$0] : nil }
                 if best.count > 1,
                    rowsInSet.count == best.count,
-                   Set(rowsInSet.map(rowSignature)).count == 1,
-                   Set(group.map(noticeSignature)).count == 1,
+                   areInterchangeableGroup(group, rowsInSet),
                    group.allSatisfy({ Set(bestRows[$0.notice.messageID] ?? []) == bestSet })
                 {
                     for (g, row) in zip(
@@ -503,9 +1027,7 @@ public enum BankLayering {
             guard let g = groups[root] else { continue }
             let ns = g.notices.compactMap { noticeByID[$0] }
             let rs = g.rows.compactMap { rowByID[$0] }
-            let sameNotices = Set(ns.map(noticeSignature)).count == 1
-            let sameRows = Set(rs.map(rowSignature)).count == 1
-            if sameNotices, sameRows {
+            if areInterchangeableGroup(ns, rs) {
                 for (n, row) in zip(ns, rs) {
                     pairs.append(makePair(n, row, .interchangeable))
                     openRows.remove(row.transaction.id)

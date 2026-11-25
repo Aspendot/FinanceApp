@@ -99,6 +99,9 @@ enum LocalDataStore {
         lock.lock()
         defer { lock.unlock() }
         var mods = try loadModificationsLockedStrict()
+        // Freeze any legacy debt balance overrides lacking per-debt dates to the prior `updatedAt`
+        // BEFORE mutating so editing another debt or reminder can never shift an older override's cutoff.
+        mods.stampLegacyDebtOverrideDates()
         transform(&mods)
         mods.updatedAt = Date()
         let encoder = JSONEncoder()

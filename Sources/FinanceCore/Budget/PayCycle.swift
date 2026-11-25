@@ -174,10 +174,16 @@ public enum PayCycleBuilder {
         }
 
         // Only keep paydays that start a cycle on or before `today` (plus one future anchor for the end date).
+        // Never treat today's still-unreceived payday as a started cycle so Pay Cycle matches Now on payday morning.
+        let unreceivedPaydays = Set(
+            timeline
+                .filter { ($0.payday == true || $0.next == true) && $0.done != true }
+                .map(\.date)
+        )
         var starts: [String] = []
         var futureAnchor: String? = nil
         for d in paydays {
-            if d <= today {
+            if d < today || (d == today && !unreceivedPaydays.contains(d)) {
                 starts.append(d)
             } else if futureAnchor == nil {
                 futureAnchor = d
@@ -203,7 +209,9 @@ public enum PayCycleBuilder {
                     ?? (JST.addingDays(30, to: start) ?? start)
             }
             guard let end = JST.addingDays(-1, to: nextStart), end >= start else { continue }
-            let inProgress = (today >= start && today <= end) || (idx == starts.count - 1 && end >= today)
+            let waitingOnTodaysPayday = (today == nextStart) && unreceivedPaydays.contains(nextStart)
+            let inProgress = (today >= start && today <= end)
+                || (idx == starts.count - 1 && (end >= today || waitingOnTodaysPayday))
             periods.append(BudgetPeriod(
                 id: "cycle:\(start)",
                 mode: .payCycle,

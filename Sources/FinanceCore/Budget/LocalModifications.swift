@@ -65,7 +65,8 @@ public struct ManualEntry: Codable, Sendable, Identifiable, Hashable {
             group: group,
             category: category,
             layer: layer,
-            isPending: false
+            isPending: false,
+            isManual: true
         )
     }
 }
@@ -115,8 +116,21 @@ public struct BillCheckoff: Codable, Sendable, Hashable {
         self.checkedAt = checkedAt
     }
 
+    /// Stable key for a timeline entry: prefers its bundle `id` (surviving amount/date re-estimates),
+    /// falling back to `date|item|amount` for legacy entries and custom reminders.
     public static func key(for entry: TimelineEntry) -> String {
+        if let id = entry.id?.trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty {
+            return "id:\(id)"
+        }
+        return legacyKey(for: entry)
+    }
+
+    public static func legacyKey(for entry: TimelineEntry) -> String {
         "\(entry.date)|\(entry.item)|\(entry.amount)"
+    }
+
+    public static func matches(_ entry: TimelineEntry, in keys: Set<String>) -> Bool {
+        keys.contains(key(for: entry)) || keys.contains(legacyKey(for: entry))
     }
 }
 
@@ -152,6 +166,7 @@ public struct CustomReminder: Codable, Sendable, Identifiable, Hashable {
 
     public func asTimelineEntry() -> TimelineEntry {
         TimelineEntry(
+            id: "rem:\(id.uuidString)",
             date: date,
             item: title,
             amount: isEvent ? 0 : amount,
@@ -176,8 +191,17 @@ public struct LocalModifications: Codable, Sendable, Equatable {
     public var targetOverrides: [String: Int]
     /// Debt name -> updated balance yen synced back to PC.
     public var debtBalanceOverrides: [String: Int]
+    /// Debt name -> JST `"YYYY-MM-DD"` date when that debt balance override was entered,
+    /// keeping CreditRoom `asOf` anchored to the edit date instead of drifting with later unrelated edits.
+    public var debtBalanceOverrideDates: [String: String]
+    /// Debt name -> ISO-8601 JST timestamp when that debt balance override was entered,
+    /// allowing same-day charges received strictly after the override to draw down credit room live.
+    public var debtBalanceOverrideTimestamps: [String: String]
     /// User-added bills and cancellation/review reminders merged into Coming up.
     public var customReminders: [CustomReminder]
+    /// Stable timeline IDs (`"rem:<UUID>"`) of custom reminders deleted on the phone, so PC-round-tripped
+    /// copies disappear immediately before the next PC rebuild completes.
+    public var deletedCustomReminderIDs: Set<String>
     /// Item or alert keys confirmed in the daily Review inbox.
     public var reviewedItemKeys: Set<String>
     /// Fingerprints (`date|source|amount|foldedMerchant`) of previously-synced local entries deleted on the phone.
@@ -196,7 +220,10 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         dismissedAlertIDs: Set<String> = [],
         targetOverrides: [String: Int] = [:],
         debtBalanceOverrides: [String: Int] = [:],
+        debtBalanceOverrideDates: [String: String] = [:],
+        debtBalanceOverrideTimestamps: [String: String] = [:],
         customReminders: [CustomReminder] = [],
+        deletedCustomReminderIDs: Set<String> = [],
         reviewedItemKeys: Set<String> = [],
         deletedEntryFingerprints: Set<String> = [],
         deletedEntryFingerprintCounts: [String: Int] = [:],
@@ -210,7 +237,10 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         self.dismissedAlertIDs = dismissedAlertIDs
         self.targetOverrides = targetOverrides
         self.debtBalanceOverrides = debtBalanceOverrides
+        self.debtBalanceOverrideDates = debtBalanceOverrideDates
+        self.debtBalanceOverrideTimestamps = debtBalanceOverrideTimestamps
         self.customReminders = customReminders
+        self.deletedCustomReminderIDs = deletedCustomReminderIDs
         self.reviewedItemKeys = reviewedItemKeys
         self.deletedEntryFingerprints = deletedEntryFingerprints
         self.deletedEntryFingerprintCounts = deletedEntryFingerprintCounts
@@ -219,7 +249,8 @@ public struct LocalModifications: Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case version, manualEntries, importedEntries, categoryOverrides, billCheckoffs, dismissedAlertIDs
-        case targetOverrides, debtBalanceOverrides, customReminders, reviewedItemKeys
+        case targetOverrides, debtBalanceOverrides, debtBalanceOverrideDates, debtBalanceOverrideTimestamps
+        case customReminders, deletedCustomReminderIDs, reviewedItemKeys
         case deletedEntryFingerprints, deletedEntryFingerprintCounts, updatedAt
     }
 
@@ -233,11 +264,24 @@ public struct LocalModifications: Codable, Sendable, Equatable {
         dismissedAlertIDs = try c.decodeIfPresent(Set<String>.self, forKey: .dismissedAlertIDs) ?? []
         targetOverrides = try c.decodeIfPresent([String: Int].self, forKey: .targetOverrides) ?? [:]
         debtBalanceOverrides = try c.decodeIfPresent([String: Int].self, forKey: .debtBalanceOverrides) ?? [:]
+        debtBalanceOverrideDates = try c.decodeIfPresent([String: String].self, forKey: .debtBalanceOverrideDates) ?? [:]
+        debtBalanceOverrideTimestamps = try c.decodeIfPresent([String: String].self, forKey: .debtBalanceOverrideTimestamps) ?? [:]
         customReminders = try c.decodeIfPresent([CustomReminder].self, forKey: .customReminders) ?? []
+        deletedCustomReminderIDs = try c.decodeIfPresent(Set<String>.self, forKey: .deletedCustomReminderIDs) ?? []
         reviewedItemKeys = try c.decodeIfPresent(Set<String>.self, forKey: .reviewedItemKeys) ?? []
         deletedEntryFingerprints = try c.decodeIfPresent(Set<String>.self, forKey: .deletedEntryFingerprints) ?? []
         deletedEntryFingerprintCounts = try c.decodeIfPresent([String: Int].self, forKey: .deletedEntryFingerprintCounts) ?? [:]
         updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+    }
+
+    /// Freezes any legacy debt overrides lacking a per-debt date onto the prior `updatedAt` day
+    /// before a new edit updates `updatedAt`.
+    public mutating func stampLegacyDebtOverrideDates() {
+        guard !debtBalanceOverrides.isEmpty, let previous = updatedAt else { return }
+        let prevDay = JST.day(previous)
+        for name in debtBalanceOverrides.keys where debtBalanceOverrideDates[name] == nil {
+            debtBalanceOverrideDates[name] = prevDay
+        }
     }
 
     public var isEmpty: Bool {
@@ -248,7 +292,10 @@ public struct LocalModifications: Codable, Sendable, Equatable {
             && dismissedAlertIDs.isEmpty
             && targetOverrides.isEmpty
             && debtBalanceOverrides.isEmpty
+            && debtBalanceOverrideDates.isEmpty
+            && debtBalanceOverrideTimestamps.isEmpty
             && customReminders.isEmpty
+            && deletedCustomReminderIDs.isEmpty
             && reviewedItemKeys.isEmpty
             && deletedEntryFingerprints.isEmpty
             && deletedEntryFingerprintCounts.isEmpty
@@ -277,13 +324,27 @@ public enum LocalDataApplier {
         baseItems: [BudgetItem],
         modifications: LocalModifications,
         config: LayerConfig,
-        layers: [LayerDefinition]
+        layers: [LayerDefinition],
+        appliedBundleDeletions: [String: Int] = [:]
     ) -> AppliedItems {
         // Build per-fingerprint deletion counts so deleting 1 of 2 identical same-day local entries
-        // never hides the second copy, and never filters out live pending email notices.
+        // never hides the second copy, never filters out live pending email notices, and subtracts
+        // deletions the PC bundle already applied so a synced tombstone never deletes a second copy.
         var deleteBudget: [String: Int] = modifications.deletedEntryFingerprintCounts.filter { $0.value > 0 }
         for fp in modifications.deletedEntryFingerprints where deleteBudget[fp] == nil {
             deleteBudget[fp] = 1
+        }
+        if !appliedBundleDeletions.isEmpty {
+            for (fp, pcApplied) in appliedBundleDeletions where pcApplied > 0 {
+                if let current = deleteBudget[fp] {
+                    let remaining = current - pcApplied
+                    if remaining > 0 {
+                        deleteBudget[fp] = remaining
+                    } else {
+                        deleteBudget.removeValue(forKey: fp)
+                    }
+                }
+            }
         }
 
         let filteredBase: [BudgetItem]
@@ -388,22 +449,40 @@ public enum LocalDataApplier {
         )
     }
 
-    /// Marks open timeline entries checked off on the phone as `done`, returning the updated timeline
-    /// and the set of keys that are phone-marked (rather than confirmed by bank data).
+    /// Marks open timeline entries checked off on the phone as `done` + `phoneChecked`, preserving
+    /// PC round-tripped `phoneChecked` entries so cash holds remain intact and undoable until a bank row confirms them.
     public static func applyBillCheckoffs(
         timeline: [TimelineEntry],
         checkoffs: [BillCheckoff]
     ) -> (timeline: [TimelineEntry], phoneCheckedKeys: Set<String>) {
-        guard !checkoffs.isEmpty else { return (timeline, []) }
         let checkKeys = Set(checkoffs.map(\.key))
         var phoneChecked = Set<String>()
         let updated = timeline.map { entry -> TimelineEntry in
+            let stableKey = BillCheckoff.key(for: entry)
+            let isCheckedOnPhone = BillCheckoff.matches(entry, in: checkKeys)
+
+            // Entry round-tripped from the PC as phone-checked (not bank-confirmed):
+            if entry.phoneChecked == true {
+                var copy = entry
+                if isCheckedOnPhone {
+                    copy.done = true
+                    copy.phoneChecked = true
+                    phoneChecked.insert(stableKey)
+                } else {
+                    // User unchecked it on the phone (or it is no longer checked locally).
+                    copy.done = nil
+                    copy.phoneChecked = nil
+                }
+                return copy
+            }
+
+            // Already confirmed by bank/statement: leave untouched.
             guard entry.done != true else { return entry }
-            let key = BillCheckoff.key(for: entry)
-            guard checkKeys.contains(key) else { return entry }
-            phoneChecked.insert(key)
+            guard isCheckedOnPhone else { return entry }
+            phoneChecked.insert(stableKey)
             var copy = entry
             copy.done = true
+            copy.phoneChecked = true
             return copy
         }
         return (updated, phoneChecked)
@@ -452,23 +531,47 @@ public enum LocalDataApplier {
         }
     }
 
-    /// Merges phone-created reminders and custom bills into the timeline, sorted ascending by date.
+    /// Merges phone-created reminders and custom bills into the timeline, deduplicating PC-round-tripped
+    /// reminders by stable `rem:<UUID>` ID and hiding any reminders deleted on the phone.
     public static func mergeCustomReminders(
         timeline: [TimelineEntry],
-        reminders: [CustomReminder]
+        reminders: [CustomReminder],
+        deletedIDs: Set<String> = []
     ) -> [TimelineEntry] {
-        guard !reminders.isEmpty else { return timeline }
-        var combined = timeline
+        var combined = deletedIDs.isEmpty ? timeline : timeline.filter { entry in
+            if let id = entry.id {
+                return !deletedIDs.contains(id)
+            }
+            return !deletedIDs.contains("legacy:\(BillCheckoff.legacyKey(for: entry))")
+        }
+        guard !reminders.isEmpty else { return combined }
+
+        var existingIDs = Set(combined.compactMap(\.id))
+        // Seed legacy key counts ONLY from bundle timeline entries lacking an `id` (1-to-1 multiset),
+        // never inserting newly merged phone reminders so two identical local reminders with distinct
+        // UUIDs both stay visible before and after PC round-trip.
+        var existingLegacyCounts: [String: Int] = [:]
+        for entry in combined where entry.id == nil {
+            existingLegacyCounts[BillCheckoff.legacyKey(for: entry), default: 0] += 1
+        }
         for reminder in reminders {
             let entry = reminder.asTimelineEntry()
-            let key = BillCheckoff.key(for: entry)
-            if !combined.contains(where: { BillCheckoff.key(for: $0) == key }) {
-                combined.append(entry)
+            let remID = entry.id ?? "rem:\(reminder.id.uuidString)"
+            if deletedIDs.contains(remID) || existingIDs.contains(remID) {
+                continue
             }
+            let legacyKey = BillCheckoff.legacyKey(for: entry)
+            if let remCount = existingLegacyCounts[legacyKey], remCount > 0 {
+                existingLegacyCounts[legacyKey] = remCount - 1
+                continue
+            }
+            combined.append(entry)
+            existingIDs.insert(remID)
         }
         return combined.sorted {
             if $0.date != $1.date { return $0.date < $1.date }
-            return $0.item < $1.item
+            if $0.item != $1.item { return $0.item < $1.item }
+            return ($0.id ?? "") < ($1.id ?? "")
         }
     }
 }

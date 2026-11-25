@@ -11,6 +11,7 @@ struct RootView: View {
     @Environment(\.scenePhase) private var phase
     @State private var csvImportAlertMessage: String?
     @State private var isUnlocked = false
+    @State private var privacyTransitionTask: Task<Void, Never>?
 
     private var canPresentProtectedUI: Bool {
         session.isDemo || !faceIDLockEnabled || isUnlocked
@@ -105,6 +106,32 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .backgroundGmailSyncUpdated).receive(on: DispatchQueue.main)) { _ in
             guard !session.isDemo, phase == .active else { return }
             Task { await model.reload() }
+        }
+        .onChange(of: session.privacyMasked) { _, masked in
+            guard !session.isDemo else { return }
+            privacyTransitionTask?.cancel()
+            privacyTransitionTask = Task {
+                // Publish the masked/unmasked widget snapshot immediately in parallel so a suspended
+                // notification operation can never delay hiding figures on the Home or Lock Screen.
+                async let refreshWidget: Void = Task.detached(priority: .userInitiated) {
+                    try? SyncEngine.shared.publishCurrentWidget(force: true)
+                }.value
+                if masked {
+                    async let clearPayments: Void = PaymentNotifications.clear(preserveMasked: true)
+                    async let clearReminders: Void = BillReminderScheduler.clearAll()
+                    _ = await (clearPayments, clearReminders, refreshWidget)
+                } else {
+                    _ = await refreshWidget
+                }
+                guard !Task.isCancelled else { return }
+                if let data = model.data {
+                    await BillReminderScheduler.sync(
+                        timeline: data.timeline,
+                        preferences: model.notificationPreferences,
+                        privacyMasked: masked
+                    )
+                }
+            }
         }
     }
 

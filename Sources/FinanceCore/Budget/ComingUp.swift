@@ -141,6 +141,10 @@ public enum ComingUp {
         var pastPhoneHeld = 0
         var pastPendingInflows = 0
 
+        let nextPaydayDate = groups.first { group in
+            group.entries.contains { $0.next == true }
+        }?.date
+
         // Pass 1: reserve any unsettled items dated strictly before today so today's step-down
         // stays strictly aligned with LiveCashSummary.cashLeftUntilPayday.
         for group in groups where group.date < today {
@@ -148,27 +152,20 @@ public enum ComingUp {
                 guard entry.event != true, entry.borrowed != true, entry.cardBilled != true, entry.amount != 0 else {
                     continue
                 }
-                let key = BillCheckoff.key(for: entry)
-                if alreadyCleared.contains(key) { continue }
+                if BillCheckoff.matches(entry, in: alreadyCleared) { continue }
                 if entry.amount > 0 {
                     if entry.done != true {
                         overdueUnpaid += entry.amount
-                    } else if phoneCheckedBillKeys.contains(key),
-                              (lastPayday == nil || entry.date >= lastPayday!)
+                    } else if (entry.phoneChecked == true || BillCheckoff.matches(entry, in: phoneCheckedBillKeys)),
+                              LiveCashSummary.isPhoneCheckedHoldActive(for: entry, lastPayday: lastPayday, today: today)
                     {
                         pastPhoneHeld += entry.amount
                     }
-                } else if entry.amount < 0, entry.done != true,
-                          (lastPayday == nil || entry.date >= lastPayday!)
-                {
+                } else if LiveCashSummary.isConfirmedPendingInflow(entry, lastPayday: lastPayday, today: today) {
                     pastPendingInflows += -entry.amount
                 }
             }
         }
-
-        let nextPaydayDate = groups.first { group in
-            group.entries.contains { $0.next == true }
-        }?.date
 
         let openCreditSources: [ComingUpCreditSource]
         if !liveCash.creditSources.isEmpty {
@@ -199,6 +196,7 @@ public enum ComingUp {
                 matrix.append(Array(repeating: nil, count: group.entries.count))
                 continue
             }
+            let isBeforeNextPayday = nextPaydayDate.map { group.date < $0 } ?? true
             var rowBalances: [Int?] = []
             rowBalances.reserveCapacity(group.entries.count)
             for entry in group.entries {
@@ -206,16 +204,21 @@ public enum ComingUp {
                     rowBalances.append(nil)
                     continue
                 }
-                let key = BillCheckoff.key(for: entry)
-                if alreadyCleared.contains(key) {
+                if BillCheckoff.matches(entry, in: alreadyCleared) {
                     rowBalances.append(nil)
                     continue
                 }
                 let isUnsettledPhoneCheck = entry.done == true
                     && entry.amount > 0
-                    && phoneCheckedBillKeys.contains(key)
-                    && (lastPayday == nil || entry.date >= lastPayday!)
+                    && (entry.phoneChecked == true || BillCheckoff.matches(entry, in: phoneCheckedBillKeys))
+                    && LiveCashSummary.isPhoneCheckedHoldActive(for: entry, lastPayday: lastPayday, today: today)
                 if entry.done == true && !isUnsettledPhoneCheck {
+                    rowBalances.append(nil)
+                    continue
+                }
+                // Keep unconfirmed estimated inflows (e.g. an unconfirmed bonus) out of guaranteed
+                // pre-payday running balances so the final pre-payday line matches the hero to the yen.
+                if isBeforeNextPayday && entry.amount < 0 && !LiveCashSummary.isConfirmedPendingInflow(entry, lastPayday: lastPayday, today: today) {
                     rowBalances.append(nil)
                     continue
                 }

@@ -43,7 +43,11 @@ final class AppModel: ObservableObject {
         refreshConnectionStates()
         try? await SyncEngine.shared.publishCurrentWidget()
         if let latest {
-            await BillReminderScheduler.sync(timeline: latest.timeline, preferences: prefs)
+            await BillReminderScheduler.sync(
+                timeline: latest.timeline,
+                preferences: prefs,
+                privacyMasked: SharedStore.privacyMasked
+            )
         }
     }
 
@@ -127,6 +131,8 @@ final class AppModel: ObservableObject {
         switch result {
         case .success(.pushed(let bytes)):
             return "Synced phone edits to Drive (\(bytes.formatted()) B)"
+        case .success(.queued):
+            return "Queued — will sync right after current refresh"
         case .success(.unchanged):
             return "Phone edits already up to date"
         case .success(.needsConsent):
@@ -295,23 +301,39 @@ final class AppModel: ObservableObject {
     }
 
     func setDebtBalanceOverride(debtName: String, balance: Int?) async throws {
+        let now = Date()
+        let editDay = JST.day(now)
+        let editTimestamp = JST.timestamp(now)
         try await persistModificationsAndPush { mods in
             if let balance {
                 mods.debtBalanceOverrides[debtName] = max(0, balance)
+                mods.debtBalanceOverrideDates[debtName] = editDay
+                mods.debtBalanceOverrideTimestamps[debtName] = editTimestamp
             } else {
                 mods.debtBalanceOverrides.removeValue(forKey: debtName)
+                mods.debtBalanceOverrideDates.removeValue(forKey: debtName)
+                mods.debtBalanceOverrideTimestamps.removeValue(forKey: debtName)
             }
         }
     }
 
     func addCustomReminder(_ reminder: CustomReminder) async throws {
         try await persistModificationsAndPush { mods in
+            mods.deletedCustomReminderIDs.remove("rem:\(reminder.id.uuidString)")
+            mods.deletedCustomReminderIDs.remove("legacy:\(BillCheckoff.legacyKey(for: reminder.asTimelineEntry()))")
             mods.customReminders.append(reminder)
         }
     }
 
     func removeCustomReminder(id: UUID) async throws {
         try await persistModificationsAndPush { mods in
+            let targetID = "rem:\(id.uuidString)"
+            // Always retain both stable ID and legacy-key tombstones so an older or delayed PC bundle
+            // (including legacy bundles whose reminder entries lacked an `id`) can never resurrect it.
+            mods.deletedCustomReminderIDs.insert(targetID)
+            if let existing = mods.customReminders.first(where: { $0.id == id }) {
+                mods.deletedCustomReminderIDs.insert("legacy:\(BillCheckoff.legacyKey(for: existing.asTimelineEntry()))")
+            }
             mods.customReminders.removeAll { $0.id == id }
         }
     }
@@ -356,9 +378,11 @@ final class AppModel: ObservableObject {
 
     func toggleBillCheckoff(for entry: TimelineEntry) async {
         let key = BillCheckoff.key(for: entry)
+        let legacyKey = BillCheckoff.legacyKey(for: entry)
+        let matchingKeys: Set<String> = [key, legacyKey]
         try? await persistModificationsAndPush { mods in
-            if mods.billCheckoffs.contains(where: { $0.key == key }) {
-                mods.billCheckoffs.removeAll { $0.key == key }
+            if mods.billCheckoffs.contains(where: { matchingKeys.contains($0.key) }) {
+                mods.billCheckoffs.removeAll { matchingKeys.contains($0.key) }
             } else {
                 mods.billCheckoffs.append(BillCheckoff(key: key))
             }
@@ -381,7 +405,11 @@ final class AppModel: ObservableObject {
         notificationPreferences = prefs
         try? LocalDataStore.saveNotificationPreferences(prefs)
         if let data {
-            await BillReminderScheduler.sync(timeline: data.timeline, preferences: prefs)
+            await BillReminderScheduler.sync(
+                timeline: data.timeline,
+                preferences: prefs,
+                privacyMasked: SharedStore.privacyMasked
+            )
         }
     }
 

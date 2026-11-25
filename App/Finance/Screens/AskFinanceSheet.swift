@@ -208,7 +208,7 @@ struct AskFinanceSheet: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Spacer(minLength: 36)
-                Text(turn.question)
+                Text(MaskedMoney.redactText(turn.question, masked: privacyMasked))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(colorScheme == .dark ? Theme.page : Color.white)
                     .padding(.horizontal, 15)
@@ -257,7 +257,7 @@ struct AskFinanceSheet: View {
                             ForEach(turn.answer.rows) { row in
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text(row.label)
+                                        Text(MaskedMoney.redactText(row.label, masked: privacyMasked))
                                             .font(.subheadline.weight(.medium))
                                             .foregroundStyle(Theme.ink)
                                             .fixedSize(horizontal: false, vertical: true)
@@ -363,8 +363,8 @@ struct AskFinanceSheet: View {
     private func perform(_ action: QueryAnswer.Action) {
         dismiss()
         switch action {
-        case .openPayments(let month, let category, let query):
-            session.openPayments(month: month, category: category, query: query)
+        case .openPayments(let month, let category, let query, let source):
+            session.openPayments(month: month, category: category, query: query, source: source)
         case .openMonths(let month):
             session.openMonths(month: month)
         case .openNow:

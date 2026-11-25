@@ -125,15 +125,18 @@ struct FinanceData: Sendable {
             baseItems: baseItems,
             modifications: localModifications,
             config: config,
-            layers: bundle.layers
+            layers: bundle.layers,
+            appliedBundleDeletions: bundle.appliedPhoneDeletions ?? [:]
         )
         let items = applied.allItems
         self.allItems = items
         self.localItemKeys = applied.localItemKeys
         self.localEntryByFingerprint = applied.localEntryByFingerprint
 
-        // Build fast notice lookup for PaymentDetailSheet metadata (exact time, foreign currency, Merpay split, ref).
+        // Build fast notice lookup for PaymentDetailSheet metadata (exact time, foreign currency, Merpay split, ref),
+        // indexing both the original notice fingerprint and any matched confirmed bank item so details survive posting.
         var noticeMap: [String: Notice] = [:]
+        let noticesByID = Dictionary(notices.map { ($0.messageID, $0) }, uniquingKeysWith: { first, _ in first })
         for notice in notices {
             guard let amount = notice.amount else { continue }
             let sourceLabel = bundle.sourceLabels[notice.source.rawValue] ?? notice.source.rawValue
@@ -144,41 +147,141 @@ struct FinanceData: Sendable {
                 noticeMap[fp] = notice
             }
         }
+        let bankItemByTxID = Dictionary(
+            zip(layered.bankTransactionIDs, layered.bankItems),
+            uniquingKeysWith: { first, _ in first }
+        )
+        for pair in layered.matchedPairs {
+            guard let notice = noticesByID[pair.noticeID],
+                  let bankItem = bankItemByTxID[pair.transactionID] else { continue }
+            let fp = CategoryOverride.transactionFingerprint(for: bankItem)
+            if noticeMap[fp] == nil {
+                noticeMap[fp] = notice
+            }
+        }
         self.noticeByFingerprint = noticeMap
 
-        let bankReconciled = TimelineReconciler.reconcile(timeline: bundle.timeline, bankRows: layered.bankRows)
+        let bankReconcileResult = TimelineReconciler.reconcileWithMetadata(
+            timeline: bundle.timeline,
+            bankRows: layered.bankRows
+        )
+        let consumedBankRows = bankReconcileResult.usedRowIndices.sorted().map { layered.bankRows[$0] }
         let noticeReconciled = TimelineReconciler.reconcilePendingNotices(
-            timeline: bankReconciled,
+            timeline: bankReconcileResult.timeline,
             pendingItems: layered.pendingItems,
             accountBalances: bundle.accountBalances ?? [],
             sourceLabels: bundle.sourceLabels
         )
         let withReminders = LocalDataApplier.mergeCustomReminders(
             timeline: noticeReconciled,
-            reminders: localModifications.customReminders
+            reminders: localModifications.customReminders,
+            deletedIDs: localModifications.deletedCustomReminderIDs
         )
         let checked = LocalDataApplier.applyBillCheckoffs(
             timeline: withReminders,
             checkoffs: localModifications.billCheckoffs
         )
-        self.timeline = checked.timeline
         self.phoneCheckedBillKeys = checked.phoneCheckedKeys
 
-        let start = checked.timeline.filter { $0.payday == true && $0.date <= today }.map(\.date).max()
+        // Only treat a payday as the start of the active cycle if it has already been received (`done == true`)
+        // or its scheduled date is strictly in the past (never today's unreceived salary).
+        let start = checked.timeline
+            .filter { $0.payday == true && ($0.done == true || $0.date < today) }
+            .map(\.date)
+            .max()
         self.lastPayday = start
 
         let upcoming = PaydayView.compute(timeline: checked.timeline, today: today)
-        let activePayday: PaydayView? = {
+        let (resolvedTimeline, activePayday): ([FinanceCore.TimelineEntry], PaydayView?) = {
             if let upcoming, upcoming.daysToPayday >= 0 {
-                return upcoming
+                return (checked.timeline, upcoming)
             }
-            // Payday rollover fallback: if the scheduled payday passed before a new PC bundle arrives,
-            // synthesize an estimated next payday one month out so Now and the widget never go blank.
+            // Payday rollover fallback when the bundle's `next` payday has already passed before a new PC
+            // export arrives: promote an existing future payday entry first (avoiding duplicates), otherwise
+            // synthesize one a month out, and drop the finished prior cycle's settled rows/inflows.
+            let expiredNextDate = upcoming?.next.date
+            let cycleFloor = start ?? expiredNextDate
+
+            func filterForRolledCycle(_ entries: [FinanceCore.TimelineEntry]) -> [FinanceCore.TimelineEntry] {
+                guard let floor = cycleFloor else { return entries }
+                return entries.filter { entry in
+                    entry.date >= floor
+                        || (entry.amount > 0 && entry.event != true && entry.borrowed != true && entry.cardBilled != true
+                            && (entry.done != true || (entry.phoneChecked == true && entry.match != nil)))
+                }
+            }
+
+            if let existingFutureIdx = checked.timeline.indices
+                .filter({ checked.timeline[$0].payday == true && checked.timeline[$0].date >= today && checked.timeline[$0].done != true })
+                .min(by: { (checked.timeline[$0].date, $0) < (checked.timeline[$1].date, $1) })
+            {
+                let promoted = checked.timeline.enumerated().map { idx, entry -> FinanceCore.TimelineEntry in
+                    var copy = entry
+                    copy.next = (idx == existingFutureIdx) ? true : nil
+                    return copy
+                }
+                let rolled = filterForRolledCycle(promoted)
+                return (rolled, PaydayView.compute(timeline: rolled, today: today))
+            }
+
+            let anchorEntry = checked.timeline
+                .filter { $0.payday == true && ($0.done == true || $0.date < today) }
+                .max { $0.date < $1.date }
+                ?? upcoming?.next
             let anchor = start ?? upcoming?.next.date
-            guard let anchor,
-                  let synthesizedDate = PayCycleBuilder.shiftMonth(anchor, by: 1),
-                  synthesizedDate >= today
-            else { return nil }
+            guard let anchor else {
+                return (checked.timeline, nil)
+            }
+            // Recover nominal payday day-of-month (before weekend/holiday rolling) so a stale bundle
+            // anchored on an adjusted payday (e.g. Apr 3 for nominal day 5) synthesizes Jun 5, not Jun 3.
+            let nominalPayDay: Int? = anchorEntry?.nominalDay
+                ?? checked.timeline
+                    .filter { $0.payday == true }
+                    .compactMap { $0.nominalDay ?? $0.date.split(separator: "-").last.flatMap { Int($0) } }
+                    .max()
+            let anchorParts = anchor.split(separator: "-").compactMap { Int($0) }
+            let baseAnchor: String = {
+                guard anchorParts.count == 3, let nom = nominalPayDay, (1...31).contains(nom) else { return anchor }
+                return String(format: "%04d-%02d-%02d", anchorParts[0], anchorParts[1], min(nom, 28))
+            }()
+            // Advance across as many months as needed so even a bundle more than a month old keeps a valid
+            // next payday and stays aligned with Coming up (respecting business-day rolling when enabled).
+            let shouldRollPayday = anchorEntry?.rollBusinessDay ?? true
+            var synthesizedDate: String?
+            for shift in 1...24 {
+                if let nom = nominalPayDay, anchorParts.count == 3, (1...31).contains(nom) {
+                    let totalMonths = anchorParts[0] * 12 + (anchorParts[1] - 1) + shift
+                    let y = totalMonths / 12
+                    let m = (totalMonths % 12) + 1
+                    let maxDay: Int = {
+                        switch m {
+                        case 1, 3, 5, 7, 8, 10, 12: return 31
+                        case 4, 6, 9, 11: return 30
+                        case 2: return ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)) ? 29 : 28
+                        default: return 28
+                        }
+                    }()
+                    let rawCandidate = String(format: "%04d-%02d-%02d", y, m, min(nom, maxDay))
+                    let candidate = shouldRollPayday
+                        ? CashFlowForecast.adjustBankBusinessDay(rawCandidate, moveEarlier: true)
+                        : rawCandidate
+                    if candidate >= today {
+                        synthesizedDate = candidate
+                        break
+                    }
+                } else if let rawCandidate = PayCycleBuilder.shiftMonth(baseAnchor, by: shift) {
+                    let candidate = shouldRollPayday
+                        ? CashFlowForecast.adjustBankBusinessDay(rawCandidate, moveEarlier: true)
+                        : rawCandidate
+                    if candidate >= today {
+                        synthesizedDate = candidate
+                        break
+                    }
+                }
+            }
+            guard let synthesizedDate else {
+                return (checked.timeline, nil)
+            }
             let syntheticNext = FinanceCore.TimelineEntry(
                 date: synthesizedDate,
                 item: "Next payday",
@@ -187,17 +290,19 @@ struct FinanceData: Sendable {
                 payday: true,
                 next: true,
                 estimate: true,
-                recurring: true
+                recurring: true,
+                nominalDay: nominalPayDay
             )
-            let extended = checked.timeline.map { entry -> FinanceCore.TimelineEntry in
+            let extended = filterForRolledCycle(checked.timeline.map { entry -> FinanceCore.TimelineEntry in
                 var copy = entry
                 copy.next = nil
                 return copy
-            } + [syntheticNext]
-            return PaydayView.compute(timeline: extended, today: today)
+            }) + [syntheticNext]
+            return (extended, PaydayView.compute(timeline: extended, today: today))
         }()
+        self.timeline = resolvedTimeline
         self.payday = activePayday
-        self.comingUp = ComingUp.groups(timeline: checked.timeline, today: today)
+        self.comingUp = ComingUp.groups(timeline: resolvedTimeline, today: today)
         self.spentSincePayday = start.map {
             PaydayView.spentSince(day: $0, items: items, config: config, layers: bundle.layers)
         }
@@ -210,15 +315,49 @@ struct FinanceData: Sendable {
                 layers: bundle.layers
             )
         }
+
+        let resolvedDebts = LocalDataApplier.applyDebtOverrides(
+            debts: bundle.debts,
+            overrides: localModifications.debtBalanceOverrides
+        )
+        // Synchronize standing CreditRooms with phone debt balance overrides using each debt's recorded
+        // override date (`debtBalanceOverrideDates`) so later purchases draw down room live instead of
+        // freezing `asOf` at `today`.
+        let fallbackOverrideDay = localModifications.updatedAt.map { JST.day($0) }
+        let effectiveCreditRooms: [CreditRoom] = (bundle.creditRooms ?? []).map { room in
+            let roomKey = room.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !roomKey.isEmpty,
+                  let matchedDebt = resolvedDebts.first(where: { debt in
+                      localModifications.debtBalanceOverrides[debt.name] != nil
+                          && debt.name.lowercased().contains(roomKey)
+                  })
+            else { return room }
+            var copy = room
+            if let limit = room.limit ?? matchedDebt.limit {
+                copy.limit = limit
+                copy.available = max(0, limit - matchedDebt.balance)
+            }
+            copy.asOf = localModifications.debtBalanceOverrideDates[matchedDebt.name]
+                ?? fallbackOverrideDay
+                ?? room.asOf
+                ?? today
+            copy.asOfTimestamp = localModifications.debtBalanceOverrideTimestamps[matchedDebt.name]
+            copy.asOfRowAmounts = nil
+            return copy
+        }
+
         self.liveCash = LiveCashSummary.compute(
             accountBalances: bundle.accountBalances ?? [],
-            creditRooms: bundle.creditRooms ?? [],
+            creditRooms: effectiveCreditRooms,
             sourceLabels: bundle.sourceLabels,
             bankRows: layered.allBankRows,
             pendingItems: layered.pendingItems,
             payday: activePayday,
             phoneCheckedBillKeys: checked.phoneCheckedKeys,
-            lastPayday: start
+            lastPayday: start,
+            consumedBankRows: consumedBankRows,
+            notices: notices,
+            today: today
         )
         self.pendingSincePayday = start.map { day in
             layered.pendingItems.filter {
@@ -248,7 +387,7 @@ struct FinanceData: Sendable {
 
         let calPeriods = PayCycleBuilder.calendarPeriods(months: sortedMonths, asOf: bundle.asOf, today: today)
         self.calendarPeriods = calPeriods
-        let cycles = PayCycleBuilder.payCycles(items: items, timeline: checked.timeline, config: config, today: today)
+        let cycles = PayCycleBuilder.payCycles(items: items, timeline: resolvedTimeline, config: config, today: today)
         self.payCycles = cycles
         self.totalsByCycle = PayCycleBuilder.totalsByPeriod(
             items: items,
@@ -286,10 +425,7 @@ struct FinanceData: Sendable {
             recentAverageByCategory: avgByCategory
         )
         self.effectivePlan = resolvedPlan
-        self.effectiveDebts = LocalDataApplier.applyDebtOverrides(
-            debts: bundle.debts,
-            overrides: localModifications.debtBalanceOverrides
-        )
+        self.effectiveDebts = resolvedDebts
 
         let plan = PlanSummary.compute(
             plan: resolvedPlan,
@@ -308,7 +444,7 @@ struct FinanceData: Sendable {
             bundle: bundle,
             allItems: items,
             notices: notices,
-            timeline: checked.timeline,
+            timeline: resolvedTimeline,
             planSummary: plan,
             subscriptionSummary: subs,
             today: today,
@@ -396,20 +532,54 @@ struct FinanceData: Sendable {
     }
 
     var widgetSnapshot: WidgetSnapshot {
+        widgetSnapshot(privacyMasked: SharedStore.privacyMasked)
+    }
+
+    func widgetSnapshot(privacyMasked: Bool) -> WidgetSnapshot {
         guard let p = payday else {
-            return WidgetSnapshot(title: "Finance", value: "–", detail: "No upcoming payday in the data file", updatedAt: Date())
+            return WidgetSnapshot(title: "Finance", value: "–", detail: "No upcoming payday in the data file", updatedAt: Date(), isPrivacyMasked: privacyMasked)
         }
         let dayToDay = paydayBreakdown?.dayToDaySpentSincePayday ?? spentSincePayday
-        let spent = dayToDay.map { " · spent " + Money.yen($0) } ?? ""
-        let unpaidBills: [WidgetBill] = p.outs
-            .filter { $0.done != true && $0.cardBilled != true && $0.amount > 0 }
+        let spent = privacyMasked ? "" : (dayToDay.map { " · spent " + Money.yen($0) } ?? "")
+        let clearedByBank = liveCash?.postBalanceMatchedKeys ?? []
+        var upcomingEntries = p.outs.filter { entry in
+            entry.done != true
+                && entry.cardBilled != true
+                && entry.amount > 0
+                && !BillCheckoff.matches(entry, in: clearedByBank)
+        }
+        // On payday morning (`daysToPayday == 0`) before salary posts, prioritize bills due on payday itself
+        // ahead of older overdue items so today's due bills appear in the widget's next-bills list.
+        if p.daysToPayday == 0 || upcomingEntries.count < 3 {
+            let existingKeys = Set(upcomingEntries.map { BillCheckoff.key(for: $0) })
+            let paydayOrLater = timeline.filter { entry in
+                entry.date >= p.next.date
+                    && entry.done != true
+                    && entry.event != true
+                    && entry.borrowed != true
+                    && entry.cardBilled != true
+                    && entry.amount > 0
+                    && !BillCheckoff.matches(entry, in: clearedByBank)
+                    && !existingKeys.contains(BillCheckoff.key(for: entry))
+            }
+            if p.daysToPayday == 0 {
+                let dueToday = paydayOrLater.filter { $0.date == p.next.date }
+                let later = paydayOrLater.filter { $0.date > p.next.date }
+                upcomingEntries = dueToday + upcomingEntries + later
+            } else {
+                upcomingEntries.append(contentsOf: paydayOrLater.prefix(3 - upcomingEntries.count))
+            }
+        }
+        let unpaidBills: [WidgetBill] = upcomingEntries
             .prefix(3)
-            .map { entry in
+            .enumerated()
+            .map { idx, entry in
                 WidgetBill(
-                    title: entry.item,
+                    id: privacyMasked ? "masked-\(idx)" : "\(idx)|\(BillCheckoff.key(for: entry))",
+                    title: MaskedMoney.redactText(entry.item, masked: privacyMasked),
                     date: entry.date,
                     dateLabel: DayText.short(entry.date),
-                    amount: entry.amount,
+                    amount: privacyMasked ? 0 : entry.amount,
                     isEstimate: entry.estimate == true
                 )
             }
@@ -434,19 +604,21 @@ struct FinanceData: Sendable {
         let heroBorrowed = liveCash?.openBorrowedSum ?? p.borrowedSum
         let detailPrefix = liveCash != nil ? "bank cash after bills" : "est. after bills"
 
+        let dayWord = p.daysToPayday == 1 ? "day" : "days"
         return WidgetSnapshot(
-            title: "Until payday · \(p.daysToPayday) days",
-            value: Money.yen(heroLeft),
+            title: "Until payday · \(p.daysToPayday) \(dayWord)",
+            value: privacyMasked ? "¥•••,•••" : Money.yen(heroLeft),
             detail: detailPrefix + spent,
             updatedAt: Date(),
-            compactValue: FinanceFormat.compactYen(heroLeft),
+            compactValue: privacyMasked ? "¥•••" : FinanceFormat.compactYen(heroLeft),
             daysToPayday: p.daysToPayday,
             paydayDate: p.next.date,
             cycleProgress: cycleProgress,
-            billsSum: heroBills,
-            leftSum: heroLeft,
-            borrowedSum: heroBorrowed,
-            upcomingBills: unpaidBills
+            billsSum: privacyMasked ? nil : heroBills,
+            leftSum: privacyMasked ? nil : heroLeft,
+            borrowedSum: privacyMasked ? nil : heroBorrowed,
+            upcomingBills: unpaidBills,
+            isPrivacyMasked: privacyMasked
         )
     }
 
@@ -462,16 +634,21 @@ struct FinanceData: Sendable {
            current.billsSum == snapshot.billsSum,
            current.leftSum == snapshot.leftSum,
            current.borrowedSum == snapshot.borrowedSum,
-           current.upcomingBills == snapshot.upcomingBills
+           current.upcomingBills == snapshot.upcomingBills,
+           current.isPrivacyMasked == snapshot.isPrivacyMasked
         {
-            return
+            // Keep the widget's "Updated HH:mm" timestamp accurate when a fresh sync completes
+            // even if numbers haven't changed, throttling reloads to at most once every 10 minutes.
+            guard snapshot.updatedAt.timeIntervalSince(current.updatedAt) >= 600 else {
+                return
+            }
         }
         SharedStore.write(snapshot)
         WidgetCenter.shared.reloadTimelines(ofKind: "FinanceWidget")
     }
 
     /// Fallback widget snapshot when no data file has been imported yet.
-    static func noticeOnlySnapshot(notices: [Notice], now: Date = Date()) -> WidgetSnapshot {
+    static func noticeOnlySnapshot(notices: [Notice], now: Date = Date(), privacyMasked: Bool = SharedStore.privacyMasked) -> WidgetSnapshot {
         let since = JST.timestamp(now.addingTimeInterval(-7 * 86_400))
         let amounts = notices.filter {
             $0.receivedAt >= since && [.purchase, .refund, .settlement, .cancellation].contains($0.kind)
@@ -479,10 +656,11 @@ struct FinanceData: Sendable {
         let sum = amounts.reduce(0, +)
         return WidgetSnapshot(
             title: "Card notices, 7 days",
-            value: "¥" + sum.formatted(),
+            value: privacyMasked ? "¥•••,•••" : "¥" + sum.formatted(),
             detail: "\(amounts.count) notices",
             updatedAt: now,
-            compactValue: FinanceFormat.compactYen(sum)
+            compactValue: privacyMasked ? "¥•••" : FinanceFormat.compactYen(sum),
+            isPrivacyMasked: privacyMasked
         )
     }
 }
