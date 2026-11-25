@@ -170,12 +170,18 @@ public enum ComingUp {
             group.entries.contains { $0.next == true }
         }?.date
 
-        var openCreditSources: [ComingUpCreditSource] = []
-        for group in groups {
-            if let nextPaydayDate, group.date >= nextPaydayDate { break }
-            for entry in group.entries where entry.borrowed == true && entry.done != true && entry.amount < 0 {
-                openCreditSources.append(ComingUpCreditSource(item: entry.item, amount: -entry.amount))
+        let openCreditSources: [ComingUpCreditSource]
+        if !liveCash.creditSources.isEmpty {
+            openCreditSources = liveCash.creditSources
+        } else {
+            var timelineCredits: [ComingUpCreditSource] = []
+            for group in groups {
+                if let nextPaydayDate, group.date >= nextPaydayDate { break }
+                for entry in group.entries where entry.borrowed == true && entry.done != true && entry.amount < 0 {
+                    timelineCredits.append(ComingUpCreditSource(item: entry.item, amount: -entry.amount))
+                }
             }
+            openCreditSources = timelineCredits
         }
 
         let startingToday = cashNow + pastPendingInflows - overdueUnpaid - pastPhoneHeld

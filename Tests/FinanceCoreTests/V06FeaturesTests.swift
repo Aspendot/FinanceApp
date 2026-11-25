@@ -925,5 +925,39 @@ struct V06FeaturesTests {
         #expect(mixedRunning.openCreditSum == 48_000)
         #expect(mixedRunning.cashAfterBills == mixedLive.cashLeftUntilPayday)
         #expect(mixedRunning.totalWithCredit == mixedLive.cashLeftIfBorrowed)
+
+        // Standing CreditRoom snapshots contribute to LiveCashSummary without needing a dated timeline row,
+        // and draw down live on charges strictly after their asOf date.
+        let rooms = [
+            CreditRoom(label: "Card A", available: 38_000, asOf: "2026-04-14", sourceKeys: ["card_a"]),
+        ]
+        let roomTimeline = [
+            TimelineEntry(date: "2026-04-10", item: "Salary", amount: -300_000, payday: true, done: true),
+            TimelineEntry(date: "2026-04-15", item: "Loan B: borrow ¥10,000 again", amount: -10_000, borrowed: true),
+            TimelineEntry(date: "2026-04-20", item: "Rent", amount: 80_000),
+            TimelineEntry(date: "2026-04-25", item: "Salary", amount: -300_000, payday: true, next: true),
+        ]
+        let roomPayday = try #require(PaydayView.compute(timeline: roomTimeline, today: "2026-04-14"))
+        let roomLabels = ["main_bank": "Main Bank", "main_debit": "Main Debit", "card_a": "Card A"]
+        let roomPending = pending + [
+            // Same-day charge on asOf must NOT double-subtract from confirmed available balance.
+            BudgetItem(date: "2026-04-14", source: "Card A", merchant: "ALREADY COUNTED", amount: 3_000, group: "Living", category: "Other", isPending: true),
+            // Strictly post-asOf charge draws down live usable room.
+            BudgetItem(date: "2026-04-15", source: "Card A", merchant: "NEW SPEND", amount: 2_000, group: "Living", category: "Other", isPending: true),
+        ]
+        let roomLive = try #require(LiveCashSummary.compute(
+            accountBalances: balances,
+            creditRooms: rooms,
+            sourceLabels: roomLabels,
+            bankRows: [],
+            pendingItems: roomPending,
+            payday: roomPayday,
+            lastPayday: "2026-04-10"
+        ))
+        // Card A: 38,000 - 2,000 (Apr 15) = 36,000; Loan B: 10,000 -> total credit room 46,000.
+        #expect(roomLive.creditSources.map(\.shortLabel) == ["Card A", "Loan B"])
+        #expect(roomLive.creditSources.map(\.amount) == [36_000, 10_000])
+        #expect(roomLive.openBorrowedSum == 46_000)
+        #expect(roomLive.cashLeftIfBorrowed == roomLive.cashLeftUntilPayday + 46_000)
     }
 }

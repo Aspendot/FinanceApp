@@ -164,8 +164,11 @@ public struct LiveCashSummary: Sendable, Equatable {
     public var unsettledBillsSum: Int { remainingBillsSum + phoneCheckedBillsSum }
     /// Expected non-borrowed inflows before next payday not yet received (`done != true`).
     public var remainingInflowsSum: Int
-    /// Optional credit/borrowing headroom before next payday not yet drawn (`done != true`).
+    /// Optional credit/borrowing headroom before next payday not yet drawn (`done != true`),
+    /// combining standing usable credit rooms and unsettled planned borrowings.
     public var openBorrowedSum: Int
+    /// Itemized sources making up `openBorrowedSum` (standing credit rooms + planned timeline borrowings).
+    public var creditSources: [ComingUpCreditSource]
     /// Estimated cash left in banks until next payday after all unsettled bills (`estimatedBankCash + remainingInflowsSum - unsettledBillsSum`).
     public var cashLeftUntilPayday: Int
     /// Cash left if optional credit headroom were used (`cashLeftUntilPayday + openBorrowedSum`).
@@ -186,6 +189,7 @@ public struct LiveCashSummary: Sendable, Equatable {
         phoneCheckedBillsSum: Int,
         remainingInflowsSum: Int,
         openBorrowedSum: Int,
+        creditSources: [ComingUpCreditSource] = [],
         cashLeftUntilPayday: Int,
         cashLeftIfBorrowed: Int,
         isEstimate: Bool,
@@ -200,6 +204,7 @@ public struct LiveCashSummary: Sendable, Equatable {
         self.phoneCheckedBillsSum = phoneCheckedBillsSum
         self.remainingInflowsSum = remainingInflowsSum
         self.openBorrowedSum = openBorrowedSum
+        self.creditSources = creditSources
         self.cashLeftUntilPayday = cashLeftUntilPayday
         self.cashLeftIfBorrowed = cashLeftIfBorrowed
         self.isEstimate = isEstimate
@@ -208,6 +213,7 @@ public struct LiveCashSummary: Sendable, Equatable {
 
     public static func compute(
         accountBalances: [AccountBalance],
+        creditRooms: [CreditRoom] = [],
         sourceLabels: [String: String],
         bankRows: [TimelineReconciler.BankRow],
         pendingItems: [BudgetItem],
@@ -327,8 +333,34 @@ public struct LiveCashSummary: Sendable, Equatable {
         } ?? []
         let remainingInflowsSum = -remainingInflows.reduce(0) { $0 + $1.amount }
 
-        let openBorrowed = payday?.borrowed.filter { $0.done != true } ?? []
-        let openBorrowedSum = -openBorrowed.reduce(0) { $0 + $1.amount }
+        var creditSources: [ComingUpCreditSource] = []
+        for room in creditRooms {
+            var liveAvailable = room.available
+            if let asOf = room.asOf, !asOf.isEmpty, let keys = room.sourceKeys, !keys.isEmpty {
+                var names = Set<String>()
+                for rawKey in keys where !rawKey.isEmpty {
+                    names.insert(rawKey)
+                    if let label = sourceLabels[rawKey], !label.isEmpty {
+                        names.insert(label)
+                    }
+                }
+                let postBankSpend = bankRows
+                    .filter { $0.date > asOf && names.contains($0.source) }
+                    .reduce(0) { $0 + $1.amount }
+                let postPendingSpend = pendingItems
+                    .filter { $0.isPending && $0.date > asOf && names.contains($0.source) }
+                    .reduce(0) { $0 + $1.amount }
+                liveAvailable = max(0, room.available - postBankSpend - postPendingSpend)
+            }
+            if liveAvailable > 0 {
+                creditSources.append(ComingUpCreditSource(item: room.label, shortLabel: room.label, amount: liveAvailable))
+            }
+        }
+        let openBorrowed = payday?.borrowed.filter { $0.done != true && $0.amount < 0 } ?? []
+        for entry in openBorrowed {
+            creditSources.append(ComingUpCreditSource(item: entry.item, amount: -entry.amount))
+        }
+        let openBorrowedSum = creditSources.reduce(0) { $0 + $1.amount }
 
         let cashLeft = estimatedTotal + remainingInflowsSum - remainingBillsSum - phoneCheckedSum
         let hasEstimateLine = remainingBills.contains { $0.estimate == true }
@@ -345,6 +377,7 @@ public struct LiveCashSummary: Sendable, Equatable {
             phoneCheckedBillsSum: phoneCheckedSum,
             remainingInflowsSum: remainingInflowsSum,
             openBorrowedSum: openBorrowedSum,
+            creditSources: creditSources,
             cashLeftUntilPayday: cashLeft,
             cashLeftIfBorrowed: cashLeft + openBorrowedSum,
             isEstimate: isEstimate,

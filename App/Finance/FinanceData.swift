@@ -212,6 +212,7 @@ struct FinanceData: Sendable {
         }
         self.liveCash = LiveCashSummary.compute(
             accountBalances: bundle.accountBalances ?? [],
+            creditRooms: bundle.creditRooms ?? [],
             sourceLabels: bundle.sourceLabels,
             bankRows: layered.allBankRows,
             pendingItems: layered.pendingItems,

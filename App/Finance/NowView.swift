@@ -4,7 +4,6 @@ import SwiftUI
 struct NowView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var session: AppSession
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.privacyMasked) private var privacyMasked
 
@@ -537,17 +536,8 @@ struct NowView: View {
                         .lineLimit(1)
                 }
 
-                let hasNextPaydayRow = visibleDays.contains(where: \.isNextPayday)
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visibleDays.enumerated()), id: \.element.id) { index, day in
-                        if day.isNextPayday,
-                           let running = screen.todayCashBalance,
-                           !running.openCreditSources.isEmpty
-                        {
-                            prePaydayTotalSummary(running)
-                                .padding(.top, index > 0 ? 12 : 0)
-                                .padding(.bottom, day.showsMonthHeader ? 0 : 8)
-                        }
                         if day.showsMonthHeader {
                             HStack(spacing: 8) {
                                 Text(DayText.monthUpper(day.monthKey))
@@ -564,7 +554,7 @@ struct NowView: View {
                         }
                         if day.isNextPayday {
                             paydayDivider(date: day.date)
-                                .padding(.top, index > 0 && !day.showsMonthHeader && (screen.todayCashBalance?.openCreditSources.isEmpty ?? true) ? 12 : 4)
+                                .padding(.top, index > 0 && !day.showsMonthHeader ? 12 : 4)
                                 .padding(.bottom, 8)
                         } else if index > 0 && !day.showsMonthHeader {
                             HairlineDivider()
@@ -588,13 +578,6 @@ struct NowView: View {
                                 }
                             }
                         )
-                    }
-                    if !hasNextPaydayRow,
-                       let running = screen.todayCashBalance,
-                       !running.openCreditSources.isEmpty
-                    {
-                        prePaydayTotalSummary(running)
-                            .padding(.top, visibleDays.isEmpty ? 0 : 12)
                     }
                 }
 
@@ -632,69 +615,6 @@ struct NowView: View {
                 }
             }
         }
-    }
-
-    private func prePaydayTotalSummary(_ cash: ComingUpRunningBalance) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        let breakdownParts: [String] = [
-            "\(MaskedMoney.yen(cash.cashAfterBills, masked: privacyMasked)) cash"
-        ] + cash.openCreditSources.map { src in
-            "\(MaskedMoney.yen(src.amount, masked: privacyMasked)) \(src.shortLabel)"
-        }
-        let breakdownText = breakdownParts.joined(separator: " + ")
-        let totalTint: Color = cash.totalWithCredit < 0 ? Theme.bad : Theme.ink
-
-        return VStack(alignment: .leading, spacing: 3) {
-            if dynamicTypeSize.isAccessibilitySize {
-                Text("Total with credit")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Theme.ink2)
-                Text(MaskedMoney.yen(cash.totalWithCredit, masked: privacyMasked))
-                    .font(.subheadline.weight(.bold))
-                    .monospacedDigit()
-                    .foregroundStyle(totalTint)
-                Text(breakdownText)
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("Total with credit")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Theme.ink2)
-                    Spacer(minLength: 8)
-                    Text(MaskedMoney.yen(cash.totalWithCredit, masked: privacyMasked))
-                        .font(.caption.weight(.bold))
-                        .monospacedDigit()
-                        .foregroundStyle(totalTint)
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-                Text(breakdownText)
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(Theme.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.well.opacity(colorScheme == .dark ? 0.65 : 0.55), in: shape)
-        .overlay(
-            shape.strokeBorder(Theme.line.opacity(0.6), lineWidth: 0.6)
-        )
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(prePaydayAccessibilityLabel(cash))
-    }
-
-    private func prePaydayAccessibilityLabel(_ cash: ComingUpRunningBalance) -> String {
-        let parts: [String] = [
-            "\(MaskedMoney.accessibility(cash.cashAfterBills, masked: privacyMasked)) cash"
-        ] + cash.openCreditSources.map { src in
-            "\(MaskedMoney.accessibility(src.amount, masked: privacyMasked)) \(src.shortLabel)"
-        }
-        return "Total with credit before payday, \(MaskedMoney.accessibility(cash.totalWithCredit, masked: privacyMasked)), from \(parts.joined(separator: " plus "))"
     }
 
     private func paydayDivider(date: String) -> some View {
@@ -1282,6 +1202,23 @@ struct PaydayHeroCard: View {
         return "\(count) \(count == 1 ? "bill" : "bills")"
     }
 
+    private var openCreditSources: [ComingUpCreditSource] {
+        if let live = liveCash, !live.creditSources.isEmpty {
+            return live.creditSources
+        }
+        return payday.borrowed
+            .filter { $0.done != true && $0.amount < 0 }
+            .map { ComingUpCreditSource(item: $0.item, amount: -$0.amount) }
+    }
+
+    private var openBorrowedTotal: Int {
+        liveCash?.openBorrowedSum ?? payday.borrowedSum
+    }
+
+    private var totalWithCredit: Int {
+        liveCash?.cashLeftIfBorrowed ?? (heroLeft + openBorrowedTotal)
+    }
+
     var body: some View {
         HeroVaultCard(accentTint: heroLeft < 0 ? Theme.heroCoral : Theme.heroGlow) {
             VStack(alignment: .leading, spacing: 16) {
@@ -1294,6 +1231,13 @@ struct PaydayHeroCard: View {
                                 amount: heroLeft,
                                 color: heroLeft < 0 ? Theme.heroCoral : Theme.heroInk
                             )
+                            if openBorrowedTotal > 0 {
+                                Text("With credit: \(MaskedMoney.yen(totalWithCredit, masked: privacyMasked))")
+                                    .font(.footnote.weight(.semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Theme.heroAccent)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             FlowLayout(horizontalSpacing: 6, verticalSpacing: 4) {
                                 QuietTag(FinanceFormat.daysLabel(payday.daysToPayday), tone: .hero)
                                 if isHeroEstimate {
@@ -1318,6 +1262,18 @@ struct PaydayHeroCard: View {
                                     amount: heroLeft,
                                     color: heroLeft < 0 ? Theme.heroCoral : Theme.heroInk
                                 )
+                                if openBorrowedTotal > 0 {
+                                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                                        Text("With credit:")
+                                            .font(.footnote)
+                                            .foregroundStyle(Theme.heroInkMuted)
+                                        Text(MaskedMoney.yen(totalWithCredit, masked: privacyMasked))
+                                            .font(.footnote.weight(.bold))
+                                            .monospacedDigit()
+                                            .foregroundStyle(Theme.heroAccent)
+                                    }
+                                    .fixedSize(horizontal: false, vertical: true)
+                                }
                                 Text(heroSubtitle)
                                     .font(.footnote)
                                     .foregroundStyle(Theme.heroInkMuted)
@@ -1369,27 +1325,29 @@ struct PaydayHeroCard: View {
                     }
                 }
 
-                let openBorrowed = liveCash?.openBorrowedSum ?? payday.borrowedSum
-                let ifBorrowed = liveCash?.cashLeftIfBorrowed ?? (heroLeft + openBorrowed)
-                let openBorrowedNames = payday.borrowed
-                    .filter { $0.done != true && $0.amount < 0 }
-                    .map { ComingUpCreditSource.compactLabel(for: $0.item) }
-                if openBorrowed > 0 {
-                    let creditSuffix = openBorrowedNames.isEmpty ? "" : " · \(openBorrowedNames.joined(separator: " + "))"
+                if openBorrowedTotal > 0 {
+                    let creditBreakdown: String = {
+                        if openCreditSources.isEmpty {
+                            return "If used: \(MaskedMoney.yen(totalWithCredit, masked: privacyMasked))"
+                        }
+                        return openCreditSources
+                            .map { "\($0.shortLabel) \(MaskedMoney.yen($0.amount, masked: privacyMasked))" }
+                            .joined(separator: " + ")
+                    }()
                     FrostedMetricTile {
                         HStack(alignment: .firstTextBaseline) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Optional credit room")
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(Theme.heroInkMuted)
-                                Text("If used: \(MaskedMoney.yen(ifBorrowed, masked: privacyMasked))\(creditSuffix)")
+                                Text(creditBreakdown)
                                     .font(.caption2)
                                     .monospacedDigit()
                                     .foregroundStyle(Theme.heroInkMuted.opacity(0.85))
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             Spacer(minLength: 8)
-                            Text(MaskedMoney.signed(openBorrowed, masked: privacyMasked))
+                            Text(MaskedMoney.signed(openBorrowedTotal, masked: privacyMasked))
                                 .font(.subheadline.weight(.bold))
                                 .monospacedDigit()
                                 .foregroundStyle(Theme.heroCoral)

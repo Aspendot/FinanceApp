@@ -250,6 +250,35 @@ public struct AccountBalance: Codable, Sendable, Equatable, Hashable {
     }
 }
 
+/// Standing usable credit room (e.g. remaining limit on a credit card) available right now
+/// without belonging to a specific calendar date on the timeline.
+public struct CreditRoom: Codable, Sendable, Equatable, Hashable {
+    /// Short display label shown alongside cash totals (e.g. `"Card A"`).
+    public var label: String
+    /// Confirmed usable credit room in yen as of `asOf`.
+    public var available: Int
+    /// Optional date (`"YYYY-MM-DD"`) when `available` was verified.
+    public var asOf: String?
+    /// Optional card source keys whose charges strictly after `asOf` draw down `available` live.
+    public var sourceKeys: [String]?
+    /// Optional short context note.
+    public var note: String?
+
+    public init(
+        label: String,
+        available: Int,
+        asOf: String? = nil,
+        sourceKeys: [String]? = nil,
+        note: String? = nil
+    ) {
+        self.label = label
+        self.available = available
+        self.asOf = asOf
+        self.sourceKeys = sourceKeys
+        self.note = note
+    }
+}
+
 /// One recurring subscription entry in the bundle.
 public struct SubscriptionEntry: Codable, Sendable, Equatable {
     public var name: String
@@ -564,6 +593,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
     public var statementLineRules: [String: [StatementLineRule]]?
     /// Optional confirmed bank account balance snapshots used to compute live cash until payday.
     public var accountBalances: [AccountBalance]?
+    /// Optional standing usable credit room snapshots (not tied to a calendar date in Coming up).
+    public var creditRooms: [CreditRoom]?
 
     public init(
         format: String = DataBundle.supportedFormat,
@@ -585,7 +616,8 @@ public struct DataBundle: Codable, Sendable, Equatable {
         discreetCategories: [String]? = nil,
         noticeSourceMatches: [String: [String]]? = nil,
         statementLineRules: [String: [StatementLineRule]]? = nil,
-        accountBalances: [AccountBalance]? = nil
+        accountBalances: [AccountBalance]? = nil,
+        creditRooms: [CreditRoom]? = nil
     ) {
         self.format = format
         self.generatedAt = generatedAt
@@ -607,12 +639,13 @@ public struct DataBundle: Codable, Sendable, Equatable {
         self.noticeSourceMatches = noticeSourceMatches
         self.statementLineRules = statementLineRules
         self.accountBalances = accountBalances
+        self.creditRooms = creditRooms
     }
 
     private enum CodingKeys: String, CodingKey {
         case format, generatedAt, asOf, coverage, sourceLabels, items, timeline
         case debts, subs, plan, notes, afterNote, planWindow, layers, layerConfig, rules
-        case discreetCategories, noticeSourceMatches, statementLineRules, accountBalances
+        case discreetCategories, noticeSourceMatches, statementLineRules, accountBalances, creditRooms
     }
 
     public init(from decoder: Decoder) throws {
@@ -641,6 +674,7 @@ public struct DataBundle: Codable, Sendable, Equatable {
         noticeSourceMatches = try c.decodeIfPresent([String: [String]].self, forKey: .noticeSourceMatches)
         statementLineRules = try c.decodeIfPresent([String: [StatementLineRule]].self, forKey: .statementLineRules)
         accountBalances = try c.decodeIfPresent([AccountBalance].self, forKey: .accountBalances)
+        creditRooms = try c.decodeIfPresent([CreditRoom].self, forKey: .creditRooms)
     }
 
     /// Decodes a `DataBundle` from UTF-8 JSON bytes and validates its format.
