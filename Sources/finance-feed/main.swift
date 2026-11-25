@@ -144,7 +144,7 @@ func match(_ noticesPath: String, _ rowsPath: String, _ coveragePath: String, _ 
         }
     }.filter { inside($0.source, $0.day, slack: 1) }
     if skippedNotices > 0 {
-        fputs("warning: skipped \(skippedNotices) malformed notice line(s) in \(noticesPath)\n", stderr)
+        FileHandle.standardError.write(Data("warning: skipped \(skippedNotices) malformed notice line(s) in \(noticesPath)\n".utf8))
     }
     var skippedRows = 0
     let rows: [StatementRow] = try lines(rowsPath).compactMap { line in
@@ -156,7 +156,7 @@ func match(_ noticesPath: String, _ rowsPath: String, _ coveragePath: String, _ 
         }
     }.filter { inside($0.source, $0.date) }
     if skippedRows > 0 {
-        fputs("warning: skipped \(skippedRows) malformed statement row(s) in \(rowsPath)\n", stderr)
+        FileHandle.standardError.write(Data("warning: skipped \(skippedRows) malformed statement row(s) in \(rowsPath)\n".utf8))
     }
     let report = Matcher.match(notices: notices, rows: rows)
     let encoder = JSONEncoder()
